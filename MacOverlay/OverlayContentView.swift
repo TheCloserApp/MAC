@@ -1,20 +1,25 @@
 import SwiftUI
 import EventKit
+import QuickLookUI
 
 struct OverlayView: View {
     @EnvironmentObject var vm: OverlayViewModel
     @State private var showSettingsPopover = false
     @State private var dotVisible = true
     @State private var expanded = false
+    @State private var showModePicker = false
 
     private var hasContent: Bool {
-        vm.isRecording || !vm.transcription.isEmpty
+        vm.isRecording || vm.isInterviewSession || !vm.transcription.isEmpty
+            || !vm.statusMessage.isEmpty
             || vm.showManualInput
             || vm.pendingScreenshot != nil
             || vm.isSendingToAI || !vm.aiResponse.isEmpty
             || vm.showNotesPanel
             || vm.showCalendarPanel
-            || vm.webURL != nil
+            || vm.hasBrowser
+            || vm.showResumeBuilder
+            || !vm.peerMessage.isEmpty
     }
 
     var body: some View {
@@ -29,30 +34,93 @@ struct OverlayView: View {
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             } else {
-                // ── Collapsed: just the logo ──────────────────────────
-                Button { withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { expanded = true } } label: {
-                    WaveformLogo()
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background {
-                            RoundedRectangle(cornerRadius: 12)
+                // ── Collapsed: click → mode picker ────────────────────
+                Button {
+                    if vm.isQuickAsking {
+                        vm.toggleQuickAsk()
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                            showModePicker.toggle()
+                        }
+                    }
+                } label: {
+                    Group {
+                        if showModePicker && !vm.isQuickAsking {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.secondary)
+                                .frame(width: 26, height: 22)
+                        } else {
+                            WaveformLogo()
+                        }
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 10)
+                    .background {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 14)
                                 .fill(.ultraThinMaterial)
                                 .opacity(vm.backgroundOpacity)
+                            RoundedRectangle(cornerRadius: 14)
+                                .stroke(
+                                    vm.isDictating  ? Color.orange.opacity(0.6)
+                                    : vm.isQuickAsking ? Color.red.opacity(0.5)
+                                    : vm.isRecording   ? Color.red.opacity(0.4)
+                                    : Color.primary.opacity(0.06),
+                                    lineWidth: vm.isDictating || vm.isQuickAsking || vm.isRecording ? 1.5 : 1
+                                )
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .shadow(
+                        color: vm.isDictating ? Color.orange.opacity(0.25)
+                             : vm.isRecording  ? Color.red.opacity(0.2)
+                             : Color.black.opacity(0.12),
+                        radius: vm.isDictating || vm.isRecording ? 10 : 6,
+                        x: 0, y: 2
+                    )
                 }
                 .buttonStyle(.plain)
+                .animation(.easeInOut(duration: 0.2), value: vm.isDictating)
+                .animation(.easeInOut(duration: 0.2), value: vm.isRecording)
+
+                // Mode picker pop-up
+                if showModePicker {
+                    modePicker
+                        .transition(.scale(scale: 0.85, anchor: .topLeading).combined(with: .opacity))
+                }
+
+                // Resume pill — visible in icon mode whenever score or file is ready
+                if vm.resumeFileURL != nil || vm.isGeneratingResume
+                   || vm.resumeScore != nil || vm.isScoringResume {
+                    resumeFloatingPill
+                }
+
+                // Quick ask pill — visible when processing or response is ready
+                // (listening state is shown by the animated waveform icon itself)
+                if vm.isQuickAskSending || !vm.quickAskResponse.isEmpty {
+                    quickAskFloatingPill
+                }
+
+                // Dictation: state is reflected via orange icon border only (no floating pill)
             }
 
             // ── Content panel ─────────────────────────────────────────
             if expanded && hasContent {
                 VStack(spacing: 0) {
-                    if vm.isRecording || !vm.transcription.isEmpty {
+                    if !vm.statusMessage.isEmpty && !vm.isRecording && !vm.isInterviewSession && vm.transcription.isEmpty {
+                        statusRow
+                    }
+                    if vm.isRecording || vm.isInterviewSession || !vm.transcription.isEmpty {
                         transcriptionRow
                         if hasMoreBelowTranscription { Divider() }
                     }
-                    if vm.isRecording || !vm.transcription.isEmpty {
+                    if vm.isRecording || vm.isInterviewSession || !vm.transcription.isEmpty {
                         quickActionBar
+                    }
+                    if !vm.peerMessage.isEmpty {
+                        Divider()
+                        peerMessageRow
                     }
                     if vm.showManualInput {
                         Divider()
@@ -74,11 +142,18 @@ struct OverlayView: View {
                         Divider()
                         notesPanel
                     }
-                    if let url = vm.webURL {
+                    if vm.showResumeBuilder {
                         Divider()
-                        webPanel(url: url)
+                        resumePanel
+                    }
+                    if vm.hasBrowser {
+                        Divider()
+                        BrowserPanelView()
+                            .environmentObject(vm)
+                            .frame(maxHeight: .infinity)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: vm.hasBrowser ? .infinity : nil, alignment: .top)
                 .background {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(.ultraThinMaterial)
@@ -87,21 +162,23 @@ struct OverlayView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         }
-        .padding(0)
+        .frame(maxWidth: .infinity, maxHeight: vm.hasBrowser ? .infinity : nil, alignment: .topLeading)
+        .padding(8)
         .onReceive(
             Timer.publish(every: 0.6, on: .main, in: .common)
                 .autoconnect()
-                .filter { _ in vm.isRecording }
+                .filter { _ in vm.isRecording || vm.isInterviewSession }
         ) { _ in
             withAnimation(.easeInOut(duration: 0.25)) { dotVisible.toggle() }
         }
-        .onChange(of: vm.isRecording) { if !$0 { dotVisible = true } }
+        .onChange(of: vm.isRecording) { if !$0 && !vm.isInterviewSession { dotVisible = true } }
+        .onChange(of: vm.isInterviewSession) { if !$0 { dotVisible = true } }
     }
 
     private var hasMoreBelowTranscription: Bool {
-        vm.showManualInput || vm.pendingScreenshot != nil
+        !vm.peerMessage.isEmpty || vm.showManualInput || vm.pendingScreenshot != nil
             || vm.isSendingToAI || !vm.aiResponse.isEmpty
-            || vm.showCalendarPanel || vm.showNotesPanel
+            || vm.showCalendarPanel || vm.showNotesPanel || vm.hasBrowser || vm.showResumeBuilder
     }
 
     // MARK: - Bar
@@ -109,22 +186,24 @@ struct OverlayView: View {
     private var bar: some View {
         HStack(alignment: .center, spacing: 10) {
 
-            // Collapse button (logo acts as toggle)
+            // Collapse button
             Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { expanded = false }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { expanded = false }
+                showModePicker = false
             } label: {
                 WaveformLogo()
+                    .padding(.vertical, 2)
             }
             .buttonStyle(.plain)
 
-            Divider().frame(height: 14)
+            Divider().frame(height: 16).opacity(0.4)
 
             // LEFT: dot + source + record
             HStack(spacing: 6) {
                 Circle()
-                    .fill(Color.red)
+                    .fill(vm.isInterviewSession ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
-                    .opacity(vm.isRecording ? (dotVisible ? 1 : 0) : 0)
+                    .opacity((vm.isRecording || vm.isInterviewSession) ? (dotVisible ? 1 : 0) : 0)
 
                 // Source tabs
                 HStack(spacing: 0) {
@@ -145,16 +224,34 @@ struct OverlayView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2), lineWidth: 0.5))
                 .opacity(vm.isRecording ? 0.5 : 1)
 
-                Button(action: { vm.toggleRecording() }) {
-                    Text(vm.isRecording ? "Stop" : "Record")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(vm.isRecording ? .white : .primary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(vm.isRecording ? Color.red : Color.secondary.opacity(0.15))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                if vm.sessionMode == .interview {
+                    // Interview: continuous real-time session button
+                    Button(action: {
+                        if vm.isInterviewSession { vm.stopInterviewSession() }
+                        else { vm.startInterviewSession() }
+                    }) {
+                        Text(vm.isInterviewSession ? "Stop" : "Start")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(vm.isInterviewSession ? Color.red : Color.green)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    // Other modes: one-shot record button
+                    Button(action: { vm.toggleRecording() }) {
+                        Text(vm.isRecording ? "Stop" : "Record")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(vm.isRecording ? .white : .primary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(vm.isRecording ? Color.red : Color.secondary.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
 
             Spacer()
@@ -204,42 +301,25 @@ struct OverlayView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
 
-                Divider().frame(height: 14)
+                Divider().frame(height: 16).opacity(0.4)
 
                 // Calendar
                 barIcon("calendar", active: vm.showCalendarPanel) { vm.showCalendarPanel.toggle() }
                     .help("Calendar")
 
-                // Embedded browser
-                Menu {
-                    Button {
-                        vm.webURL = vm.webURL?.absoluteString == "https://claude.ai" ? nil : URL(string: "https://claude.ai")
-                    } label: {
-                        Label("Claude", systemImage: "sparkles")
-                    }
-                    Button {
-                        vm.webURL = vm.webURL?.absoluteString == "https://chatgpt.com" ? nil : URL(string: "https://chatgpt.com")
-                    } label: {
-                        Label("ChatGPT", systemImage: "bubble.left.fill")
-                    }
-                    if vm.webURL != nil {
-                        Divider()
-                        Button("Close") { vm.webURL = nil }
-                    }
-                } label: {
-                    Image(systemName: "globe")
-                        .font(.system(size: 12))
-                        .foregroundColor(vm.webURL != nil ? .primary : .primary.opacity(0.7))
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Open AI site in overlay")
+                // Browser
+                barIcon("globe", active: vm.hasBrowser) { vm.toggleBrowser() }
+                    .help("Browser")
 
                 // Notes
                 barIcon("note.text", active: vm.showNotesPanel) { vm.showNotesPanel.toggle() }
-                    .help("Session notes")
+                    .help("Notes")
 
-                // Manual input
+                // Resume
+                barIcon("doc.badge.plus", active: vm.showResumeBuilder) { vm.showResumeBuilder.toggle() }
+                    .help("Resume builder")
+
+                // Keyboard input
                 barIcon("keyboard", active: vm.showManualInput) { vm.showManualInput.toggle() }
                     .help("Type a message")
 
@@ -247,13 +327,35 @@ struct OverlayView: View {
                 barIcon("camera.fill", active: vm.pendingScreenshot != nil) {
                     NotificationCenter.default.post(name: .captureScreenshot, object: nil)
                 }
-                .help("Attach screenshot (Ctrl+Opt+S)")
+                .help("Screenshot (Ctrl+Opt+S)")
+
+                Divider().frame(height: 16).opacity(0.4)
+
+                // Peer control indicator (shown when server is running)
+                if vm.peerServer.isRunning {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(vm.peerServer.connectedPeers > 0 ? .green : .secondary)
+                        if vm.peerServer.connectedPeers > 0 {
+                            Text("\(vm.peerServer.connectedPeers)")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(2)
+                                .background(Color.green)
+                                .clipShape(Circle())
+                                .offset(x: 5, y: -5)
+                        }
+                    }
+                    .frame(width: 22)
+                    .help("Peer control: \(vm.peerServer.connectedPeers) connected")
+                }
 
                 // Send
                 Button { vm.sendToAI() } label: {
                     Image(systemName: "paperplane.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(vm.canSend ? .primary : .primary.opacity(0.25))
+                        .font(.system(size: 13))
+                        .foregroundColor(vm.canSend ? .primary : .primary.opacity(0.2))
                 }
                 .buttonStyle(.plain)
                 .disabled(!vm.canSend)
@@ -262,8 +364,8 @@ struct OverlayView: View {
                 // Settings
                 Button { showSettingsPopover.toggle() } label: {
                     Image(systemName: "gear")
-                        .font(.system(size: 12))
-                        .foregroundColor(vm.needsKeyForCurrentModel ? .orange : .primary)
+                        .font(.system(size: 13))
+                        .foregroundColor(vm.needsKeyForCurrentModel ? .orange : .secondary)
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showSettingsPopover, arrowEdge: .bottom) {
@@ -290,46 +392,132 @@ struct OverlayView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(vm.sessionMode.quickActions) { action in
-                    Button(action.label) {
+                    Button {
                         vm.selectQuickAction(action)
+                    } label: {
+                        Text(action.label)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.8))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.primary.opacity(0.08))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.primary.opacity(0.1), lineWidth: 0.5))
+                            .contentShape(Capsule())
                     }
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.12))
-                    .clipShape(Capsule())
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 7)
+            .padding(.vertical, 8)
         }
+    }
+
+    // MARK: - Status / error row
+
+    private var statusRow: some View {
+        let isError = vm.statusMessage.hasPrefix("Error") || vm.statusMessage.hasPrefix("Screen Recording")
+        return HStack(spacing: 6) {
+            Image(systemName: isError ? "exclamationmark.triangle.fill" : "info.circle")
+                .font(.system(size: 11))
+                .foregroundColor(isError ? .orange : .secondary)
+            Text(vm.statusMessage)
+                .font(.system(size: 11))
+                .foregroundColor(isError ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button { vm.statusMessage = "" } label: {
+                Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Transcription row
 
     private var transcriptionRow: some View {
-        HStack(alignment: .top, spacing: 8) {
-            ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
                 Text(vm.transcription.isEmpty ? "Listening…" : vm.transcription)
                     .font(.system(size: 12))
                     .foregroundStyle(vm.transcription.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-            }
-            .frame(maxHeight: 80)
+                    .animation(.easeInOut(duration: 0.15), value: vm.transcription)
 
-            if !vm.transcription.isEmpty {
-                Button { vm.transcription = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.caption).foregroundColor(.secondary)
+                if !vm.transcription.isEmpty {
+                    Button { vm.transcription = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, vm.transcription.isEmpty ? 10 : 6)
+
+            // Character count hint when transcript is long
+            if vm.transcription.count > 120 {
+                Text("\(vm.transcription.count) chars")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.5))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+            }
+        }
+    }
+
+    // MARK: - Peer message (staged, awaiting local user approval)
+
+    private var peerMessageRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "person.wave.2.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(.purple.opacity(0.8))
+                Text("Peer wants to ask:")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.purple.opacity(0.8))
+                Spacer()
+                Button { vm.peerMessage = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            Text(vm.peerMessage)
+                .font(.system(size: 12))
+                .foregroundColor(.primary)
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            HStack(spacing: 8) {
+                Spacer()
+                Button {
+                    vm.sendPeerMessageToAI()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "paperplane.fill").font(.system(size: 10))
+                        Text("Send to AI")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.purple.opacity(0.75))
+                    .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
+        .animation(.easeInOut(duration: 0.15), value: vm.peerMessage)
     }
 
     // MARK: - Manual input
@@ -347,6 +535,10 @@ struct OverlayView: View {
             }
             .buttonStyle(.plain)
             .disabled(vm.manualInput.isEmpty)
+            Button { vm.showManualInput = false; vm.manualInput = "" } label: {
+                Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -376,25 +568,52 @@ struct OverlayView: View {
 
     private var responseArea: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Title bar with close button
+            HStack {
+                Text("Response")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if !vm.aiResponse.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(vm.aiResponse, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy response")
+                }
+                Button { vm.aiResponse = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
             ScrollView {
                 if vm.isSendingToAI {
-                    HStack(spacing: 6) {
-                        ProgressView().scaleEffect(0.7)
-                        Text("Thinking…").font(.system(size: 12)).foregroundColor(.secondary)
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.75)
+                        Text("Thinking…")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(12)
                 } else {
-                    Text(vm.aiResponse)
-                        .font(.system(size: 12))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .textSelection(.enabled)
+                    MarkdownResponseView(text: vm.aiResponse)
+                        .padding(12)
+                        .transition(.opacity)
                 }
             }
-            .frame(maxHeight: 200)
+            .frame(maxHeight: 300)
+            .animation(.easeInOut(duration: 0.2), value: vm.isSendingToAI)
         }
     }
+
 
     // MARK: - Calendar panel
 
@@ -419,6 +638,10 @@ struct OverlayView: View {
                     .buttonStyle(.plain)
                     .foregroundColor(.secondary)
                 }
+                Button { vm.showCalendarPanel = false } label: {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
@@ -468,6 +691,10 @@ struct OverlayView: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                 }
+                Button { vm.showNotesPanel = false } label: {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
             }
             .padding(.horizontal, 12)
             .padding(.top, 10)
@@ -498,11 +725,109 @@ struct OverlayView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
 
+                // ── Peer Control ──────────────────────────────────────────
+                Text("Peer Control").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+
+                Toggle(isOn: $vm.peerControlEnabled) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Allow peer access")
+                            .font(.caption)
+                        Text("Lets a trusted colleague view your overlay and send messages to the AI")
+                            .font(.caption2).foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
+                if vm.peerServer.isRunning {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(vm.peerServer.connectedPeers > 0 ? Color.green : Color.secondary)
+                                .frame(width: 6, height: 6)
+                            Text(vm.peerServer.connectedPeers > 0
+                                 ? "\(vm.peerServer.connectedPeers) peer\(vm.peerServer.connectedPeers == 1 ? "" : "s") connected"
+                                 : "No peers connected — share the link below")
+                                .font(.caption2)
+                                .foregroundColor(vm.peerServer.connectedPeers > 0 ? .green : .secondary)
+                        }
+
+                        // Connection URL row
+                        HStack(spacing: 6) {
+                            Text(vm.peerServer.connectionURL)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(.primary.opacity(0.7))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                            Spacer(minLength: 4)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(vm.peerServer.connectionURL, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy link")
+                        }
+                        .padding(8)
+                        .background(Color.secondary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                        Text("Access code: \(vm.peerServer.accessCode)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Divider()
+
                 // User profile
                 Text("Profile").font(.caption.weight(.semibold)).foregroundColor(.secondary)
                 profileField("Name", placeholder: "Your name",  text: $vm.userProfile.name)
                 profileField("Role", placeholder: "Your role",  text: $vm.userProfile.currentRole)
                 profileField("Company", placeholder: "Company", text: $vm.userProfile.company)
+
+                Divider()
+
+                // Recording
+                Text("Recording").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                Toggle(isOn: $vm.vadEnabled) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Auto-send on silence")
+                            .font(.caption)
+                        Text("Sends after ~2s of silence while recording")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+
+                Divider()
+
+                // Custom system prompt
+                HStack {
+                    Text("System Prompt").font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                    Spacer()
+                    if !vm.customSystemPrompt.isEmpty {
+                        Button("Reset") { vm.customSystemPrompt = "" }
+                            .font(.caption2).foregroundColor(.orange)
+                            .buttonStyle(.plain)
+                    }
+                }
+                Text("Overrides the mode's default prompt. Leave empty to use the \(vm.sessionMode.displayName) default.")
+                    .font(.caption2).foregroundColor(.secondary)
+                TextEditor(text: $vm.customSystemPrompt)
+                    .font(.system(size: 11))
+                    .frame(height: 80)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
 
                 Divider()
 
@@ -518,6 +843,7 @@ struct OverlayView: View {
                 Text("API Keys").font(.caption.weight(.semibold)).foregroundColor(.secondary)
                 keyField(label: "Anthropic", placeholder: "sk-ant-api…", text: $vm.apiKey)
                 keyField(label: "OpenAI",    placeholder: "sk-…",         text: $vm.openAIApiKey)
+                keyField(label: "ElevenLabs", placeholder: "sk_…",         text: $vm.elevenLabsAPIKey)
 
                 Divider()
 
@@ -526,7 +852,10 @@ struct OverlayView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     shortcutRow("Ctrl+Opt+↑↓←→",  "Move")
                     shortcutRow("Ctrl+Shift+↑↓←→", "Resize")
+                    shortcutRow("Ctrl+Opt+T",       "Toggle record + send")
+                    shortcutRow("Ctrl+Opt+Y",       "Toggle record + send")
                     shortcutRow("Ctrl+Opt+S",       "Screenshot → AI")
+                    shortcutRow("Ctrl+Opt+A",       "Send selected text to AI")
                     shortcutRow("Ctrl+Opt+C",       "Explain clipboard")
                     shortcutRow("Ctrl+Opt+Space",   "Toggle overlay")
                 }
@@ -558,12 +887,7 @@ struct OverlayView: View {
     }
 
     private func keyField(label: String, placeholder: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption.weight(.medium)).foregroundColor(.secondary)
-            SecureField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11, design: .monospaced))
-        }
+        KeyFieldView(label: label, placeholder: placeholder, text: text)
     }
 
     private func shortcutRow(_ key: String, _ desc: String) -> some View {
@@ -658,54 +982,254 @@ struct NoteEntryRow: View {
     }
 }
 
-// MARK: - Web panel
+// MARK: - Key field with show/hide toggle
 
-extension OverlayView {
-    func webPanel(url: URL) -> some View {
-        VStack(spacing: 0) {
-            // Toolbar
-            HStack(spacing: 8) {
-                // Site label
-                HStack(spacing: 4) {
-                    Image(systemName: url.host?.contains("claude") == true ? "sparkles" : "bubble.left.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Text(url.host ?? url.absoluteString)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                // Swap site
-                Button {
-                    if url.host?.contains("claude") == true {
-                        vm.webURL = URL(string: "https://chatgpt.com")
-                    } else {
-                        vm.webURL = URL(string: "https://claude.ai")
-                    }
-                } label: {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Switch site")
+struct KeyFieldView: View {
+    let label: String
+    let placeholder: String
+    @Binding var text: String
+    @State private var visible = false
 
-                // Close
-                Button { vm.webURL = nil } label: {
-                    Image(systemName: "xmark.circle.fill")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption.weight(.medium)).foregroundColor(.secondary)
+            HStack(spacing: 4) {
+                if visible {
+                    TextField(placeholder, text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                } else {
+                    SecureField(placeholder, text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                }
+                Button { visible.toggle() } label: {
+                    Image(systemName: visible ? "eye.slash" : "eye")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help(visible ? "Hide" : "Show (enables paste)")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+        }
+    }
+}
+
+// MARK: - Browser panel (tabs + split)
+
+struct BrowserPanelView: View {
+    @EnvironmentObject var vm: OverlayViewModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            tabBar
+            Divider()
+            splitContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: Tab bar
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(vm.browserTabs) { tab in
+                        BrowserTabItemView(tab: tab)
+                            .environmentObject(vm)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+            }
+
+            Divider().frame(height: 16)
+
+            // New tab
+            Button { vm.addTab() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("New tab (Google)")
+
+            Divider().frame(height: 16)
+
+            // Layout switcher
+            HStack(spacing: 1) {
+                layoutBtn(1, "rectangle")
+                layoutBtn(2, "rectangle.split.2x1")
+                layoutBtn(3, "rectangle.split.3x1")
+            }
+            .padding(.horizontal, 6)
+        }
+        .background(Color.secondary.opacity(0.08))
+    }
+
+    private func layoutBtn(_ n: Int, _ icon: String) -> some View {
+        Button {
+            vm.splitCount = n
+            while vm.browserTabs.count < n { vm.addTab() }
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .foregroundColor(vm.splitCount == n ? .primary : .secondary.opacity(0.5))
+                .frame(width: 24, height: 24)
+        }
+        .buttonStyle(.plain)
+        .help(n == 1 ? "Single" : "Split \(n)")
+    }
+
+    // MARK: Split content
+
+    @ViewBuilder
+    private var splitContent: some View {
+        let indices = displayIndices
+        if indices.isEmpty {
+            Color.clear.frame(height: 0)
+        } else if indices.count == 1 {
+            BrowserTabContentView(tab: $vm.browserTabs[indices[0]])
+                .environmentObject(vm)
+                .id(vm.browserTabs[indices[0]].id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            HSplitView {
+                ForEach(indices, id: \.self) { idx in
+                    BrowserTabContentView(tab: $vm.browserTabs[idx])
+                        .environmentObject(vm)
+                        .id(vm.browserTabs[idx].id)
+                        .frame(minWidth: 160, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var displayIndices: [Int] {
+        let count = min(vm.splitCount, vm.browserTabs.count)
+        guard count > 0 else { return [] }
+        let activeIdx = vm.browserTabs.firstIndex(where: { $0.id == vm.activeTabID }) ?? 0
+        let start = max(0, min(activeIdx, vm.browserTabs.count - count))
+        return Array(start..<(start + count))
+    }
+}
+
+// MARK: - Tab strip item
+
+struct BrowserTabItemView: View {
+    @EnvironmentObject var vm: OverlayViewModel
+    let tab: BrowserTab
+
+    private var isActive: Bool { vm.activeTabID == tab.id }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(tab.title.isEmpty ? (tab.url.host ?? "Tab") : tab.title)
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .frame(maxWidth: 90, alignment: .leading)
+
+            Button { vm.closeTab(id: tab.id) } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(isActive ? Color.secondary.opacity(0.2) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .contentShape(Rectangle())
+        .onTapGesture { vm.activeTabID = tab.id }
+    }
+}
+
+// MARK: - Individual tab content (URL bar + WebView)
+
+struct BrowserTabContentView: View {
+    @EnvironmentObject var vm: OverlayViewModel
+    @Binding var tab: BrowserTab
+    @State private var urlInput: String
+    @StateObject private var webState = WebViewState()
+
+    init(tab: Binding<BrowserTab>) {
+        self._tab = tab
+        _urlInput = State(initialValue: tab.wrappedValue.url.absoluteString)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack(spacing: 5) {
+                Button { webState.goBack() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(webState.canGoBack ? .primary : .primary.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .disabled(!webState.canGoBack)
+
+                Button { webState.goForward() } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(webState.canGoForward ? .primary : .primary.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .disabled(!webState.canGoForward)
+
+                Image(systemName: toolbarIcon)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+
+                TextField("URL", text: $urlInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(.primary)
+                    .onSubmit { navigate() }
+
+                Button { navigate() } label: {
+                    Image(systemName: "return")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Color.secondary.opacity(0.06))
 
             Divider()
 
-            WebPanelView(url: url)
-                .frame(height: 420)
+            WebPanelView(url: tab.url, tabID: tab.id, state: webState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: tab.url) { newURL in
+            urlInput = newURL.absoluteString
+        }
+        .onChange(of: webState.currentURL) { newURL in
+            if !newURL.isEmpty { urlInput = newURL }
+        }
+        .onChange(of: webState.title) { newTitle in
+            if !newTitle.isEmpty { tab.title = newTitle }
+        }
+    }
+
+    private var toolbarIcon: String {
+        if urlInput.contains("claude")  { return "sparkles" }
+        if urlInput.contains("chatgpt") { return "bubble.left.fill" }
+        if urlInput.contains("google")  { return "magnifyingglass" }
+        return "globe"
+    }
+
+    private func navigate() {
+        var raw = urlInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !raw.contains("://") { raw = "https://" + raw }
+        if let url = URL(string: raw) { tab.url = url }
     }
 }
 
@@ -722,17 +1246,25 @@ struct WaveformLogo: View {
     private let minH:     CGFloat = 4
     private let idleHeights: [CGFloat] = [5, 10, 16, 10, 5]
 
+    private var isActive: Bool { vm.isRecording || vm.isQuickAsking || vm.isDictating }
+
+    private var barColor: Color {
+        if vm.isDictating  { return .orange }
+        if vm.isQuickAsking { return .red }
+        return Color.primary.opacity(0.8)
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: spacing) {
             ForEach(0..<barCount, id: \.self) { i in
-                let h = vm.isRecording
+                let h = isActive
                     ? minH + (maxH - minH) * abs(sin(phases[i] * .pi))
                     : idleHeights[i]
                 RoundedRectangle(cornerRadius: barWidth / 2)
-                    .fill(Color.primary.opacity(0.8))
+                    .fill(barColor)
                     .frame(width: barWidth, height: h)
                     .animation(
-                        vm.isRecording
+                        isActive
                             ? .easeInOut(duration: 0.4 + Double(i) * 0.07).repeatForever(autoreverses: true)
                             : .easeInOut(duration: 0.3),
                         value: h
@@ -741,7 +1273,7 @@ struct WaveformLogo: View {
         }
         .frame(height: maxH)
         .onReceive(Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()) { _ in
-            guard vm.isRecording else { return }
+            guard isActive else { return }
             for i in 0..<barCount {
                 phases[i] = (phases[i] + CGFloat.random(in: 0.1...0.3)).truncatingRemainder(dividingBy: 2)
             }
@@ -749,6 +1281,701 @@ struct WaveformLogo: View {
     }
 }
 
+// MARK: - Markdown response renderer
+
+struct MarkdownResponseView: View {
+    let text: String
+
+    // Parsed block types
+    private enum Block {
+        case code(lang: String, body: String)
+        case heading(level: Int, text: String)
+        case bullet(String)
+        case plain(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(parse().enumerated()), id: \.offset) { _, block in
+                renderBlock(block)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Parser
+
+    private func parse() -> [Block] {
+        var result: [Block] = []
+        let lines = text.components(separatedBy: "\n")
+        var i = 0
+        var textBuf: [String] = []
+
+        func flush() {
+            let joined = textBuf.joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !joined.isEmpty { result.append(.plain(joined)) }
+            textBuf = []
+        }
+
+        while i < lines.count {
+            let raw  = lines[i]
+            let trim = raw.trimmingCharacters(in: .whitespaces)
+
+            if trim.hasPrefix("```") {
+                flush()
+                let lang = String(trim.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                var code: [String] = []
+                i += 1
+                while i < lines.count {
+                    if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") { break }
+                    code.append(lines[i])
+                    i += 1
+                }
+                result.append(.code(lang: lang, body: code.joined(separator: "\n")))
+            } else if trim.hasPrefix("### ") {
+                flush(); result.append(.heading(level: 3, text: String(trim.dropFirst(4))))
+            } else if trim.hasPrefix("## ") {
+                flush(); result.append(.heading(level: 2, text: String(trim.dropFirst(3))))
+            } else if trim.hasPrefix("# ") {
+                flush(); result.append(.heading(level: 1, text: String(trim.dropFirst(2))))
+            } else if trim.hasPrefix("- ") || trim.hasPrefix("* ") || trim.hasPrefix("+ ") {
+                flush(); result.append(.bullet(String(trim.dropFirst(2))))
+            } else if let r = trim.range(of: #"^\d+\. "#, options: .regularExpression) {
+                flush(); result.append(.bullet(String(trim[r.upperBound...])))
+            } else if trim.isEmpty {
+                flush()
+            } else {
+                textBuf.append(raw)
+            }
+            i += 1
+        }
+        flush()
+        return result
+    }
+
+    // MARK: Renderers
+
+    @ViewBuilder
+    private func renderBlock(_ block: Block) -> some View {
+        switch block {
+        case .code(let lang, let body):
+            VStack(alignment: .leading, spacing: 0) {
+                if !lang.isEmpty {
+                    Text(lang)
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 5)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(body)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .textSelection(.enabled)
+                }
+            }
+            .background(Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 0.5))
+
+        case .heading(let level, let text):
+            inlineText(text)
+                .font(.system(size: level == 1 ? 14 : level == 2 ? 13 : 12, weight: .semibold))
+
+        case .bullet(let text):
+            HStack(alignment: .top, spacing: 5) {
+                Text("•")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .frame(width: 10, alignment: .center)
+                inlineText(text)
+                    .font(.system(size: 12))
+            }
+
+        case .plain(let text):
+            inlineText(text)
+                .font(.system(size: 12))
+        }
+    }
+
+    @ViewBuilder
+    private func inlineText(_ string: String) -> some View {
+        if let attr = try? AttributedString(markdown: string) {
+            Text(attr).textSelection(.enabled)
+        } else {
+            Text(string).textSelection(.enabled)
+        }
+    }
+}
+
+// MARK: - Resume builder panel
+
+extension OverlayView {
+
+    // Small floating pill shown in icon/collapsed mode
+    var resumeFloatingPill: some View {
+        VStack(alignment: .leading, spacing: 0) {
+
+            // ── Score row ──────────────────────────────────────────────
+            if vm.isScoringResume {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.65)
+                    Text("Scoring resume…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            } else if let sc = vm.resumeScore {
+                scoreRow(sc)
+            }
+
+            // ── Divider between score and file ─────────────────────────
+            if (vm.resumeScore != nil || vm.isScoringResume) &&
+               (vm.resumeFileURL != nil || vm.isGeneratingResume) {
+                Divider()
+            }
+
+            // ── File / generating row ──────────────────────────────────
+            if vm.isGeneratingResume {
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.65)
+                    Text("Generating resume…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            } else if let url = vm.resumeFileURL {
+                fileRow(url)
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .opacity(vm.backgroundOpacity)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
+    }
+
+    @ViewBuilder
+    private func scoreRow(_ sc: ResumeScore) -> some View {
+        let scoreColor: Color = sc.score >= 80 ? .green : sc.score >= 60 ? .yellow : .red
+        HStack(spacing: 10) {
+            // Score ring
+            ZStack {
+                Circle()
+                    .stroke(scoreColor.opacity(0.2), lineWidth: 3)
+                    .frame(width: 36, height: 36)
+                Circle()
+                    .trim(from: 0, to: CGFloat(sc.score) / 100)
+                    .stroke(scoreColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .frame(width: 36, height: 36)
+                    .rotationEffect(.degrees(-90))
+                Text("\(sc.score)")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(scoreColor)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(sc.verdict)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(2)
+                Text(sc.recommendation)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button { vm.resumeScore = nil } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        // Missing keywords chips
+        if !sc.missing.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    Text("Missing:")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    ForEach(sc.missing, id: \.self) { kw in
+                        Text(kw)
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.1))
+                            .foregroundColor(.red)
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileRow(_ url: URL) -> some View {
+        HStack(spacing: 0) {
+            ZStack {
+                FileDragView(fileURL: url)
+                HStack(spacing: 8) {
+                    Image(systemName: "doc.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(url.lastPathComponent)
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+                        Text("Drag to upload")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .padding(.leading, 12)
+            .padding(.vertical, 8)
+
+            Spacer()
+            Divider().frame(height: 24)
+
+            Button { ResumePreviewHelper.shared.show(url: url) } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 12))
+                    .foregroundColor(.primary.opacity(0.7))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.plain)
+            .help("Preview")
+
+            Button { vm.resumeFileURL = nil; vm.resumeOutput = "" } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28, height: 34)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.trailing, 4)
+    }
+
+    var resumePanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack {
+                Label("Resume Builder", systemImage: "doc.badge.plus")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button { vm.showResumeBuilder = false } label: {
+                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            // ── Your resume (saved once, reused forever) ──────────────
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Your Resume")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    if !vm.resumeBase.isEmpty {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.green)
+                    }
+                    Spacer()
+                    Text("Saved — reused for every JD")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.7))
+                }
+                .padding(.horizontal, 12)
+                inputSection(placeholder: "Paste your resume here once — it will be saved and reused for all future job descriptions",
+                             text: $vm.resumeBase, height: vm.resumeBase.isEmpty ? 80 : 44)
+            }
+
+            // ── Job description (per-generation) ─────────────────────
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text("Job Description")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("Ctrl+Opt+R — paste clipboard JD & generate")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                .padding(.horizontal, 12)
+                inputSection(placeholder: "Paste job description here, or copy it and press Ctrl+Opt+R from anywhere",
+                             text: $vm.resumeJD, height: 80)
+            }
+            .padding(.top, 4)
+
+            // Generate button
+            HStack {
+                Spacer()
+                Button { vm.generateResume() } label: {
+                    HStack(spacing: 6) {
+                        if vm.isGeneratingResume { ProgressView().scaleEffect(0.65) }
+                        Text(vm.isGeneratingResume ? "Generating…" : "Generate Resume")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+                    .background(
+                        (vm.resumeJD.isEmpty || vm.resumeBase.isEmpty || vm.isGeneratingResume || vm.apiKey.isEmpty)
+                            ? Color.secondary : Color.accentColor
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.resumeJD.isEmpty || vm.resumeBase.isEmpty || vm.isGeneratingResume || vm.apiKey.isEmpty)
+                Spacer()
+            }
+            .padding(.vertical, 8)
+
+            // Score section
+            if vm.isScoringResume || vm.resumeScore != nil {
+                Divider()
+                if vm.isScoringResume {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.65)
+                        Text("Scoring…").font(.system(size: 11)).foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                } else if let sc = vm.resumeScore {
+                    scoreRow(sc)
+                }
+            }
+
+            // Output section
+            if !vm.resumeOutput.isEmpty || vm.isGeneratingResume {
+                Divider()
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text("Generated Resume")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        if !vm.resumeOutput.isEmpty {
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(vm.resumeOutput, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Copy")
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+
+                    if vm.isGeneratingResume && vm.resumeOutput.isEmpty {
+                        HStack(spacing: 6) {
+                            ProgressView().scaleEffect(0.7)
+                            Text("Generating…").font(.system(size: 12)).foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                    } else {
+                        ScrollView {
+                            Text(vm.resumeOutput)
+                                .font(.system(size: 11, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(10)
+                        }
+                        .frame(minHeight: 100, maxHeight: 200)
+
+                        // Draggable file badge — NSView drag source prevents window
+                        // movement from stealing the gesture (isMovableByWindowBackground)
+                        if let url = vm.resumeFileURL {
+                            ZStack {
+                                // NSView layer: owns the drag, blocks window movement
+                                FileDragView(fileURL: url)
+                                // Visual layer: non-interactive so events pass to NSView
+                                HStack(spacing: 10) {
+                                    Image(systemName: "doc.fill")
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.accentColor)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(url.lastPathComponent)
+                                            .font(.system(size: 11, weight: .medium))
+                                            .lineLimit(1)
+                                        Text("Drag into browser to upload")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "cursorarrow.and.square.on.square.dashed")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                            }
+                            .background(Color.accentColor.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.accentColor.opacity(0.2), lineWidth: 0.5)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 10)
+
+                            // Preview button
+                            Button {
+                                ResumePreviewHelper.shared.show(url: url)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "eye")
+                                        .font(.system(size: 11))
+                                    Text("Preview")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                                .foregroundColor(.accentColor)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                                .background(Color.accentColor.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 10)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func inputSection(placeholder: String, text: Binding<String>, height: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary.opacity(0.5))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
+            TextEditor(text: text)
+                .font(.system(size: 11))
+                .frame(height: height)
+                .scrollContentBackground(.hidden)
+        }
+        .padding(4)
+        .background(Color.secondary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 10)
+    }
+}
+
+// MARK: - File drag view (NSView-based so window movement doesn't steal the drag)
+
+struct FileDragView: NSViewRepresentable {
+    let fileURL: URL
+    func makeNSView(context: Context) -> FileDragNSView { FileDragNSView() }
+    func updateNSView(_ nsView: FileDragNSView, context: Context) { nsView.fileURL = fileURL }
+}
+
+class FileDragNSView: NSView, NSDraggingSource {
+    var fileURL: URL?
+
+    // Critical: prevents isMovableByWindowBackground from claiming this drag
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return .copy
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let url = fileURL else { return }
+        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+        // Show the file's real Finder icon as the drag image
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        item.setDraggingFrame(CGRect(x: 0, y: 0, width: 40, height: 40), contents: icon)
+        beginDraggingSession(with: [item], event: event, source: self)
+    }
+}
+
+// MARK: - Quick Look preview helper
+
+final class ResumePreviewHelper: NSObject, QLPreviewPanelDataSource {
+    static let shared = ResumePreviewHelper()
+    private var previewURL: URL?
+
+    func show(url: URL) {
+        previewURL = url
+        let panel = QLPreviewPanel.shared()!
+        panel.dataSource = self
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { previewURL != nil ? 1 : 0 }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        previewURL as NSURL?
+    }
+}
+
 extension Notification.Name {
     static let captureScreenshot = Notification.Name("captureScreenshot")
 }
+
+// MARK: - Mode picker
+
+extension OverlayView {
+
+    private func modeColor(_ mode: SessionMode) -> Color {
+        switch mode {
+        case .general:   return .purple
+        case .interview: return .green
+        case .meeting:   return .blue
+        case .call:      return .orange
+        }
+    }
+
+    var modePicker: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(SessionMode.allCases, id: \.self) { mode in
+                    let selected = vm.sessionMode == mode
+                    Button {
+                        vm.sessionMode = mode
+                        if mode == .interview { vm.startInterviewSession() }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                            showModePicker = false
+                            expanded       = true
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: mode.icon)
+                                .font(.system(size: 11, weight: .medium))
+                            Text(mode.displayName)
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(selected ? .white : .primary)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .background(
+                            selected
+                                ? modeColor(mode)
+                                : Color.primary.opacity(0.08)
+                        )
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.1))
+                    .frame(width: 1, height: 20)
+                    .padding(.horizontal, 2)
+
+                Button {
+                    vm.toggleQuickAsk()
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) { showModePicker = false }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Quick Ask")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(vm.isQuickAsking ? .white : .primary)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 8)
+                    .background(vm.isQuickAsking ? Color.red : Color.primary.opacity(0.08))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.ultraThinMaterial)
+                .opacity(vm.backgroundOpacity)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
+    }
+}
+
+// MARK: - Quick ask floating pill
+
+extension OverlayView {
+
+    var quickAskFloatingPill: some View {
+        VStack(alignment: .leading, spacing: 0) {
+
+            if vm.isQuickAskSending {
+                // ── Thinking state ────────────────────────────────────────
+                HStack(spacing: 8) {
+                    ProgressView().scaleEffect(0.65)
+                    Text("Thinking…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+
+            } else if !vm.quickAskResponse.isEmpty {
+                // ── Response state ────────────────────────────────────────
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 11))
+                        .foregroundColor(.accentColor)
+                        .padding(.top, 1)
+                    ScrollView {
+                        MarkdownResponseView(text: vm.quickAskResponse)
+                            .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 260)
+                    Button { vm.dismissQuickAsk() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.ultraThinMaterial)
+                .opacity(vm.backgroundOpacity)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
+        .frame(maxWidth: 420)
+    }
+}
+

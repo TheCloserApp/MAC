@@ -1,6 +1,17 @@
 import Cocoa
 import SwiftUI
 import Combine
+import ScreenCaptureKit
+
+// Always shows the arrow cursor over the overlay, even over text fields.
+// Prevents the I-beam cursor from appearing during screen share (the overlay is hidden
+// from capture but the cursor shape is still visible to the interviewer).
+final class OverlayHostingView: NSHostingView<AnyView> {
+    override func resetCursorRects() {
+        // Do NOT call super — that would let SwiftUI register I-beam rects for text fields.
+        addCursorRect(bounds, cursor: .arrow)
+    }
+}
 
 // Subclass removes macOS constraint that blocks windows from moving above the menu bar,
 // and allows becoming key so text fields work inside a nonactivatingPanel.
@@ -17,10 +28,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var vm: OverlayViewModel!
 
-    private var globalKeyMonitor: Any?
     private var localKeyMonitor: Any?
-    private var eventTap: CFMachPort?
+    private var optionKeyMonitor: Any?
+    private var localFlagsMonitor: Any?
+    private var fnKeyDown        = false   // tracks Fn/Globe key for quick-ask push-to-talk
+    private var dictationKeyDown = false   // tracks Option key for dictation push-to-talk
+    private var dictationManager: DictationManager?
     private var opacityObserver: AnyCancellable?
+    private var lastFrontAppPID: pid_t = 0
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
 
@@ -30,7 +45,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupOverlayPanel()
         setupStatusItem()
         setupKeyboardShortcuts()
-        requestAccessibilityIfNeeded()
 
         // Keep panel alpha in sync with vm.opacity (vm publishes on MainActor already)
         opacityObserver = vm.$opacity
@@ -46,13 +60,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Hide all app windows (menus, popovers, panels) from screen capture
-        NotificationCenter.default.addObserver(
+        // Pre-warm Screen Recording permission so the dialog appears at launch,
+        // not mid-session when the user first tries to record system audio.
+        Task {
+            _ = try? await SCShareableContent.current
+        }
+
+        // Request Accessibility permission once at launch (needed for Option dictation).
+        // Shows the system dialog only if not already granted.
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+
+        // Track which app was frontmost before any hotkey fires
+        NSWorkspace.shared.notificationCenter.addObserver(
             self,
-            selector: #selector(applyScreenShareProtectionToAllWindows),
-            name: NSNotification.Name("NSWindowWillOrderOnScreenNotification"),
+            selector: #selector(frontAppChanged),
+            name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+
+        // ── Screen-share / screenshot protection ──────────────────────────────
+        // Notifications and timers are async — a screen-sharing tool can capture
+        // a menu window in the gap before they fire.  Swizzling NSWindow's three
+        // "order on screen" methods is the only synchronous hook that runs in the
+        // SAME call-stack as the window appearing, before any capture frame occurs.
+        NSWindow.installScreenShareProtection()
     }
 
     // MARK: - Overlay Panel
@@ -85,32 +117,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.minSize                    = NSSize(width: 420, height: 44)
         overlayPanel.alphaValue                 = 1.0  // synced via opacityObserver after setup
 
-        let hosting = NSHostingView(rootView: OverlayView().environmentObject(vm))
+        let hosting = OverlayHostingView(rootView: AnyView(OverlayView().environmentObject(vm)))
         // Disable intrinsic-size constraints so the panel controls its own size
         hosting.sizingOptions = []
         overlayPanel.contentView = hosting
         overlayPanel.orderFrontRegardless()
-    }
-
-    // MARK: - Accessibility permission
-
-    private func requestAccessibilityIfNeeded() {
-        if !AXIsProcessTrusted() {
-            let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-            AXIsProcessTrustedWithOptions(opts as CFDictionary)
-        }
-        // Re-try tap setup whenever the app becomes active (e.g. after user grants permission)
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(retryEventTapIfNeeded),
-            name: NSWorkspace.didActivateApplicationNotification,
-            object: nil
-        )
-    }
-
-    @objc private func retryEventTapIfNeeded() {
-        guard eventTap == nil, AXIsProcessTrusted() else { return }
-        setupEventTap()
     }
 
     // MARK: - Status Bar
@@ -131,71 +142,165 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Keyboard Shortcuts
-    //
-    //  Ctrl+Option+↑↓←→   → move
-    //  Ctrl+Shift+↑↓←→    → resize
-    //  Ctrl+Option+S       → screenshot
 
     func setupKeyboardShortcuts() {
-        // Local monitor: always works when our panel is key
+        // Carbon RegisterEventHotKey: global, no Accessibility needed, never auto-disabled
+        HotkeyManager.shared.onAction = { [weak self] action, isPressed in
+            guard let self else { return }
+            // Most actions only fire on press; pushToTalk uses both press and release
+            switch action {
+            case .moveLeft:    if isPressed { self.movePanel(dx: -self.moveStep, dy: 0) }
+            case .moveRight:   if isPressed { self.movePanel(dx:  self.moveStep, dy: 0) }
+            case .moveUp:      if isPressed { self.movePanel(dx: 0, dy:  self.moveStep) }
+            case .moveDown:    if isPressed { self.movePanel(dx: 0, dy: -self.moveStep) }
+            case .resizeLeft:  if isPressed { self.resizePanel(dw: -self.resizeStep, dh: 0) }
+            case .resizeRight: if isPressed { self.resizePanel(dw:  self.resizeStep, dh: 0) }
+            case .resizeUp:    if isPressed { self.resizePanel(dw: 0, dh:  self.resizeStep) }
+            case .resizeDown:  if isPressed { self.resizePanel(dw: 0, dh: -self.resizeStep) }
+            case .screenshot:  if isPressed { self.captureAndAttachScreenshot() }
+            case .clipboard:   if isPressed { self.explainClipboard() }
+            case .toggle:      if isPressed { self.toggleOverlay() }
+            case .record:      if isPressed { self.hotkeyRecord() }
+            case .pushToTalk:  if isPressed { self.hotkeyRecord() }
+            case .sendSelection:  if isPressed { self.sendSelection() }
+            case .resumeGenerate: if isPressed { self.resumeFromClipboard() }
+            case .resumeScore:    if isPressed { self.scoreResumeFromClipboard() }
+            case .quickAsk:       break   // handled via Fn flagsChanged monitor
+            }
+        }
+        HotkeyManager.shared.register()
+
+        // Fn/Globe + Option key monitoring via both global and local flagsChanged monitors.
+        // Global fires when another app is frontmost; local fires when overlay panel is key.
+        // Both call the same shared handler so nothing is missed.
+        let flagsHandler: (NSEvent) -> Void = { [weak self] event in
+            self?.handleFlagsChanged(event)
+        }
+        optionKeyMonitor  = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: flagsHandler)
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged)  { event in
+            flagsHandler(event); return event
+        }
+
+        // Local monitor as fallback when overlay panel is key
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleKey(event)
             return event
         }
 
-        // CGEventTap: truly global, works from any app, requires Accessibility
-        setupEventTap()
     }
 
-    private func setupEventTap() {
-        guard AXIsProcessTrusted() else { return }
+    // MARK: - Send selection (Ctrl+Opt+A)
 
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
-        let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,          // passive — won't block other apps
-            eventsOfInterest: mask,
-            callback: { _, _, event, refcon in
-                let delegate = Unmanaged<AppDelegate>.fromOpaque(refcon!).takeUnretainedValue()
-                delegate.handleCGEvent(event)
-                return Unmanaged.passRetained(event)
-            },
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        )
+    func sendSelection() {
+        // Use the tracked PID of the app that was active before our hotkey fired
+        let pid = lastFrontAppPID
+        guard pid != 0 else { return }
 
-        guard let tap else { return }
-        eventTap = tap
-        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-    }
+        let src     = CGEventSource(stateID: .hidSystemState)
+        let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 0x08, keyDown: true)
+        let keyUp   = CGEvent(keyboardEventSource: src, virtualKey: 0x08, keyDown: false)
+        keyDown?.flags = .maskCommand
+        keyUp?.flags   = .maskCommand
+        keyDown?.postToPid(pid)
+        keyUp?.postToPid(pid)
 
-    func handleCGEvent(_ event: CGEvent) {
-        let flags    = event.flags
-        let keyCode  = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-
-        let ctrlOpt  = flags.contains([.maskControl, .maskAlternate]) && !flags.contains(.maskShift) && !flags.contains(.maskCommand)
-        let ctrlShift = flags.contains([.maskControl, .maskShift])    && !flags.contains(.maskAlternate) && !flags.contains(.maskCommand)
-
-        if ctrlOpt {
-            switch keyCode {
-            case 123: movePanel(dx: -moveStep, dy: 0)
-            case 124: movePanel(dx:  moveStep, dy: 0)
-            case 125: movePanel(dx: 0, dy: -moveStep)
-            case 126: movePanel(dx: 0, dy:  moveStep)
-            case 1:   DispatchQueue.main.async { self.captureAndAttachScreenshot() }   // S
-            case 8:   DispatchQueue.main.async { self.explainClipboard() }             // C
-            case 49:  DispatchQueue.main.async { self.toggleOverlay() }                // Space
-            default: return
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            guard let text = NSPasteboard.general.string(forType: .string),
+                  !text.isEmpty else { return }
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in
+                self.vm.showManualInput = true
+                self.vm.manualInput     = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.vm.sendToAI()
             }
-        } else if ctrlShift {
-            switch keyCode {
-            case 123: resizePanel(dw: -resizeStep, dh: 0)
-            case 124: resizePanel(dw:  resizeStep, dh: 0)
-            case 125: resizePanel(dw: 0, dh: -resizeStep)
-            case 126: resizePanel(dw: 0, dh:  resizeStep)
-            default: return
+        }
+    }
+
+    func hotkeyRecord() {
+        DispatchQueue.main.async {
+            Task { @MainActor in self.vm.hotkeyToggleRecord() }
+        }
+    }
+
+    func resumeFromClipboard() {
+        DispatchQueue.main.async { [self] in
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in self.vm.generateResumeFromClipboard() }
+        }
+    }
+
+    func scoreResumeFromClipboard() {
+        DispatchQueue.main.async { [self] in
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in self.vm.scoreResumeFromClipboard() }
+        }
+    }
+
+    // MARK: - Flags changed (Fn + Option) — shared by global + local monitors
+
+    private func handleFlagsChanged(_ event: NSEvent) {
+        let mods    = event.modifierFlags.intersection([.option, .control, .shift, .command, .function])
+        let fnDown  = mods.contains(.function)
+        let optDown = mods.contains(.option) && !mods.contains(.control)
+                                              && !mods.contains(.shift)
+                                              && !mods.contains(.command)
+
+        // ── Fn/Globe: push-to-talk quick ask ────────────────────────
+        // Hold Fn → start recording; release Fn → stop & send to AI
+        if fnDown && !fnKeyDown {
+            fnKeyDown = true
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in
+                if !vm.isQuickAsking && !vm.isQuickAskSending { vm.toggleQuickAsk() }
+            }
+        } else if !fnDown && fnKeyDown {
+            fnKeyDown = false
+            Task { @MainActor in
+                if vm.isQuickAsking { vm.toggleQuickAsk() }
+            }
+        }
+
+        // ── Option alone: push-to-talk dictation into active app ────
+        if optDown && !dictationKeyDown {
+            dictationKeyDown = true
+            let pid = lastFrontAppPID
+            let mgr = DictationManager()
+            dictationManager = mgr
+
+            Task { @MainActor in
+                if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+                vm.isDictating   = true
+                vm.dictationText = ""
+            }
+            mgr.onTranscript = { [weak self] text in
+                Task { @MainActor in self?.vm.dictationText = text }
+            }
+            mgr.onPasted = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.vm.isDictating   = false
+                    self.vm.dictationText = ""
+                    self.vm.statusMessage = "✓ Dictation pasted"
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    if self.vm.statusMessage == "✓ Dictation pasted" { self.vm.statusMessage = "" }
+                }
+            }
+            mgr.onStatus = { [weak self] msg in
+                Task { @MainActor in self?.vm.statusMessage = msg }
+            }
+            Task { @MainActor [weak self, weak mgr] in
+                guard let self else { return }
+                mgr?.start(targetPID: pid, elevenLabsAPIKey: self.vm.elevenLabsAPIKey)
+            }
+
+        } else if !optDown && dictationKeyDown {
+            dictationKeyDown = false
+            dictationManager?.stop()
+            dictationManager = nil
+            Task { @MainActor in
+                vm.isDictating   = false
+                vm.dictationText = ""
             }
         }
     }
@@ -211,6 +316,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case 126: movePanel(dx: 0, dy:  moveStep)
             case 1:   captureAndAttachScreenshot()     // S
             case 8:   explainClipboard()               // C
+            case 17:  hotkeyRecord()  // T
             case 49:  toggleOverlay()                  // Space
             default: break
             }
@@ -283,13 +389,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return NSImage(cgImage: cgImg, size: NSSize(width: cgImg.width, height: cgImg.height))
     }
 
-    // MARK: - Screen share protection
-
-    @objc func applyScreenShareProtectionToAllWindows() {
-        for window in NSApp.windows {
-            window.sharingType = .none
+    @objc private func frontAppChanged(_ n: Notification) {
+        if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+           app.bundleIdentifier != Bundle.main.bundleIdentifier {
+            lastFrontAppPID = app.processIdentifier
         }
     }
+
+    // Screen share protection is handled by NSWindow.installScreenShareProtection()
+    // called at launch — see the extension below AppDelegate.
 
     // MARK: - Menu actions
 
@@ -307,8 +415,56 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quitApp() { NSApp.terminate(nil) }
 
     deinit {
-        if let m = globalKeyMonitor { NSEvent.removeMonitor(m) }
-        if let m = localKeyMonitor  { NSEvent.removeMonitor(m) }
-        if let t = eventTap         { CGEvent.tapEnable(tap: t, enable: false) }
+        if let m = localKeyMonitor   { NSEvent.removeMonitor(m) }
+        if let m = optionKeyMonitor  { NSEvent.removeMonitor(m) }
+        if let m = localFlagsMonitor { NSEvent.removeMonitor(m) }
+        HotkeyManager.shared.unregister()
+        dictationManager?.stop()
+    }
+}
+
+// MARK: - NSWindow screen-share protection (swizzle)
+//
+// Swizzling the three "order on screen" entry points guarantees that EVERY
+// window this app creates — overlay panel, SwiftUI popovers, NSMenu dropdowns,
+// tooltips, sheets — has sharingType = .none before it ever appears on screen.
+// Notifications and timers fire too late (after capture can already occur);
+// swizzling runs synchronously in the same call-stack as the window appearing.
+
+import ObjectiveC.runtime
+
+extension NSWindow {
+
+    static func installScreenShareProtection() {
+        let pairs: [(Selector, Selector)] = [
+            (#selector(NSWindow.orderFront(_:)),
+             #selector(NSWindow._sp_orderFront(_:))),
+            (#selector(NSWindow.orderFrontRegardless),
+             #selector(NSWindow._sp_orderFrontRegardless)),
+            (#selector(NSWindow.makeKeyAndOrderFront(_:)),
+             #selector(NSWindow._sp_makeKeyAndOrderFront(_:))),
+        ]
+        for (orig, swiz) in pairs {
+            guard
+                let origMethod = class_getInstanceMethod(NSWindow.self, orig),
+                let swizMethod = class_getInstanceMethod(NSWindow.self, swiz)
+            else { continue }
+            method_exchangeImplementations(origMethod, swizMethod)
+        }
+    }
+
+    @objc func _sp_orderFront(_ sender: Any?) {
+        sharingType = .none
+        _sp_orderFront(sender)            // calls original after swap
+    }
+
+    @objc func _sp_orderFrontRegardless() {
+        sharingType = .none
+        _sp_orderFrontRegardless()        // calls original after swap
+    }
+
+    @objc func _sp_makeKeyAndOrderFront(_ sender: Any?) {
+        sharingType = .none
+        _sp_makeKeyAndOrderFront(sender)  // calls original after swap
     }
 }

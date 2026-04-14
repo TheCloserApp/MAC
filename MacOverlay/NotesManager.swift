@@ -3,7 +3,7 @@ import Foundation
 enum NoteSource: String, Codable { case ai, manual }
 
 struct NoteEntry: Identifiable, Codable {
-    let id        = UUID()
+    var id        = UUID()
     let timestamp: Date
     let source:    NoteSource
     let content:   String

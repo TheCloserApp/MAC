@@ -15,16 +15,17 @@ class AIManager {
         openAIApiKey: String,
         model: String,
         screenshot: NSImage? = nil,
-        systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely."
+        systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
+        history: [(user: String, assistant: String)] = []
     ) async throws -> String {
         if isOpenAIModel(model) {
-            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt)
+            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history)
         } else {
-            return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt)
+            return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history)
         }
     }
 
-    private func sendAnthropic(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String) async throws -> String {
+    private func sendAnthropic(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)]) async throws -> String {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -32,16 +33,24 @@ class AIManager {
         req.setValue("2023-06-01",  forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
 
+        // Build messages: history turns first, then current message
+        var messages: [[String: Any]] = []
+        for turn in history {
+            messages.append(["role": "user",      "content": turn.user])
+            messages.append(["role": "assistant", "content": turn.assistant])
+        }
+
         var parts: [[String: Any]] = []
         if let img = screenshot, let b64 = pngBase64(from: img) {
             parts.append(["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": b64]])
         }
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
+        messages.append(["role": "user", "content": parts])
 
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model, "max_tokens": 1024,
             "system": systemPrompt,
-            "messages": [["role": "user", "content": parts]]
+            "messages": messages
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
@@ -54,25 +63,30 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String) async throws -> String {
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)]) async throws -> String {
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
 
+        // Build messages: system + history turns + current message
+        var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
+        for turn in history {
+            messages.append(["role": "user",      "content": turn.user])
+            messages.append(["role": "assistant", "content": turn.assistant])
+        }
+
         var parts: [[String: Any]] = []
         if let img = screenshot, let b64 = pngBase64(from: img) {
             parts.append(["type": "image_url", "image_url": ["url": "data:image/png;base64,\(b64)"]])
         }
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
+        messages.append(["role": "user", "content": parts])
 
         req.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model, "max_tokens": 1024,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user",   "content": parts]
-            ]
+            "messages": messages
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }

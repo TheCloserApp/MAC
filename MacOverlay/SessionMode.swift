@@ -10,13 +10,14 @@ enum SessionMode: String, CaseIterable, Codable {
         case .meeting:   return "Meeting"
         case .call:      return "Call"
         }
-    }
+    } 
 
     var icon: String {
         switch self {
         case .general:   return "brain"
         case .interview: return "person.fill.checkmark"
         case .meeting:   return "person.3.fill"
+        
         case .call:      return "phone.fill"
         }
     }

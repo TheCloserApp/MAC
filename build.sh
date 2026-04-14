@@ -11,7 +11,8 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
-rm -rf "$BUILD_DIR"
+# Only create the bundle structure if it doesn't exist yet.
+# Avoid rm -rf so macOS keeps the app's TCC (privacy permission) record across builds.
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 echo "📦 Compiling Swift sources..."
@@ -29,6 +30,12 @@ swiftc \
     "$SRC_DIR/"*.swift
 
 cp "$SRC_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
+
+# Ad-hoc sign so macOS TCC (privacy permissions) recognises the app
+# consistently across rebuilds. Without this, Screen Recording permission
+# resets every time the binary changes.
+echo "🔏 Signing..."
+codesign -f -s - "$APP_DIR" 2>/dev/null || true
 
 echo ""
 echo "✅ Build complete!"
