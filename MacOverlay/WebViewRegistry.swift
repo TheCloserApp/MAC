@@ -19,4 +19,16 @@ class WebViewRegistry {
     func webView(for id: UUID) -> WKWebView? {
         registry[id]
     }
+
+    /// Called when a tab is closed. Stops any in-flight loads, clears the
+    /// content (so JavaScript timers and audio stop), and drops the registry
+    /// reference. Without this, a WKWebView + its content process can linger
+    /// until ARC happens to release them.
+    func evict(tabID: UUID) {
+        guard let webView = registry.removeValue(forKey: tabID) else { return }
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+    }
 }

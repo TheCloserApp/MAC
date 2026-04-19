@@ -104,7 +104,7 @@ class DictationManager {
         // Bring the target app to front so its text field is focused
         if let app = NSWorkspace.shared.runningApplications
                         .first(where: { $0.processIdentifier == targetPID }) {
-            app.activate(options: [.activateIgnoringOtherApps])
+            app.activate()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [self] in

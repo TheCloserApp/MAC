@@ -1,6 +1,5 @@
 import Cocoa
 import SwiftUI
-import Combine
 import ScreenCaptureKit
 
 // Always shows the arrow cursor over the overlay, even over text fields.
@@ -34,7 +33,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var fnKeyDown        = false   // tracks Fn/Globe key for quick-ask push-to-talk
     private var dictationKeyDown = false   // tracks Option key for dictation push-to-talk
     private var dictationManager: DictationManager?
-    private var opacityObserver: AnyCancellable?
     private var lastFrontAppPID: pid_t = 0
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
@@ -46,12 +44,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupKeyboardShortcuts()
 
-        // Keep panel alpha in sync with vm.opacity (vm publishes on MainActor already)
-        opacityObserver = vm.$opacity
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] val in
-                self?.overlayPanel.alphaValue = val
-            }
+        // With @Observable the ViewModel no longer publishes a Combine $opacity.
+        // Use a direct callback so we only do the work that matters.
+        vm.onOpacityChange = { [weak self] val in
+            self?.overlayPanel.alphaValue = val
+        }
+        overlayPanel.alphaValue = vm.opacity
 
         NotificationCenter.default.addObserver(
             self,
@@ -117,7 +115,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.minSize                    = NSSize(width: 420, height: 44)
         overlayPanel.alphaValue                 = 1.0  // synced via opacityObserver after setup
 
-        let hosting = OverlayHostingView(rootView: AnyView(OverlayView().environmentObject(vm)))
+        let hosting = OverlayHostingView(rootView: AnyView(OverlayView().environment(vm)))
         // Disable intrinsic-size constraints so the panel controls its own size
         hosting.sizingOptions = []
         overlayPanel.contentView = hosting
@@ -183,6 +181,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Local monitor as fallback when overlay panel is key
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Handle ⌘, for preferences and ⌘N for new session while the
+            // overlay is key. Return nil to consume the event so it doesn't
+            // propagate to text fields.
+            if let self,
+               event.modifierFlags.contains(.command),
+               let chars = event.charactersIgnoringModifiers {
+                if chars == "," {
+                    PreferencesWindowController.shared.show(vm: self.vm)
+                    return nil
+                }
+                if chars == "n" {
+                    self.vm.startNewSession()
+                    return nil
+                }
+            }
             self?.handleKey(event)
             return event
         }

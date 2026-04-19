@@ -16,7 +16,11 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 echo "📦 Compiling Swift sources..."
+SWIFT_SOURCES=()
+while IFS= read -r -d '' f; do SWIFT_SOURCES+=("$f"); done < <(find "$SRC_DIR" -type f -name "*.swift" -print0)
+
 swiftc \
+    -O \
     -o "$MACOS_DIR/MacOverlay" \
     -framework Cocoa \
     -framework SwiftUI \
@@ -26,8 +30,10 @@ swiftc \
     -framework EventKit \
     -framework UserNotifications \
     -framework WebKit \
-    -target arm64-apple-macos13.0 \
-    "$SRC_DIR/"*.swift
+    -framework PDFKit \
+    -framework UniformTypeIdentifiers \
+    -target arm64-apple-macos14.0 \
+    "${SWIFT_SOURCES[@]}"
 
 cp "$SRC_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 

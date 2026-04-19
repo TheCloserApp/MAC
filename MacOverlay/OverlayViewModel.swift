@@ -1,56 +1,12 @@
 import AppKit
 import Combine
 import EventKit
-
-struct BrowserTab: Identifiable {
-    let id  = UUID()
-    var url: URL
-    var title: String = ""
-}
-
-struct ResumeScore {
-    let score:     Int
-    let verdict:   String
-    let missing:   [String]
-    let strengths: [String]
-
-    // Parses the strict format the AI is asked to return
-    init(raw: String) {
-        var s = 0; var v = ""; var m: [String] = []; var st: [String] = []
-        for line in raw.components(separatedBy: "\n") {
-            let l = line.trimmingCharacters(in: .whitespaces)
-            if l.hasPrefix("SCORE:") {
-                s = Int(l.dropFirst(6).trimmingCharacters(in: .whitespaces)) ?? 0
-            } else if l.hasPrefix("VERDICT:") {
-                v = String(l.dropFirst(8).trimmingCharacters(in: .whitespaces))
-            } else if l.hasPrefix("MISSING_KEYWORDS:") {
-                m = l.dropFirst(17).components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            } else if l.hasPrefix("STRENGTHS:") {
-                st = l.dropFirst(10).components(separatedBy: ",")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            }
-        }
-        score = s; verdict = v; missing = m; strengths = st
-    }
-
-    init(score: Int, verdict: String, missing: [String], strengths: [String]) {
-        self.score = score; self.verdict = verdict
-        self.missing = missing; self.strengths = strengths
-    }
-
-    var color: String {
-        score >= 80 ? "green" : score >= 60 ? "yellow" : "red"
-    }
-    var recommendation: String {
-        score >= 80 ? "Good match — safe to apply as-is"
-                    : score >= 60 ? "Decent match — minor tweaks recommended"
-                    : "Low match — use Ctrl+Opt+R to tailor your resume"
-    }
-}
+import Observation
+import UniformTypeIdentifiers
 
 @MainActor
-class OverlayViewModel: ObservableObject {
+@Observable
+final class OverlayViewModel {
 
     // MARK: - Model catalogue
     static let availableModels: [(id: String, name: String, provider: String)] = [
@@ -63,54 +19,60 @@ class OverlayViewModel: ObservableObject {
     ]
 
     // MARK: - Session
-    @Published var sessionMode: SessionMode = .general
-    @Published var userProfile: UserProfile
+    var sessionMode: SessionMode = .general {
+        didSet {
+            UserDefaults.standard.set(sessionMode.rawValue, forKey: "sessionMode")
+            scheduleBroadcast()
+        }
+    }
+    var userProfile: UserProfile {
+        didSet { UserProfileManager.shared.save(userProfile) }
+    }
 
     // MARK: - Audio / transcription
-    @Published var audioSource:       AudioSource = .microphone
-    @Published var isRecording        = false
-    @Published var vadEnabled:        Bool
-    @Published var isInterviewSession = false  // continuous real-time interview mode
-    @Published var transcription   = ""
-    @Published var manualInput     = ""
-    @Published var showManualInput = false
-    @Published var statusMessage   = ""
+    var audioSource: AudioSource = .microphone
+    var isRecording  = false { didSet { scheduleBroadcast() } }
+    var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
+    var isInterviewSession = false
+    var transcription   = "" { didSet { scheduleBroadcast() } }
+    var manualInput     = ""
+    var showManualInput = false
+    var statusMessage   = "" { didSet { scheduleBroadcast() } }
 
     // MARK: - AI
-    @Published var aiResponse     = ""
-    @Published var isSendingToAI  = false
-    @Published var pendingQuickAction: QuickAction? = nil
-    @Published var pendingScreenshot: NSImage? = nil
+    var aiResponse     = "" { didSet { scheduleBroadcast() } }
+    var isSendingToAI  = false { didSet { scheduleBroadcast() } }
+    var pendingQuickAction: QuickAction? = nil
+    var pendingScreenshot: NSImage? = nil
 
     // MARK: - Quick ask (Ctrl+Opt+Q)
-    @Published var isQuickAsking     = false
-    @Published var quickAskResponse  = ""
-    @Published var isQuickAskSending = false
+    var isQuickAsking     = false
+    var quickAskResponse  = ""
+    var isQuickAskSending = false
 
     // MARK: - Option-key dictation
-    @Published var isDictating    = false
-    @Published var dictationText  = ""
+    var isDictating    = false
+    var dictationText  = ""
 
     // MARK: - Notes
-    @Published var sessionNotes:  [NoteEntry] = []
-    @Published var showNotesPanel = false
+    var sessionNotes:  [NoteEntry] = []
+    var showNotesPanel = false
 
     // MARK: - Resume builder
-    @Published var showResumeBuilder  = false
-    @Published var resumeJD           = ""
-    @Published var resumeBase:        String   // saved once, reused for all JDs
-    @Published var resumeOutput       = ""
-    @Published var resumeFileURL:     URL? = nil
-    @Published var isGeneratingResume = false
+    var showResumeBuilder  = false
+    var resumeJD           = ""
+    var resumeOutput       = ""
+    var resumeFileURL:     URL? = nil
+    var isGeneratingResume = false
 
     // MARK: - Resume score
-    @Published var resumeScore:        ResumeScore? = nil
-    @Published var isScoringResume     = false
+    var resumeScore:        ResumeScore? = nil
+    var isScoringResume     = false
 
     // MARK: - Embedded browser
-    @Published var browserTabs: [BrowserTab] = []
-    @Published var activeTabID: UUID? = nil
-    @Published var splitCount: Int = 1
+    var browserTabs: [BrowserTab] = [] { didSet { scheduleBroadcast() } }
+    var activeTabID: UUID? = nil { didSet { scheduleBroadcast() } }
+    var splitCount: Int = 1
 
     var hasBrowser: Bool { !browserTabs.isEmpty }
 
@@ -124,11 +86,18 @@ class OverlayViewModel: ObservableObject {
         browserTabs.removeAll { $0.id == id }
         if activeTabID == id { activeTabID = browserTabs.last?.id }
         if browserTabs.isEmpty { splitCount = 1 }
+        WebViewRegistry.shared.evict(tabID: id)
     }
 
     func toggleBrowser() {
-        if hasBrowser { browserTabs = []; activeTabID = nil; splitCount = 1 }
-        else { addTab() }
+        if hasBrowser {
+            for tab in browserTabs { WebViewRegistry.shared.evict(tabID: tab.id) }
+            browserTabs = []
+            activeTabID = nil
+            splitCount = 1
+        } else {
+            addTab()
+        }
     }
 
     /// Navigate the currently active tab to a URL, opening the browser if needed.
@@ -148,81 +117,157 @@ class OverlayViewModel: ObservableObject {
     }
 
     // MARK: - Calendar
-    @Published var showCalendarPanel = false
-    @Published var calendarEvents:   [EKEvent] = []
-    @Published var calendarAuthorized = false
-    let calendarManager = CalendarManager()
+    var showCalendarPanel = false
+    var calendarEvents:   [EKEvent] = []
+    var calendarAuthorized = false
+    @ObservationIgnored let calendarManager = CalendarManager()
 
     // MARK: - Settings
-    @Published var selectedModel:      String
-    @Published var apiKey:             String
-    @Published var openAIApiKey:       String
-    @Published var elevenLabsAPIKey:      String
-    @Published var opacity:            Double
-    @Published var backgroundOpacity:  Double
-    @Published var customSystemPrompt: String   // overrides mode default when non-empty
+    var selectedModel: String {
+        didSet { UserDefaults.standard.set(selectedModel, forKey: "selectedModel") }
+    }
+    var apiKey: String {
+        didSet { UserDefaults.standard.set(apiKey, forKey: "anthropicAPIKey") }
+    }
+    var openAIApiKey: String {
+        didSet { UserDefaults.standard.set(openAIApiKey, forKey: "openAIApiKey") }
+    }
+    var elevenLabsAPIKey: String {
+        didSet {
+            UserDefaults.standard.set(elevenLabsAPIKey, forKey: "elevenLabsAPIKey")
+            transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
+        }
+    }
+    var opacity: Double {
+        didSet {
+            UserDefaults.standard.set(opacity, forKey: "overlayOpacity")
+            onOpacityChange?(opacity)
+        }
+    }
+    var backgroundOpacity: Double {
+        didSet { UserDefaults.standard.set(backgroundOpacity, forKey: "backgroundOpacity") }
+    }
+    /// When true, show live token counts in the top strip and per-session.
+    var showTokenCounts: Bool {
+        didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
+    }
+    /// AppDelegate hooks this to keep the panel's alphaValue in sync.
+    @ObservationIgnored var onOpacityChange: ((Double) -> Void)?
 
-    // Last 3 Q&A turns sent as context on every new message
-    private var conversationHistory: [(user: String, assistant: String)] = []
-    private let maxHistoryTurns = 3
+    // MARK: - Onboarding
+    var hasCompletedOnboarding: Bool {
+        didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding") }
+    }
+    var showOnboarding = false
+
+    // MARK: - Libraries + Sessions (enterprise features)
+    @ObservationIgnored let promptStore    = PromptStore.shared
+    @ObservationIgnored let resumeStore    = ResumeStore.shared
+    @ObservationIgnored let sessionStore   = SessionStore.shared
+    @ObservationIgnored let workspaceStore = WorkspaceStore.shared
+
+    // UI panel toggles for the new surfaces
+    var showHistoryPanel       = false
+    var showPromptLibraryPanel = false
+
+    // MARK: - Shell layout (new UX)
+    enum PrimarySurface: Hashable {
+        case chat       // live transcript + conversation bubbles (default)
+        case sessions   // sessions history list
+        case resumes    // resume builder + library
+        case prompts    // prompt library
+        case calendar
+        case browser
+    }
+    /// Which surface is showing in the right column. Nil means no panel is
+    /// open — only the sidebar is visible. Clicking a sidebar cell again
+    /// while it's active toggles the right column closed.
+    var primarySurface: PrimarySurface? = nil
+    var sidebarCollapsed: Bool = false
 
     // MARK: - Peer control
-    let peerServer = PeerControlServer.shared
-    @Published var peerControlEnabled: Bool
+    @ObservationIgnored let peerServer = PeerControlServer.shared
+    var peerControlEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(peerControlEnabled, forKey: "peerControlEnabled")
+            if peerControlEnabled { peerServer.start() } else { peerServer.stop() }
+        }
+    }
     /// Staging area for messages the peer wants to send — shown to the local user
     /// for review before going to AI.  Empty = nothing pending.
-    @Published var peerMessage: String = ""
+    var peerMessage: String = "" { didSet { scheduleBroadcast() } }
 
-    let transcriptionManager = TranscriptionManager()
-    private let quickRecorder        = QuickRecorder.shared
-    private let notesManager         = NotesManager.shared
-    private let reminderManager      = ReminderManager.shared
-    private var cancellables         = Set<AnyCancellable>()
-    private var calendarRefreshTimer: AnyCancellable?
+    @ObservationIgnored let transcriptionManager = TranscriptionManager()
+    @ObservationIgnored let appleTranscriber    = AppleTranscriber()
+
+    /// Which transcription engine is being used right now. Switches live with
+    /// whether the user has configured an ElevenLabs key.
+    enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
+    var transcriptionBackend: TranscriptionBackend {
+        elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+    }
+
+    /// Start transcription using whichever backend is active.
+    private func startTranscriber(source: AudioSource) async throws {
+        switch transcriptionBackend {
+        case .elevenLabs: try await transcriptionManager.start(source: source)
+        case .apple:      try await appleTranscriber.start(source: source)
+        }
+    }
+
+    /// Stop whichever backend happens to be running.
+    private func stopTranscriber() {
+        if transcriptionManager.isRunning { transcriptionManager.stop() }
+        if appleTranscriber.isRunning    { appleTranscriber.stop() }
+    }
+    @ObservationIgnored private let quickRecorder   = QuickRecorder.shared
+    @ObservationIgnored let notesManager            = NotesManager.shared
+    @ObservationIgnored private let reminderManager = ReminderManager.shared
+    @ObservationIgnored private var cancellables    = Set<AnyCancellable>()
+    @ObservationIgnored private var calendarRefreshTimer: AnyCancellable?
+    @ObservationIgnored private var broadcastTask: Task<Void, Never>?
+
+    /// Owns all AI-streaming logic (send, retry, title regen). Initialised lazily
+    /// so `self` is fully constructed before the controller captures it.
+    @ObservationIgnored lazy var ai: AIController         = AIController(vm: self)
+    @ObservationIgnored lazy var resume: ResumeController = ResumeController(vm: self)
+
+    /// True when the latest assistant turn is a recoverable error and a retry
+    /// is available. Views key off this to surface the Retry button.
+    var canRetryLastResponse: Bool { ai.canRetry }
+
+    /// Debounced peer broadcast. Replaces the Combine throttle pipeline that
+    /// previously merged 9 publishers.
+    private func scheduleBroadcast() {
+        broadcastTask?.cancel()
+        broadcastTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.peerServer.broadcastState()
+        }
+    }
 
     init() {
-        vadEnabled          = UserDefaults.standard.bool(forKey: "vadEnabled")
-        customSystemPrompt  = UserDefaults.standard.string(forKey: "customSystemPrompt") ?? ""
-        resumeBase          = UserDefaults.standard.string(forKey: "resumeBase") ?? ""
-        apiKey              = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
-        openAIApiKey        = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
-        elevenLabsAPIKey       = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
-        selectedModel    = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
-        opacity          = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
-        backgroundOpacity = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
-        userProfile      = UserProfileManager.shared.load()
+        // NOTE: didSet observers do NOT fire during init for properties set on `self`,
+        // so initial values are loaded without triggering UserDefaults writes or broadcasts.
+        vadEnabled         = UserDefaults.standard.bool(forKey: "vadEnabled")
+        apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
+        openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
+        elevenLabsAPIKey   = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
+        selectedModel      = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
+        opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
+        backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
+        showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
+        userProfile        = UserProfileManager.shared.load()
         peerControlEnabled = UserDefaults.standard.bool(forKey: "peerControlEnabled")
+        hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
 
         if let raw = UserDefaults.standard.string(forKey: "sessionMode"),
            let mode = SessionMode(rawValue: raw) {
             sessionMode = mode
         }
 
-        // Persist settings
-        $apiKey.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "anthropicAPIKey") }.store(in: &cancellables)
-        $openAIApiKey.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "openAIApiKey") }.store(in: &cancellables)
-        $elevenLabsAPIKey.dropFirst()
-            .sink { [weak self] key in
-                UserDefaults.standard.set(key, forKey: "elevenLabsAPIKey")
-                self?.transcriptionManager.elevenLabsAPIKey = key
-            }.store(in: &cancellables)
-        $selectedModel.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "selectedModel") }.store(in: &cancellables)
-        $opacity.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "overlayOpacity") }.store(in: &cancellables)
-        $backgroundOpacity.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "backgroundOpacity") }.store(in: &cancellables)
-        $sessionMode.dropFirst()
-            .sink { [weak self] mode in
-                UserDefaults.standard.set(mode.rawValue, forKey: "sessionMode")
-                self?.conversationHistory = []   // fresh context for new mode
-            }.store(in: &cancellables)
-        $userProfile.dropFirst()
-            .sink { UserProfileManager.shared.save($0) }.store(in: &cancellables)
-
-        // Sync calendar events from manager
+        // Calendar manager still exposes Combine publishers; keep these subscriptions.
         calendarManager.$upcomingEvents
             .sink { [weak self] in self?.calendarEvents = $0 }.store(in: &cancellables)
         calendarManager.$isAuthorized
@@ -235,48 +280,23 @@ class OverlayViewModel: ObservableObject {
                 Task { await self?.calendarManager.refresh() }
             }
 
-        $vadEnabled.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "vadEnabled") }.store(in: &cancellables)
-        $customSystemPrompt.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "customSystemPrompt") }.store(in: &cancellables)
-        $resumeBase.dropFirst()
-            .sink { UserDefaults.standard.set($0, forKey: "resumeBase") }.store(in: &cancellables)
-
-        // Peer control — persist enabled state; broadcast overlay state to connected peers
-        $peerControlEnabled.dropFirst()
-            .sink { [weak self] enabled in
-                UserDefaults.standard.set(enabled, forKey: "peerControlEnabled")
-                if enabled { self?.peerServer.start() } else { self?.peerServer.stop() }
-            }.store(in: &cancellables)
-
-        // Broadcast whenever visible state changes (throttle to avoid flooding SSE)
-        let broadcastPub = Publishers.MergeMany([
-            $transcription.map { _ in () }.eraseToAnyPublisher(),
-            $aiResponse.map { _ in () }.eraseToAnyPublisher(),
-            $isSendingToAI.map { _ in () }.eraseToAnyPublisher(),
-            $isRecording.map { _ in () }.eraseToAnyPublisher(),
-            $sessionMode.map { _ in () }.eraseToAnyPublisher(),
-            $statusMessage.map { _ in () }.eraseToAnyPublisher(),
-            $browserTabs.map { _ in () }.eraseToAnyPublisher(),
-            $activeTabID.map { _ in () }.eraseToAnyPublisher(),
-            $peerMessage.map { _ in () }.eraseToAnyPublisher()
-        ])
-        broadcastPub
-            .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] in self?.peerServer.broadcastState() }
-            .store(in: &cancellables)
-
         // Connect peer server to self and start if previously enabled
         peerServer.viewModel = self
         if peerControlEnabled { peerServer.start() }
 
+        // Sessions created before workspaces existed need to inherit the
+        // default workspace so they still show up in the list.
+        sessionStore.migrateWorkspacelessSessions(to: workspaceStore.activeWorkspaceID)
+
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
 
-        transcriptionManager.onUpdate = { [weak self] text in
+        let updateHandler: (String) -> Void = { [weak self] text in
             Task { @MainActor [weak self] in self?.transcription = text }
         }
+        transcriptionManager.onUpdate = updateHandler
+        appleTranscriber.onUpdate    = updateHandler
 
-        transcriptionManager.onSilence = { [weak self] in
+        let silenceHandler: () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, !self.transcription.isEmpty else { return }
 
@@ -288,7 +308,7 @@ class OverlayViewModel: ObservableObject {
                 if self.isInterviewSession {
                     // Continuous mode: stop engine, send segment, clear, restart
                     guard !self.isSendingToAI else { return }
-                    self.transcriptionManager.stop()
+                    self.stopTranscriber()
                     self.isRecording = false
                     self.statusMessage = ""
 
@@ -299,7 +319,7 @@ class OverlayViewModel: ObservableObject {
                     try? await Task.sleep(nanoseconds: 300_000_000)
                     guard self.isInterviewSession else { return }
                     do {
-                        try await self.transcriptionManager.start(source: self.audioSource)
+                        try await self.startTranscriber(source: self.audioSource)
                         self.isRecording = true
                         self.statusMessage = "Recording"
                     } catch {
@@ -312,6 +332,8 @@ class OverlayViewModel: ObservableObject {
                 }
             }
         }
+        transcriptionManager.onSilence = silenceHandler
+        appleTranscriber.onSilence    = silenceHandler
     }
 
     // MARK: - Calendar
@@ -337,18 +359,18 @@ class OverlayViewModel: ObservableObject {
 
     func toggleRecording() {
         if isRecording {
-            transcriptionManager.stop()
+            stopTranscriber()
             isRecording   = false
             statusMessage = ""
         } else {
             transcription = ""
             aiResponse    = ""
-            statusMessage = "Starting..."
+            statusMessage = "Starting…"
             Task {
                 do {
-                    try await transcriptionManager.start(source: audioSource)
+                    try await startTranscriber(source: audioSource)
                     isRecording   = true
-                    statusMessage = "Recording"
+                    statusMessage = ""
                 } catch {
                     statusMessage = "Error: \(error.localizedDescription)"
                     isRecording   = false
@@ -362,19 +384,19 @@ class OverlayViewModel: ObservableObject {
     func hotkeyToggleRecord() {
         if isInterviewSession { stopInterviewSession(); return }
         if isRecording {
-            transcriptionManager.stop()
+            stopTranscriber()
             isRecording   = false
             statusMessage = ""
             if !transcription.isEmpty { sendToAI() }
         } else {
             transcription = ""
             aiResponse    = ""
-            statusMessage = "Starting..."
+            statusMessage = "Starting…"
             Task {
                 do {
-                    try await transcriptionManager.start(source: audioSource)
+                    try await startTranscriber(source: audioSource)
                     isRecording   = true
-                    statusMessage = "Recording"
+                    statusMessage = ""
                 } catch {
                     statusMessage = "Error: \(error.localizedDescription)"
                     isRecording   = false
@@ -391,12 +413,12 @@ class OverlayViewModel: ObservableObject {
         transcription = ""
         aiResponse    = ""
         guard !isRecording else { return }
-        statusMessage = "Starting..."
+        statusMessage = "Starting…"
         Task {
             do {
-                try await transcriptionManager.start(source: audioSource)
+                try await startTranscriber(source: audioSource)
                 isRecording   = true
-                statusMessage = "Recording"
+                statusMessage = ""
             } catch {
                 statusMessage = "Error: \(error.localizedDescription)"
                 isInterviewSession = false
@@ -408,7 +430,7 @@ class OverlayViewModel: ObservableObject {
     func stopInterviewSession() {
         isInterviewSession = false
         if isRecording {
-            transcriptionManager.stop()
+            stopTranscriber()
             isRecording   = false
             statusMessage = ""
         }
@@ -443,53 +465,47 @@ class OverlayViewModel: ObservableObject {
         if  isOpenAI && openAIApiKey.isEmpty { return }
         if !isOpenAI && apiKey.isEmpty       { return }
 
-        // System prompt: custom override takes priority over mode default
-        let resolvedPrompt: String
-        if !customSystemPrompt.isEmpty {
-            resolvedPrompt = customSystemPrompt
-        } else {
-            resolvedPrompt = sessionMode.systemPrompt
-                .replacingOccurrences(of: "{NAME}",    with: userProfile.name.isEmpty        ? "the user"       : userProfile.name)
-                .replacingOccurrences(of: "{ROLE}",    with: userProfile.currentRole.isEmpty ? "a professional" : userProfile.currentRole)
-                .replacingOccurrences(of: "{COMPANY}", with: userProfile.company.isEmpty     ? "their company"  : userProfile.company)
-        }
+        let resolvedPrompt   = resolveActivePrompt()
+        let historySnapshot  = sessionStore.replayContext()
 
-        isSendingToAI     = true
-        aiResponse        = ""
-        let snapshot      = pendingScreenshot
+        let wasFirstExchange = sessionStore.activeSession.turns.isEmpty
+        sessionStore.appendUser(textToSend)
+        let assistantID = sessionStore.beginStreamingAssistant()
+
+        if !showManualInput { transcription = "" }
+
+        let snapshot = pendingScreenshot
         pendingQuickAction = nil
-        let historySnapshot = conversationHistory
+        if showManualInput { manualInput = "" }
+        pendingScreenshot = nil
 
-        Task {
-            do {
-                let response = try await AIManager.shared.sendMessage(
-                    textToSend,
-                    apiKey:       apiKey,
-                    openAIApiKey: openAIApiKey,
-                    model:        selectedModel,
-                    screenshot:   snapshot,
-                    systemPrompt: resolvedPrompt,
-                    history:      historySnapshot
-                )
-                aiResponse = response
-
-                // Save turn to history (cap at maxHistoryTurns)
-                conversationHistory.append((user: textToSend, assistant: response))
-                if conversationHistory.count > maxHistoryTurns {
-                    conversationHistory.removeFirst()
-                }
-
-                // Auto-save AI response to notes
-                notesManager.add(content: aiResponse, source: .ai, mode: sessionMode)
-                sessionNotes = notesManager.entries
-            } catch {
-                aiResponse = "Error: \(error.localizedDescription)"
-            }
-            isSendingToAI     = false
-            pendingScreenshot = nil
-            if showManualInput { manualInput = "" }
-        }
+        ai.runStream(userText: textToSend,
+                     screenshot: snapshot,
+                     systemPrompt: resolvedPrompt,
+                     history: historySnapshot,
+                     assistantTurnID: assistantID,
+                     wasFirstExchange: wasFirstExchange)
     }
+
+    /// Retry the most recent failed request.
+    func retryLastResponse() { ai.retry() }
+
+    /// Reset an assistant turn to empty so a fresh stream can populate it.
+    func resetAssistantTurn(id: UUID) {
+        var s = sessionStore.activeSession
+        guard let idx = s.turns.firstIndex(where: { $0.id == id }) else { return }
+        s.turns[idx].content = ""
+        s.turns[idx].inputTokens = nil
+        s.turns[idx].outputTokens = nil
+        sessionStore.activeSession = s
+    }
+
+    /// Cancel an in-flight streaming request.
+    func cancelStreaming() { ai.cancel() }
+
+    /// Resolves the current system prompt. Kept as a shim so existing
+    /// call-sites don't have to change — delegates to the AI controller.
+    func resolveActivePrompt() -> String { ai.resolveActivePrompt() }
 
     // MARK: - Quick ask
 
@@ -541,34 +557,47 @@ class OverlayViewModel: ObservableObject {
         isQuickAskSending = true
         quickAskResponse  = ""
 
-        let resolvedPrompt = customSystemPrompt.isEmpty
-            ? sessionMode.systemPrompt
-                .replacingOccurrences(of: "{NAME}",    with: userProfile.name.isEmpty        ? "the user"       : userProfile.name)
-                .replacingOccurrences(of: "{ROLE}",    with: userProfile.currentRole.isEmpty ? "a professional" : userProfile.currentRole)
-                .replacingOccurrences(of: "{COMPANY}", with: userProfile.company.isEmpty     ? "their company"  : userProfile.company)
-            : customSystemPrompt
-        let historySnapshot = conversationHistory
+        let resolvedPrompt  = resolveActivePrompt()
+        let historySnapshot = sessionStore.replayContext()
 
-        Task {
+        // Stream into quickAskResponse and also into a session turn so it's
+        // recorded in history.
+        sessionStore.appendUser(text)
+        let assistantID = sessionStore.beginStreamingAssistant()
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var accumulated = ""
             do {
-                let result = try await AIManager.shared.sendMessage(
+                let stream = AIManager.shared.streamMessage(
                     text,
-                    apiKey:       apiKey,
-                    openAIApiKey: openAIApiKey,
-                    model:        selectedModel,
+                    apiKey:       self.apiKey,
+                    openAIApiKey: self.openAIApiKey,
+                    model:        self.selectedModel,
                     screenshot:   nil,
                     systemPrompt: resolvedPrompt,
                     history:      historySnapshot
                 )
-                quickAskResponse = result
-                conversationHistory.append((user: text, assistant: result))
-                if conversationHistory.count > maxHistoryTurns { conversationHistory.removeFirst() }
-                notesManager.add(content: result, source: .ai, mode: sessionMode)
-                sessionNotes = notesManager.entries
+                for try await event in stream {
+                    switch event {
+                    case .chunk(let chunk):
+                        accumulated += chunk
+                        self.quickAskResponse = accumulated
+                        self.sessionStore.appendChunk(chunk, to: assistantID)
+                    case .usage(let inTok, let outTok):
+                        self.sessionStore.finalizeAssistant(turnID: assistantID,
+                                                            inputTokens: inTok,
+                                                            outputTokens: outTok)
+                    }
+                }
+                if !accumulated.isEmpty {
+                    self.notesManager.add(content: accumulated, source: .ai, mode: self.sessionMode)
+                    self.sessionNotes = self.notesManager.entries
+                }
             } catch {
-                quickAskResponse = "Error: \(error.localizedDescription)"
+                self.quickAskResponse = "Error: \(error.localizedDescription)"
             }
-            isQuickAskSending = false
+            self.isQuickAskSending = false
         }
     }
 
@@ -583,7 +612,96 @@ class OverlayViewModel: ObservableObject {
     func clearNotes() {
         notesManager.clear()
         sessionNotes = []
-        conversationHistory = []
+    }
+
+    // MARK: - Session actions (wired to UI)
+
+    // MARK: - Export
+
+    func copyActiveSessionAsMarkdown() {
+        let md = sessionStore.markdown(for: sessionStore.activeSession)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(md, forType: .string)
+        statusMessage = "Session copied as Markdown"
+        // Auto-clear status after a moment
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            if self?.statusMessage == "Session copied as Markdown" {
+                self?.statusMessage = ""
+            }
+        }
+    }
+
+    func exportActiveSessionToDisk() {
+        let session = sessionStore.activeSession
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "\(session.displayTitle).md"
+        panel.title = "Export session as Markdown"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try sessionStore.markdown(for: session)
+                .write(to: url, atomically: true, encoding: .utf8)
+            statusMessage = "Exported to \(url.lastPathComponent)"
+        } catch {
+            statusMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func continueSession(id: UUID) {
+        sessionStore.continueSession(id: id)
+        // Restore the mode for the reopened session so the right prompt kicks in.
+        if let s = sessionStore.sessions.first(where: { $0.id == id }) {
+            sessionMode = s.mode
+            promptStore.activePresetID = s.promptPresetID
+        }
+        // Jump the UI back to the chat view so the reopened session is visible.
+        primarySurface = .chat
+    }
+
+    func startNewSession() {
+        // Before closing the current session, ask the AI to give it a nicer title.
+        let closingID = sessionStore.activeSessionID
+        let closing = sessionStore.activeSession
+        sessionStore.startNewSession(mode: sessionMode,
+                                     promptPresetID: promptStore.activePresetID,
+                                     workspaceID: workspaceStore.activeWorkspaceID)
+        regenerateTitle(for: closing, sessionID: closingID)
+        primarySurface = .chat
+    }
+
+    // MARK: - Workspaces
+
+    /// Switch to a workspace. If the current session belongs to a different
+    /// workspace, try to pick the most recent session in the target workspace,
+    /// otherwise start a fresh session there.
+    func switchWorkspace(to id: UUID) {
+        workspaceStore.activeWorkspaceID = id
+        let scoped = sessionStore.sortedSessions(in: id)
+        if let first = scoped.first {
+            sessionStore.continueSession(id: first.id)
+        } else {
+            sessionStore.startNewSession(mode: sessionMode,
+                                         promptPresetID: promptStore.activePresetID,
+                                         workspaceID: id)
+        }
+        primarySurface = .chat
+    }
+
+    func addWorkspace(name: String, icon: String, colorHex: String) {
+        let w = workspaceStore.add(name: name, icon: icon, colorHex: colorHex)
+        switchWorkspace(to: w.id)
+    }
+
+    func deleteWorkspace(id: UUID) {
+        workspaceStore.delete(id: id) { [weak self] old, new in
+            self?.sessionStore.reassignSessions(from: old, to: new)
+        }
+    }
+
+    /// Kicks off a background title regeneration via the AI controller.
+    private func regenerateTitle(for session: ChatSession, sessionID: UUID) {
+        ai.regenerateTitle(for: session, sessionID: sessionID)
     }
 
     func exportNotes(asMarkdown: Bool) {
@@ -599,7 +717,7 @@ class OverlayViewModel: ObservableObject {
 
     // MARK: - Resume builder
 
-    // Called by hotkey: reads clipboard as JD, uses saved resumeBase
+    // Called by hotkey: reads clipboard as JD, uses the active resume preset
     func generateResumeFromClipboard() {
         guard let jd = NSPasteboard.general.string(forType: .string), !jd.isEmpty else { return }
         resumeJD      = jd
@@ -607,212 +725,18 @@ class OverlayViewModel: ObservableObject {
         generateResume()
     }
 
+    /// Content of the currently selected resume preset.
+    var currentResumeText: String {
+        resumeStore.activePreset?.content ?? ""
+    }
+
     // Called by hotkey: scores current resume against clipboard JD
     func scoreResumeFromClipboard() {
         guard let jd = NSPasteboard.general.string(forType: .string), !jd.isEmpty else { return }
-        guard !resumeBase.isEmpty, !apiKey.isEmpty else { return }
-        resumeJD      = jd
-        resumeScore   = nil
-        isScoringResume = true
-        showResumeBuilder = true
-
-        let base = resumeBase
-        let prompt = """
-        Job Description:
-        \(jd)
-
-        Resume:
-        \(base)
-
-        Analyse how well this resume matches the job description. Respond with ONLY this exact format (no other text):
-        SCORE: [0-100]
-        VERDICT: [one short sentence — e.g. "Strong match, minimal tailoring needed" or "Significant gaps, customisation recommended"]
-        MISSING_KEYWORDS: [comma-separated list of up to 6 important keywords from the JD not in the resume]
-        STRENGTHS: [comma-separated list of up to 4 matching strengths]
-        """
-
-        Task {
-            do {
-                let raw = try await AIManager.shared.sendMessage(
-                    prompt,
-                    apiKey:       apiKey,
-                    openAIApiKey: openAIApiKey,
-                    model:        "claude-haiku-4-5-20251001",
-                    screenshot:   nil,
-                    systemPrompt: "You are an ATS and resume expert. Always respond in the exact format requested."
-                )
-                resumeScore = ResumeScore(raw: raw)
-            } catch {
-                resumeScore = ResumeScore(score: 0, verdict: "Error: \(error.localizedDescription)",
-                                          missing: [], strengths: [])
-            }
-            isScoringResume = false
-        }
+        resume.score(jd: jd)
     }
 
-    func generateResume() {
-        guard !resumeJD.isEmpty, !resumeBase.isEmpty, !apiKey.isEmpty else { return }
-        isGeneratingResume = true
-        resumeOutput       = ""
-        resumeFileURL      = nil
-
-        let jd   = resumeJD
-        let base = resumeBase
-        let prompt = """
-        Job Description:
-        \(jd)
-
-        Current Resume:
-        \(base)
-
-        Write a tailored, ATS-optimised resume for this role. Rules:
-        - Use only information from the provided resume — invent nothing.
-        - Use keywords from the job description.
-        - Section headings must be ALL CAPS on their own line (e.g. SUMMARY, EXPERIENCE, EDUCATION, SKILLS).
-        - Bullet points must start with "- ".
-        - No markdown, no asterisks, no symbols except dashes for bullets.
-        - Output plain text only.
-        """
-
-        Task {
-            do {
-                let result = try await AIManager.shared.sendMessage(
-                    prompt,
-                    apiKey:       apiKey,
-                    openAIApiKey: openAIApiKey,
-                    model:        "claude-haiku-4-5-20251001",
-                    screenshot:   nil,
-                    systemPrompt: "You are an expert resume writer. Output clean plain text with ALL CAPS section headings and '- ' bullet points. No markdown."
-                )
-                resumeOutput = result
-                resumeFileURL = try Self.saveResumeDOCX(text: result)
-            } catch {
-                resumeOutput = "Error: \(error.localizedDescription)"
-            }
-            isGeneratingResume = false
-        }
-    }
-
-    // Builds a valid .docx (Office Open XML) from plain text.
-    // DOCX = ZIP archive containing XML files — no third-party dependencies needed.
-    private static func saveResumeDOCX(text: String) throws -> URL {
-        let fm = FileManager.default
-        let tempDir     = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let wordDir     = tempDir.appendingPathComponent("word")
-        let relsDir     = tempDir.appendingPathComponent("_rels")
-        let wordRelsDir = wordDir.appendingPathComponent("_rels")
-        for dir in [tempDir, wordDir, relsDir, wordRelsDir] {
-            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-
-        // Convert plain-text lines to Word paragraph XML
-        var parasXML = ""
-        for line in text.components(separatedBy: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.isEmpty { parasXML += "<w:p/>\n"; continue }
-
-            var content   = t
-            var bold      = false
-            var szVal     = "22"      // 11 pt (half-points)
-            var indentXML = ""
-
-            if content.hasPrefix("# ") {
-                content = String(content.dropFirst(2)); bold = true; szVal = "32"
-            } else if content.hasPrefix("## ") {
-                content = String(content.dropFirst(3)); bold = true; szVal = "26"
-            } else if content.hasPrefix("### ") {
-                content = String(content.dropFirst(4)); bold = true; szVal = "24"
-            } else if content.hasPrefix("- ") || content.hasPrefix("* ") || content.hasPrefix("• ") {
-                let body = content.drop(while: { !$0.isLetter && $0 != "(" })
-                content  = "• \(body)"
-                indentXML = "<w:pPr><w:ind w:left=\"360\" w:hanging=\"180\"/></w:pPr>"
-            } else {
-                // ALL-CAPS line → section heading
-                let letters = content.filter { $0.isLetter }
-                if letters.count > 2 && letters == letters.uppercased() {
-                    bold = true; szVal = "24"
-                }
-            }
-
-            let escaped = content
-                .replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-
-            let rpr = "<w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\"/>"
-                    + (bold ? "<w:b/>" : "")
-                    + "<w:sz w:val=\"\(szVal)\"/><w:szCs w:val=\"\(szVal)\"/></w:rPr>"
-
-            parasXML += "<w:p>\(indentXML)<w:r>\(rpr)"
-                      + "<w:t xml:space=\"preserve\">\(escaped)</w:t></w:r></w:p>\n"
-        }
-
-        let document = """
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-          <w:body>
-        \(parasXML)
-            <w:sectPr>
-              <w:pgSz w:w="12240" w:h="15840"/>
-              <w:pgMar w:top="1080" w:right="1080" w:bottom="1080" w:left="1080"/>
-            </w:sectPr>
-          </w:body>
-        </w:document>
-        """
-
-        let contentTypes = """
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-          <Default Extension="xml" ContentType="application/xml"/>
-          <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-        </Types>
-        """
-
-        let rootRels = """
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-        </Relationships>
-        """
-
-        let wordRels = """
-        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-        </Relationships>
-        """
-
-        try contentTypes.write(to: tempDir.appendingPathComponent("[Content_Types].xml"),
-                                atomically: true, encoding: .utf8)
-        try rootRels.write(to: relsDir.appendingPathComponent(".rels"),
-                           atomically: true, encoding: .utf8)
-        try document.write(to: wordDir.appendingPathComponent("document.xml"),
-                           atomically: true, encoding: .utf8)
-        try wordRels.write(to: wordRelsDir.appendingPathComponent("document.xml.rels"),
-                           atomically: true, encoding: .utf8)
-
-        // Package into a ZIP archive (DOCX is just a ZIP)
-        let outputURL = fm.temporaryDirectory
-            .appendingPathComponent("resume_\(Int(Date().timeIntervalSince1970)).docx")
-        try? fm.removeItem(at: outputURL)
-
-        let zip = Process()
-        zip.executableURL     = URL(fileURLWithPath: "/usr/bin/zip")
-        zip.currentDirectoryURL = tempDir
-        // Pass filenames as separate arguments — no shell, so [] are safe
-        zip.arguments = ["-r", outputURL.path,
-                         "[Content_Types].xml", "_rels", "word"]
-        try zip.run()
-        zip.waitUntilExit()
-
-        try? fm.removeItem(at: tempDir)
-
-        guard fm.fileExists(atPath: outputURL.path) else {
-            throw NSError(domain: "ResumeDOCX", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "zip failed"])
-        }
-        return outputURL
-    }
+    func generateResume() { resume.generate() }
 
     // MARK: - Helpers
 
