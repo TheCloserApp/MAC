@@ -247,6 +247,14 @@ final class SessionStore {
         activeSessionID = fresh.id
     }
 
+    /// Toggle the pinned flag on a session. Pinned sessions float to the top
+    /// of History regardless of date.
+    func togglePin(id: UUID) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].isPinned.toggle()
+        sessions[idx].updatedAt = Date()
+    }
+
     /// Manual rename by the user: locks the title so auto-retitle won't overwrite.
     func rename(id: UUID, to newTitle: String) {
         guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }

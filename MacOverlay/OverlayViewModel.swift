@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import EventKit
 import Observation
+import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
@@ -64,6 +65,11 @@ final class OverlayViewModel {
     var resumeOutput       = ""
     var resumeFileURL:     URL? = nil
     var isGeneratingResume = false
+    /// Live status line shown under the Resume panel's progress bar while
+    /// `isGeneratingResume` is true. Updated from the agent loop as Claude
+    /// issues each tool call (view / str_replace / insert) so the user
+    /// knows what's happening instead of staring at a spinner.
+    var resumeGenerationStatus = ""
 
     // MARK: - Resume score
     var resumeScore:        ResumeScore? = nil
@@ -138,6 +144,27 @@ final class OverlayViewModel {
             transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
         }
     }
+
+    /// User-selected transcription backend. `.auto` picks ElevenLabs when a key
+    /// is configured and falls back to Apple otherwise; `.apple` and
+    /// `.elevenLabs` force the choice regardless of key state.
+    enum TranscriptionPreference: String, CaseIterable, Identifiable {
+        case auto, apple, elevenLabs
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .auto:       return "Automatic"
+            case .apple:      return "Apple (on-device, free)"
+            case .elevenLabs: return "ElevenLabs (cloud)"
+            }
+        }
+    }
+    var transcriptionPreference: TranscriptionPreference {
+        didSet {
+            UserDefaults.standard.set(transcriptionPreference.rawValue,
+                                      forKey: "transcriptionPreference")
+        }
+    }
     var opacity: Double {
         didSet {
             UserDefaults.standard.set(opacity, forKey: "overlayOpacity")
@@ -150,6 +177,53 @@ final class OverlayViewModel {
     /// When true, show live token counts in the top strip and per-session.
     var showTokenCounts: Bool {
         didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
+    }
+
+    // MARK: - Custom resume prompts
+
+    /// User override for the resume generation system prompt. Empty → use default.
+    var customResumeGenerationPrompt: String {
+        didSet {
+            UserDefaults.standard.set(customResumeGenerationPrompt,
+                                      forKey: "customResumeGenerationPrompt")
+        }
+    }
+    /// User override for the resume scoring system prompt. Empty → use default.
+    var customResumeScoringPrompt: String {
+        didSet {
+            UserDefaults.standard.set(customResumeScoringPrompt,
+                                      forKey: "customResumeScoringPrompt")
+        }
+    }
+
+    static let defaultResumeGenerationPrompt =
+        "You are an expert resume writer tailoring a resume to a specific job description. Actively rewrite bullets to match the JD's vocabulary and priorities, add new bullets under existing roles when facts elsewhere in the resume support them, and rewrite the summary to pitch the user for THIS role. Keep the section order, heading wording, bullet markers, and capitalisation style identical to the input. Keep every company, job title, location, and date verbatim. Never invent employers, titles, dates, degrees, certifications, metrics, or technologies that aren't already present. Output plain text with no commentary, no markdown fences, no preamble — just the tailored resume."
+    static let defaultResumeScoringPrompt =
+        "You are an ATS and resume expert. Always respond in the exact format requested."
+
+    /// Resolution order for resume generation:
+    /// 1. Active resume-generation preset from the library, if selected.
+    /// 2. The plain-text override in Preferences, if non-empty.
+    /// 3. The built-in default.
+    var resumeGenerationPromptResolved: String {
+        if let preset = promptStore.activeResumeGenerationPreset,
+           !preset.content.isEmpty {
+            return preset.content
+        }
+        if !customResumeGenerationPrompt.isEmpty {
+            return customResumeGenerationPrompt
+        }
+        return Self.defaultResumeGenerationPrompt
+    }
+    var resumeScoringPromptResolved: String {
+        if let preset = promptStore.activeResumeScoringPreset,
+           !preset.content.isEmpty {
+            return preset.content
+        }
+        if !customResumeScoringPrompt.isEmpty {
+            return customResumeScoringPrompt
+        }
+        return Self.defaultResumeScoringPrompt
     }
     /// AppDelegate hooks this to keep the panel's alphaValue in sync.
     @ObservationIgnored var onOpacityChange: ((Double) -> Void)?
@@ -171,19 +245,93 @@ final class OverlayViewModel {
     var showPromptLibraryPanel = false
 
     // MARK: - Shell layout (new UX)
-    enum PrimarySurface: Hashable {
+    enum PrimarySurface: String, Hashable, CaseIterable, Codable {
         case chat       // live transcript + conversation bubbles (default)
         case sessions   // sessions history list
         case resumes    // resume builder + library
         case prompts    // prompt library
         case calendar
         case browser
+        case settings
+
+        var displayName: String {
+            switch self {
+            case .chat:     return "Chat"
+            case .sessions: return "History"
+            case .resumes:  return "Resumes"
+            case .prompts:  return "Prompts"
+            case .calendar: return "Calendar"
+            case .browser:  return "Browser"
+            case .settings: return "Settings"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .chat:     return "bubble.left.and.bubble.right"
+            case .sessions: return "clock.arrow.circlepath"
+            case .resumes:  return "doc.text"
+            case .prompts:  return "text.bubble"
+            case .calendar: return "calendar"
+            case .browser:  return "globe"
+            case .settings: return "gearshape"
+            }
+        }
+        var activeIcon: String {
+            switch self {
+            case .chat:     return "bubble.left.and.bubble.right.fill"
+            case .sessions: return "clock.arrow.circlepath"
+            case .resumes:  return "doc.text.fill"
+            case .prompts:  return "text.bubble.fill"
+            case .calendar: return "calendar"
+            case .browser:  return "globe"
+            case .settings: return "gearshape.fill"
+            }
+        }
     }
     /// Which surface is showing in the right column. Nil means no panel is
     /// open — only the sidebar is visible. Clicking a sidebar cell again
     /// while it's active toggles the right column closed.
     var primarySurface: PrimarySurface? = nil
     var sidebarCollapsed: Bool = false
+
+    /// Which corner of the NSPanel the pill is anchored to, based on where
+    /// the panel sits relative to the screen. When the pill is near the
+    /// right edge, the shell flips so panels appear to its left; when near
+    /// the bottom, the shell expands upward. Keeps the UI on-screen no
+    /// matter where the user has dragged the overlay.
+    enum PillAnchor: String, Hashable {
+        case topLeading, topTrailing, bottomLeading, bottomTrailing
+
+        var isTrailing: Bool { self == .topTrailing || self == .bottomTrailing }
+        var isBottom:   Bool { self == .bottomLeading || self == .bottomTrailing }
+
+        var swiftUIAlignment: Alignment {
+            switch self {
+            case .topLeading:     return .topLeading
+            case .topTrailing:    return .topTrailing
+            case .bottomLeading:  return .bottomLeading
+            case .bottomTrailing: return .bottomTrailing
+            }
+        }
+
+        var unitPoint: UnitPoint {
+            switch self {
+            case .topLeading:     return .topLeading
+            case .topTrailing:    return .topTrailing
+            case .bottomLeading:  return .bottomLeading
+            case .bottomTrailing: return .bottomTrailing
+            }
+        }
+    }
+    var pillAnchor: PillAnchor = .topLeading
+
+    /// True when the full glass shell is showing, false when only the pill
+    /// is visible. Lives on the VM so the AppDelegate can hook the NSPanel
+    /// frame transition at the exact moment the SwiftUI layout toggles.
+    var isShellExpanded: Bool = false {
+        didSet { onExpansionChange?(isShellExpanded) }
+    }
+    @ObservationIgnored var onExpansionChange: ((Bool) -> Void)?
 
     // MARK: - Peer control
     @ObservationIgnored let peerServer = PeerControlServer.shared
@@ -204,7 +352,11 @@ final class OverlayViewModel {
     /// whether the user has configured an ElevenLabs key.
     enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
-        elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+        switch transcriptionPreference {
+        case .apple:      return .apple
+        case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+        case .auto:       return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+        }
     }
 
     /// Start transcription using whichever backend is active.
@@ -254,10 +406,17 @@ final class OverlayViewModel {
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
         elevenLabsAPIKey   = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
+        transcriptionPreference = TranscriptionPreference(
+            rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
+        ) ?? .auto
         selectedModel      = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
         showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
+        customResumeGenerationPrompt =
+            UserDefaults.standard.string(forKey: "customResumeGenerationPrompt") ?? ""
+        customResumeScoringPrompt =
+            UserDefaults.standard.string(forKey: "customResumeScoringPrompt") ?? ""
         userProfile        = UserProfileManager.shared.load()
         peerControlEnabled = UserDefaults.standard.bool(forKey: "peerControlEnabled")
         hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")

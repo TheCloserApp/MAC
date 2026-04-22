@@ -10,44 +10,33 @@ import SwiftUI
 struct OverlayView: View {
     @Environment(OverlayViewModel.self) private var vm
 
-    @State private var expanded = false
-
     var body: some View {
         @Bindable var vm = vm
         ZStack {
             if vm.showOnboarding {
                 OnboardingView(isPresented: $vm.showOnboarding)
-                    .transition(.opacity.combined(with: .scale(scale: 0.97)))
                     .zIndex(1)
-            } else if expanded {
+            } else if vm.isShellExpanded {
                 expandedShell
-                    .transition(.opacity)
             } else {
                 collapsedHeader
-                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity,
-               maxHeight: expanded ? .infinity : nil,
-               alignment: expanded ? .topLeading : .topLeading)
-        .padding(expanded ? Design.Space.sm : 8)
-        .animation(.easeInOut(duration: 0.25), value: vm.showOnboarding)
-        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: expanded)
+               maxHeight: vm.isShellExpanded ? .infinity : nil,
+               alignment: .topLeading)
+        .padding(Design.Space.sm)
         .onAppear {
             if !vm.hasCompletedOnboarding {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    withAnimation { vm.showOnboarding = true }
+                    vm.showOnboarding = true
                 }
             }
         }
-        // When onboarding finishes, drop the user into the expanded shell on
-        // the chat surface — no extra click needed to "get in".
         .onChange(of: vm.showOnboarding) { wasShowing, isShowing in
             if wasShowing && !isShowing {
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                    expanded = true
-                    vm.primarySurface = .chat
-                }
+                vm.isShellExpanded = true
+                vm.primarySurface = .chat
             }
         }
     }
@@ -56,12 +45,11 @@ struct OverlayView: View {
 
     /// Floating-glass shell. Sidebar cells, top strip, primary surface, and
     /// input bar are each independent glass cards with visible gaps between
-    /// them. No shared container — everything hovers. The right column only
-    /// appears once the user picks a sidebar icon; it hides again if they
-    /// click the active icon a second time.
+    /// them. The layout flips based on `pillAnchor` so the sidebar always
+    /// sits next to the pill's screen edge and panels flow away from it.
     private var expandedShell: some View {
         HStack(alignment: .top, spacing: Design.cardGap) {
-            SidebarView(expanded: $expanded)
+            SidebarView()
 
             if vm.primarySurface != nil {
                 VStack(spacing: Design.cardGap) {
@@ -76,10 +64,8 @@ struct OverlayView: View {
                         .glassCard()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
         }
-        .animation(Design.Motion.spring, value: vm.primarySurface != nil)
     }
 
     // MARK: - Primary surface dispatch
@@ -103,21 +89,38 @@ struct OverlayView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .browser:
                 BrowserShellSurface()
+            case .settings:
+                PreferencesView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .none:
                 EmptyView()
             }
         }
         .id(vm.primarySurface)
-        .transition(.opacity.combined(with: .offset(y: 4)))
-        .animation(Design.Motion.standard, value: vm.primarySurface)
     }
 
     // MARK: - Collapsed state
 
     @ViewBuilder
     private var collapsedHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CollapsedPillView(expanded: $expanded)
+        VStack(alignment: .leading, spacing: 4) {
+            CollapsedPillView()
+
+            // Drag handle — not a button, so dragging here moves the panel
+            // without accidentally opening the overlay.
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle()
+                        .fill(Color.primary.opacity(0.28))
+                        .frame(width: 4, height: 4)
+                }
+            }
+            .frame(width: 36, height: 16)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.primary.opacity(0.05))
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if vm.resumeFileURL != nil || vm.isGeneratingResume
                 || vm.resumeScore != nil || vm.isScoringResume {

@@ -19,26 +19,32 @@ struct HistoryPanelView: View {
         }
     }
 
-    /// Buckets sessions into Today / Yesterday / Past week / Older.
+    /// Buckets sessions into Pinned / Today / Yesterday / Past week / Older.
+    /// Pinned ignores date grouping and floats to the top.
     private var grouped: [(label: String, items: [ChatSession])] {
         let cal = Calendar.current
         let now = Date()
         var buckets: [(String, [ChatSession])] = [
-            ("Today", []),
-            ("Yesterday", []),
+            ("Pinned",     []),
+            ("Today",      []),
+            ("Yesterday",  []),
             ("Past 7 days", []),
-            ("Older", []),
+            ("Older",      []),
         ]
         for s in filtered {
+            if s.isPinned {
+                buckets[0].1.append(s)
+                continue
+            }
             let d = s.updatedAt
             if cal.isDateInToday(d) {
-                buckets[0].1.append(s)
-            } else if cal.isDateInYesterday(d) {
                 buckets[1].1.append(s)
-            } else if let weekAgo = cal.date(byAdding: .day, value: -7, to: now), d > weekAgo {
+            } else if cal.isDateInYesterday(d) {
                 buckets[2].1.append(s)
-            } else {
+            } else if let weekAgo = cal.date(byAdding: .day, value: -7, to: now), d > weekAgo {
                 buckets[3].1.append(s)
+            } else {
+                buckets[4].1.append(s)
             }
         }
         return buckets.filter { !$0.1.isEmpty }
@@ -132,7 +138,8 @@ struct HistoryPanelView: View {
     private func row(_ s: ChatSession) -> some View {
         SessionRow(session: s,
                    isActive: s.id == store.activeSessionID,
-                   onOpen: { vm.continueSession(id: s.id) },
+                   onOpen:  { vm.continueSession(id: s.id) },
+                   onPin:   { vm.sessionStore.togglePin(id: s.id) },
                    onDelete: { vm.sessionStore.delete(id: s.id) })
     }
 
@@ -155,6 +162,7 @@ private struct SessionRow: View {
     let session: ChatSession
     let isActive: Bool
     let onOpen: () -> Void
+    let onPin: () -> Void
     let onDelete: () -> Void
     @State private var hovering = false
 
@@ -167,6 +175,11 @@ private struct SessionRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
+                    if session.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(.accentColor)
+                    }
                     Text(session.displayTitle)
                         .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                         .lineLimit(1)
@@ -207,14 +220,26 @@ private struct SessionRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary.opacity(0.6))
-                    .frame(width: 22, height: 22)
+            HStack(spacing: 4) {
+                Button(action: onPin) {
+                    Image(systemName: session.isPinned ? "pin.fill" : "pin")
+                        .font(.system(size: 10))
+                        .foregroundColor(session.isPinned ? .accentColor : .secondary.opacity(0.6))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help(session.isPinned ? "Unpin" : "Pin session to top")
+                .opacity(session.isPinned ? 1 : (hovering ? 1 : 0))
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.6))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .opacity(isActive ? 0.3 : (hovering ? 1 : 0))
             }
-            .buttonStyle(.plain)
-            .opacity(isActive ? 0.3 : (hovering ? 1 : 0.5))
             .animation(Design.Motion.fast, value: hovering)
         }
         .padding(.horizontal, 6)

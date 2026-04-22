@@ -12,11 +12,22 @@ final class OverlayHostingView: NSHostingView<AnyView> {
     }
 }
 
-// Subclass removes macOS constraint that blocks windows from moving above the menu bar,
-// and allows becoming key so text fields work inside a nonactivatingPanel.
+// NSPanel subclass that keeps the overlay inside the visible screen in real time
+// (so drag can never push it off-screen) while still allowing the panel to sit
+// flush with the screen's absolute bottom — our window level is above the Dock,
+// so the Dock area is a legitimate resting spot for the pill.
+//
+// `canBecomeKey` is overridden so text fields inside the nonactivating panel
+// still accept keyboard input.
 class UnconstrainedPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        return frameRect
+        guard let screen = screen ?? NSScreen.main else { return frameRect }
+        let sf = screen.frame          // full monitor — bottom reaches absolute edge
+        let vf = screen.visibleFrame   // excludes the menu bar
+        var f  = frameRect
+        f.origin.x = min(max(f.origin.x, sf.minX), sf.maxX - f.width)
+        f.origin.y = min(max(f.origin.y, sf.minY), vf.maxY - f.height)
+        return f
     }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
@@ -50,6 +61,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.overlayPanel.alphaValue = val
         }
         overlayPanel.alphaValue = vm.opacity
+
+        // Animate the NSPanel between its collapsed pill-size and the full
+        // shell size whenever the VM toggles expansion. The anchor corner
+        // (where the pill sits) stays put so expansion feels like it's
+        // emerging from the pill's exact position.
+        vm.onExpansionChange = { [weak self] expanded in
+            // Sync anchor once before the shell appears so the sidebar order is correct.
+            if expanded { self?.updatePillAnchor() }
+            self?.animateShellFrame(expanded: expanded)
+        }
+
+        // Watch the panel's position so the shell can flip the sidebar to the
+        // correct side as the user drags the overlay around the screen.
+        updatePillAnchor()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidMove),
+            name: NSWindow.didMoveNotification,
+            object: overlayPanel
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelDidMove),
+            name: NSWindow.didResizeNotification,
+            object: overlayPanel
+        )
 
         NotificationCenter.default.addObserver(
             self,
@@ -87,8 +124,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Overlay Panel
 
+    /// Collapsed: just the pill + drag handle. Small so the pill can reach any screen edge.
+    static let collapsedSize = NSSize(width: 70, height: 80)
+    /// When expanded, the panel grows to fit the full glass shell.
+    static let expandedSize  = NSSize(width: 520, height: 460)
+
     func setupOverlayPanel() {
-        let w: CGFloat = 500, h: CGFloat = 440
+        let w: CGFloat = Self.collapsedSize.width, h: CGFloat = Self.collapsedSize.height
         guard let screen = NSScreen.main else { return }
         let sf = screen.visibleFrame
         let frame = NSRect(x: sf.midX - w / 2, y: sf.maxY - h - 20, width: w, height: h)
@@ -112,13 +154,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.isFloatingPanel            = true
         overlayPanel.becomesKeyOnlyIfNeeded     = true
         overlayPanel.sharingType                = .none
-        overlayPanel.minSize                    = NSSize(width: 420, height: 44)
+        overlayPanel.minSize                    = NSSize(width: 70, height: 44)
         overlayPanel.alphaValue                 = 1.0  // synced via opacityObserver after setup
 
         let hosting = OverlayHostingView(rootView: AnyView(OverlayView().environment(vm)))
         // Disable intrinsic-size constraints so the panel controls its own size
         hosting.sizingOptions = []
         overlayPanel.contentView = hosting
+
+        // Restore last-used position (constrainFrameRect will clamp if the saved
+        // origin is on a monitor that's no longer connected).
+        restorePanelOrigin()
+
         overlayPanel.orderFrontRegardless()
     }
 
@@ -188,11 +235,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                event.modifierFlags.contains(.command),
                let chars = event.charactersIgnoringModifiers {
                 if chars == "," {
-                    PreferencesWindowController.shared.show(vm: self.vm)
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        PreferencesWindowController.shared.show(vm: self.vm)
+                    }
                     return nil
                 }
                 if chars == "n" {
-                    self.vm.startNewSession()
+                    Task { @MainActor [weak self] in
+                        self?.vm.startNewSession()
+                    }
                     return nil
                 }
             }
@@ -386,20 +438,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [self] in
             overlayPanel.alphaValue = 0
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [self] in
-            let img = captureScreen()
-            overlayPanel.alphaValue = vm.opacity
-            if let img {
-                Task { @MainActor in self.vm.pendingScreenshot = img }
-            }
+        // Wait for the overlay to hide itself, capture via ScreenCaptureKit,
+        // restore alpha, and attach the image on the main actor.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            let img = await self.captureScreen()
+            self.overlayPanel.alphaValue = self.vm.opacity
+            if let img { self.vm.pendingScreenshot = img }
         }
     }
 
-    private func captureScreen() -> NSImage? {
-        guard let cgImg = CGWindowListCreateImage(
-            .null, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution]
-        ) else { return nil }
-        return NSImage(cgImage: cgImg, size: NSSize(width: cgImg.width, height: cgImg.height))
+    /// Async capture via ScreenCaptureKit. Full-screen shot of the main
+    /// display, excluding no windows. Returns nil on permission denial or
+    /// any SCStream error — users see a silent no-op which matches the
+    /// previous behaviour.
+    private func captureScreen() async -> NSImage? {
+        do {
+            let content = try await SCShareableContent.current
+            guard let display = content.displays.first else { return nil }
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            let cfg = SCStreamConfiguration()
+            cfg.width  = Int(display.width)
+            cfg.height = Int(display.height)
+            cfg.capturesAudio = false
+            let cgImage = try await SCScreenshotManager.captureImage(
+                contentFilter: filter,
+                configuration: cfg
+            )
+            return NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: cgImage.width, height: cgImage.height)
+            )
+        } catch {
+            return nil
+        }
     }
 
     @objc private func frontAppChanged(_ n: Notification) {
@@ -407,6 +480,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
            app.bundleIdentifier != Bundle.main.bundleIdentifier {
             lastFrontAppPID = app.processIdentifier
         }
+    }
+
+    private var anchorUpdateTask: Task<Void, Never>?
+
+    private static let savedOriginDefaultsKey = "MacOverlay.savedPanelOrigin"
+
+    @objc private func panelDidMove(_ n: Notification) {
+        anchorUpdateTask?.cancel()
+        anchorUpdateTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled, let self = self else { return }
+            // Only update sidebar order when expanded — no visual change when collapsed.
+            if self.vm?.isShellExpanded == true { self.updatePillAnchor() }
+            self.persistPanelOrigin()
+        }
+    }
+
+    private func persistPanelOrigin() {
+        guard let panel = overlayPanel else { return }
+        let p = panel.frame.origin
+        UserDefaults.standard.set([p.x, p.y], forKey: Self.savedOriginDefaultsKey)
+    }
+
+    private func restorePanelOrigin() {
+        guard let panel = overlayPanel,
+              let arr = UserDefaults.standard.array(forKey: Self.savedOriginDefaultsKey) as? [CGFloat],
+              arr.count == 2 else { return }
+        let saved = NSPoint(x: arr[0], y: arr[1])
+        // Only restore if the saved point lies on a currently-connected screen.
+        // Otherwise the pill would land on a detached monitor and vanish.
+        let onScreen = NSScreen.screens.contains { $0.frame.contains(saved) }
+        guard onScreen else {
+            UserDefaults.standard.removeObject(forKey: Self.savedOriginDefaultsKey)
+            return
+        }
+        panel.setFrameOrigin(saved)
+    }
+
+    /// Update which screen quadrant the panel is in so the sidebar can flip
+    /// its vertical item order. Never repositions the panel.
+    @MainActor
+    func updatePillAnchor() {
+        guard let panel = overlayPanel,
+              let screen = panel.screen ?? NSScreen.main,
+              let vm else { return }
+        let frame  = panel.frame
+        let bounds = screen.visibleFrame
+        let isTrailing = frame.midX > bounds.midX
+        let isBottom   = frame.midY < bounds.midY
+        let newAnchor: OverlayViewModel.PillAnchor
+        switch (isTrailing, isBottom) {
+        case (false, false): newAnchor = .topLeading
+        case (true,  false): newAnchor = .topTrailing
+        case (false, true):  newAnchor = .bottomLeading
+        case (true,  true):  newAnchor = .bottomTrailing
+        }
+        // Direct set — no animation. Collapsed view doesn't read pillAnchor,
+        // and expanded sidebar just reorders instantly (transitions are off).
+        vm.pillAnchor = newAnchor
+    }
+
+    /// Resize the panel, anchoring its TOP so the pill stays put and content
+    /// grows/shrinks downward. `constrainFrameRect` handles screen clamping.
+    @MainActor
+    func animateShellFrame(expanded: Bool) {
+        guard let panel = overlayPanel else { return }
+        let cur = panel.frame
+        let sz  = expanded ? Self.expandedSize : Self.collapsedSize
+        // Keep the top edge of the panel fixed.
+        let newY = cur.maxY - sz.height
+        let newX = cur.origin.x
+        panel.setFrame(NSRect(x: newX, y: newY, width: sz.width, height: sz.height),
+                       display: true, animate: true)
     }
 
     // Screen share protection is handled by NSWindow.installScreenShareProtection()

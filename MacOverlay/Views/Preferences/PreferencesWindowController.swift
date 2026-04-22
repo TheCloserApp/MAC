@@ -28,7 +28,7 @@ final class PreferencesWindowController {
             object: w,
             queue: .main
         ) { [weak self] _ in
-            self?.window = nil
+            Task { @MainActor [weak self] in self?.window = nil }
         }
 
         w.makeKeyAndOrderFront(nil)

@@ -40,8 +40,10 @@ struct WorkspaceSwitcherView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(color(for: active))
             }
+            .contentShape(Circle())
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("\(active.name) · click to switch workspace")
         .popover(isPresented: $showingNewSheet, arrowEdge: .trailing) {
@@ -55,20 +57,29 @@ struct WorkspaceSwitcherView: View {
     }
 }
 
-private struct NewWorkspaceSheet: View {
+struct NewWorkspaceSheet: View {
     @Environment(OverlayViewModel.self) private var vm
     @Binding var isPresented: Bool
     @State private var name = ""
     @State private var icon = "tray"
     @State private var color = "#8E55FF"
+    @State private var enabledFeatures: Set<String> = Workspace.defaultEnabledFeatures
 
     private let iconChoices = ["tray", "briefcase", "person", "sparkles", "bolt",
                                 "globe", "graduationcap", "book", "star"]
     private let colorChoices = ["#8E55FF", "#FF5C8A", "#FFB020", "#34C759",
                                  "#5AC8FA", "#FF9500", "#AF52DE", "#00C7BE"]
 
+    private let featureChoices: [(key: String, label: String, icon: String)] = [
+        ("sessions", "History",  "clock.arrow.circlepath"),
+        ("prompts",  "Prompts",  "text.bubble"),
+        ("resumes",  "Resumes",  "doc.text"),
+        ("calendar", "Calendar", "calendar"),
+        ("browser",  "Browser",  "globe"),
+    ]
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("New workspace").font(Design.Font.title)
 
             TextField("Name (e.g. Work, Interviews)", text: $name)
@@ -105,12 +116,46 @@ private struct NewWorkspaceSheet: View {
                 }
             }
 
+            Text("Features").font(Design.Font.eyebrow).foregroundColor(.secondary)
+            Text("Chat is always on. Toggle what appears in this workspace's sidebar.")
+                .font(.caption2).foregroundColor(.secondary.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 2) {
+                ForEach(featureChoices, id: \.key) { f in
+                    let on = enabledFeatures.contains(f.key)
+                    Button {
+                        if on { enabledFeatures.remove(f.key) }
+                        else  { enabledFeatures.insert(f.key) }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: f.icon)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(width: 16)
+                            Text(f.label).font(.system(size: 11))
+                            Spacer()
+                            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 13))
+                                .foregroundColor(on ? .accentColor : .secondary.opacity(0.5))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }
                     .buttonStyle(.plain)
                 Button("Create") {
-                    vm.addWorkspace(name: name, icon: icon, colorHex: color)
+                    let w = vm.workspaceStore.add(name: name, icon: icon, colorHex: color)
+                    var updated = w
+                    updated.enabledFeatures = enabledFeatures
+                    vm.workspaceStore.update(updated)
+                    vm.switchWorkspace(to: w.id)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -119,7 +164,7 @@ private struct NewWorkspaceSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 280)
+        .frame(width: 320)
     }
 }
 

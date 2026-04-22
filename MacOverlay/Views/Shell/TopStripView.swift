@@ -82,21 +82,65 @@ struct TopStripView: View {
 
     private var modeBadge: some View {
         Menu {
-            ForEach(SessionMode.allCases, id: \.self) { mode in
-                Button {
-                    vm.sessionMode = mode
-                } label: {
-                    Label(mode.displayName, systemImage: mode.icon)
+            Section("Built-in modes") {
+                ForEach(SessionMode.allCases, id: \.self) { mode in
+                    Button {
+                        vm.sessionMode = mode
+                        // If a conversation preset is linked to this mode,
+                        // activate it automatically. Otherwise clear the
+                        // active preset so the mode's built-in prompt runs.
+                        if let linked = vm.promptStore.linkedPreset(for: mode) {
+                            vm.promptStore.activePresetID = linked.id
+                        } else {
+                            vm.promptStore.activePresetID = nil
+                        }
+                    } label: {
+                        HStack {
+                            Label(mode.displayName, systemImage: mode.icon)
+                            if vm.sessionMode == mode {
+                                if let linked = vm.promptStore.linkedPreset(for: mode) {
+                                    Text("(\(linked.name))")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
                 }
+            }
+            let customModes = vm.promptStore.conversationPresets.filter { $0.linkedMode == nil }
+            if !customModes.isEmpty {
+                Section("Custom modes") {
+                    ForEach(customModes) { preset in
+                        Button {
+                            vm.promptStore.activePresetID = preset.id
+                        } label: {
+                            HStack {
+                                Label(preset.name, systemImage: preset.icon)
+                                if vm.promptStore.activePresetID == preset.id {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button {
+                vm.primarySurface = .prompts
+            } label: {
+                Label("Manage custom prompts…", systemImage: "gearshape")
             }
         } label: {
             HStack(spacing: 4) {
                 Circle()
                     .fill(Self.modeColor(vm.sessionMode))
                     .frame(width: 6, height: 6)
-                Text(vm.sessionMode.displayName)
+                Text(activeModeLabel)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7))
                     .foregroundColor(.secondary.opacity(0.7))
@@ -108,7 +152,11 @@ struct TopStripView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Change mode")
+        .help("Change mode or pick a custom prompt")
+    }
+
+    private var activeModeLabel: String {
+        vm.promptStore.activePreset?.name ?? vm.sessionMode.displayName
     }
 
     // MARK: - Start / Stop (prominent CTA)

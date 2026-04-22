@@ -9,21 +9,20 @@ struct ResumePanelView: View {
     @State private var draftResumeName = ""
     @State private var importError: String? = nil
     @State private var isDropTargeted = false
+    @State private var tab: Tab = .build
+    @State private var viewingGenerationID: UUID? = nil
+
+    enum Tab: Hashable { case build, history }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            resumePicker
-            if showResumeLibrary {
-                resumeLibrarySection
+            tabBar
+            if tab == .build {
+                buildTabContent
             } else {
-                resumeBaseSection
+                historyTabContent
             }
-            if let err = importError { importErrorBanner(err) }
-            jdSection
-            generateButton
-            scoreSection
-            outputSection
         }
         .overlay {
             if isDropTargeted {
@@ -105,9 +104,14 @@ struct ResumePanelView: View {
             return
         }
         do {
-            let text = try ResumeImporter.importFile(url: url)
+            let source = try ResumeImporter.importFileWithSource(url: url)
             let name = ResumeImporter.suggestedName(for: url)
-            let preset = vm.resumeStore.add(name: name.isEmpty ? "Imported Resume" : name, content: text)
+            let preset = vm.resumeStore.add(
+                name: name.isEmpty ? "Imported Resume" : name,
+                content: source.text,
+                originalDOCX: source.originalDOCX,
+                originalFilename: url.lastPathComponent
+            )
             vm.resumeStore.activePresetID = preset.id
             importError = nil
             // Auto-open the library so the user sees the new entry
@@ -302,6 +306,97 @@ struct ResumePanelView: View {
         .padding(.bottom, 6)
     }
 
+    private var tabBar: some View {
+        let count = vm.resumeStore.generations.count
+        return HStack(spacing: 4) {
+            tabChip("Build", isActive: tab == .build) { tab = .build }
+            tabChip(count > 0 ? "Generations (\(count))" : "Generations",
+                    isActive: tab == .history) { tab = .history }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+
+    private func tabChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: { withAnimation(Design.Motion.fast) { action() } }) {
+            Text(label)
+                .font(.system(size: 11, weight: isActive ? .semibold : .medium))
+                .foregroundColor(isActive ? .white : .secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.1))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var buildTabContent: some View {
+        resumePicker
+        if showResumeLibrary {
+            resumeLibrarySection
+        } else {
+            resumeBaseSection
+        }
+        if let err = importError { importErrorBanner(err) }
+        jdSection
+        generateButton
+        scoreSection
+        outputSection
+    }
+
+    @ViewBuilder
+    private var historyTabContent: some View {
+        if let viewingID = viewingGenerationID,
+           let g = vm.resumeStore.generations.first(where: { $0.id == viewingID }) {
+            GenerationDetailView(generation: g,
+                                 onBack: { viewingGenerationID = nil },
+                                 onDelete: {
+                                     vm.resumeStore.deleteGeneration(id: g.id)
+                                     viewingGenerationID = nil
+                                 })
+        } else {
+            generationsList
+        }
+    }
+
+    @ViewBuilder
+    private var generationsList: some View {
+        if vm.resumeStore.generations.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "doc.on.doc")
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(.tertiary)
+                Text("No generations yet")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Text("Generate a tailored resume from the Build tab and it'll show up here with a before/after score.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 24)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 28)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(vm.resumeStore.generations) { g in
+                        GenerationRow(
+                            generation: g,
+                            onOpen: { viewingGenerationID = g.id },
+                            onDelete: { vm.resumeStore.deleteGeneration(id: g.id) }
+                        )
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
     @ViewBuilder
     private var resumeBaseSection: some View {
         let store = vm.resumeStore
@@ -441,9 +536,13 @@ struct ResumePanelView: View {
                 .padding(.vertical, 8)
 
                 if vm.isGeneratingResume && vm.resumeOutput.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         ProgressView().scaleEffect(0.7)
-                        Text("Generating…").font(.system(size: 12)).foregroundColor(.secondary)
+                        Text(vm.resumeGenerationStatus.isEmpty ? "Generating…" : vm.resumeGenerationStatus)
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                            .animation(.easeInOut(duration: 0.2), value: vm.resumeGenerationStatus)
                     }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
@@ -644,9 +743,11 @@ struct ResumeFloatingPillView: View {
             if vm.isGeneratingResume {
                 HStack(spacing: 8) {
                     ProgressView().scaleEffect(0.65)
-                    Text("Generating resume…")
+                    Text(vm.resumeGenerationStatus.isEmpty ? "Generating resume…" : vm.resumeGenerationStatus)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .animation(.easeInOut(duration: 0.2), value: vm.resumeGenerationStatus)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -712,5 +813,382 @@ private struct ResumeFileRow: View {
             .help("Dismiss")
         }
         .padding(.trailing, 4)
+    }
+}
+
+// MARK: - Generation history row
+
+private struct GenerationRow: View {
+    let generation: ResumeGeneration
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(generation.displayTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Spacer()
+                    Text(generation.createdAt, style: .relative)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                HStack(spacing: 6) {
+                    scoreBadge(label: "Before", value: generation.beforeScore?.score)
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary.opacity(0.6))
+                    scoreBadge(label: "After",  value: generation.afterScore?.score)
+                    if let delta = generation.scoreDelta {
+                        Text(delta >= 0 ? "+\(delta)" : "\(delta)")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundColor(delta > 0 ? .green : (delta < 0 ? .red : .secondary))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background((delta > 0 ? Color.green : (delta < 0 ? Color.red : Color.secondary)).opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary.opacity(0.6))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering ? 1 : 0.5)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(hovering ? Color.primary.opacity(0.05) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onOpen)
+        .onHover { hovering = $0 }
+        .animation(Design.Motion.fast, value: hovering)
+    }
+
+    private func scoreBadge(label: String, value: Int?) -> some View {
+        HStack(spacing: 3) {
+            Text(label).font(.system(size: 9)).foregroundColor(.secondary)
+            Text(value.map(String.init) ?? "—")
+                .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundColor(color(for: value))
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private func color(for value: Int?) -> Color {
+        guard let v = value else { return .secondary }
+        if v >= 80 { return .green }
+        if v >= 60 { return .orange }
+        return .red
+    }
+}
+
+// MARK: - Generation detail (diff + scores)
+
+private struct GenerationDetailView: View {
+    let generation: ResumeGeneration
+    let onBack: () -> Void
+    let onDelete: () -> Void
+
+    @State private var compareTab: CompareTab = .diff
+    @State private var diffLayout: DiffLayout = .inline
+    enum CompareTab: Hashable { case diff, before, after }
+    enum DiffLayout: Hashable { case inline, sideBySide }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            toolbar
+            scoreStrip
+            Divider().opacity(0.4)
+            compareSelector
+            Divider().opacity(0.4)
+            body(for: compareTab)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            Button {
+                onBack()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                    Text("All generations").font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            if let url = generation.fileURL {
+                Button {
+                    ResumePreviewHelper.shared.show(url: url)
+                } label: {
+                    Label("Preview", systemImage: "eye").font(.caption)
+                }
+                .buttonStyle(.borderless)
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                } label: {
+                    Label("Show DOCX", systemImage: "folder").font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash").font(.system(size: 11)).foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var scoreStrip: some View {
+        HStack(spacing: 12) {
+            scoreColumn(title: "BEFORE", score: generation.beforeScore)
+            Image(systemName: "arrow.right")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.secondary)
+            scoreColumn(title: "AFTER", score: generation.afterScore)
+            Spacer()
+            deltaChip
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.03))
+    }
+
+    @ViewBuilder
+    private var deltaChip: some View {
+        if let d = generation.scoreDelta {
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("CHANGE").font(.system(size: 8, weight: .semibold)).foregroundColor(.secondary)
+                Text(d >= 0 ? "+\(d)" : "\(d)")
+                    .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundColor(d > 0 ? .green : (d < 0 ? .red : .secondary))
+            }
+        }
+    }
+
+    private func scoreColumn(title: String, score: ResumeScore?) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            // Circular gauge
+            ZStack {
+                Circle()
+                    .stroke(color(for: score?.score).opacity(0.18), lineWidth: 3.5)
+                    .frame(width: 40, height: 40)
+                if let s = score {
+                    Circle()
+                        .trim(from: 0, to: CGFloat(min(max(s.score, 0), 100)) / 100.0)
+                        .stroke(color(for: s.score),
+                                style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                        .frame(width: 40, height: 40)
+                        .rotationEffect(.degrees(-90))
+                }
+                Text(score.map { "\($0.score)" } ?? "—")
+                    .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundColor(color(for: score?.score))
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                    .kerning(0.5)
+                if let verdict = score?.verdict, !verdict.isEmpty {
+                    Text(verdict)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 160, alignment: .leading)
+                } else {
+                    Text("Not scored")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private func color(for value: Int?) -> Color {
+        guard let v = value else { return .secondary }
+        if v >= 80 { return .green }
+        if v >= 60 { return .orange }
+        return .red
+    }
+
+    private var compareSelector: some View {
+        HStack(spacing: 4) {
+            tabChip("Diff",   isActive: compareTab == .diff)   { compareTab = .diff }
+            tabChip("Before", isActive: compareTab == .before) { compareTab = .before }
+            tabChip("After",  isActive: compareTab == .after)  { compareTab = .after }
+            Spacer()
+            if compareTab == .diff {
+                HStack(spacing: 0) {
+                    layoutChip("Inline",      isActive: diffLayout == .inline)      { diffLayout = .inline }
+                    layoutChip("Side-by-side", isActive: diffLayout == .sideBySide) { diffLayout = .sideBySide }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func layoutChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: { withAnimation(Design.Motion.fast) { action() } }) {
+            Text(label)
+                .font(.system(size: 9, weight: isActive ? .semibold : .medium))
+                .foregroundColor(isActive ? .white : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.08))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func tabChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: { withAnimation(Design.Motion.fast) { action() } }) {
+            Text(label)
+                .font(.system(size: 10, weight: isActive ? .semibold : .medium))
+                .foregroundColor(isActive ? .white : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.1))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func body(for tab: CompareTab) -> some View {
+        switch tab {
+        case .diff:
+            if diffLayout == .sideBySide {
+                HStack(alignment: .top, spacing: 0) {
+                    ScrollView {
+                        monoText(generation.baseText)
+                            .padding(10)
+                    }
+                    Divider()
+                    ScrollView {
+                        monoText(generation.generatedText)
+                            .padding(10)
+                    }
+                }
+            } else {
+                ScrollView {
+                    DiffView(before: generation.baseText, after: generation.generatedText)
+                        .padding(12)
+                }
+            }
+        case .before:
+            ScrollView { monoText(generation.baseText).padding(12) }
+        case .after:
+            ScrollView { monoText(generation.generatedText).padding(12) }
+        }
+    }
+
+    private func monoText(_ text: String) -> some View {
+        Text(text.isEmpty ? "—" : text)
+            .font(.system(size: 11, design: .monospaced))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Naive line-level diff view
+
+private struct DiffView: View {
+    let before: String
+    let after: String
+
+    fileprivate struct Row: Identifiable { let id = UUID(); let kind: Kind; let text: String }
+    fileprivate enum Kind { case unchanged, added, removed }
+
+    private var rows: [Row] {
+        Self.buildDiff(before: before, after: after)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { row in
+                HStack(alignment: .top, spacing: 6) {
+                    Text(marker(row.kind))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(tint(row.kind))
+                        .frame(width: 10)
+                    Text(row.text.isEmpty ? " " : row.text)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(row.kind == .removed ? .secondary : .primary)
+                        .strikethrough(row.kind == .removed, color: .red.opacity(0.6))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(bg(row.kind))
+            }
+        }
+    }
+
+    private func marker(_ k: Kind) -> String {
+        switch k { case .unchanged: return "·"; case .added: return "+"; case .removed: return "−" }
+    }
+    private func tint(_ k: Kind) -> Color {
+        switch k { case .unchanged: return .secondary.opacity(0.4); case .added: return .green; case .removed: return .red }
+    }
+    private func bg(_ k: Kind) -> Color {
+        switch k { case .unchanged: return .clear; case .added: return .green.opacity(0.08); case .removed: return .red.opacity(0.06) }
+    }
+
+    /// Naive LCS-free diff that falls back to "for each `after` line, mark it
+    /// added if it's not in `before`; emit removed lines once at the top" —
+    /// not as precise as git's diff but readable for resume-length text and
+    /// avoids a heavy dep. Good enough for the UX.
+    fileprivate static func buildDiff(before: String, after: String) -> [Row] {
+        let beforeLines = before.components(separatedBy: "\n")
+        let afterLines  = after .components(separatedBy: "\n")
+        let beforeSet   = Set(beforeLines.map { $0.trimmingCharacters(in: .whitespaces) }
+                                         .filter { !$0.isEmpty })
+        let afterSet    = Set(afterLines .map { $0.trimmingCharacters(in: .whitespaces) }
+                                         .filter { !$0.isEmpty })
+
+        var rows: [Row] = []
+        // Removed lines (present in before but not after)
+        for line in beforeLines where !line.trimmingCharacters(in: .whitespaces).isEmpty
+            && !afterSet.contains(line.trimmingCharacters(in: .whitespaces)) {
+            rows.append(Row(kind: .removed, text: line))
+        }
+        if !rows.isEmpty {
+            rows.append(Row(kind: .unchanged, text: ""))
+        }
+        // After lines as added/unchanged
+        for line in afterLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty {
+                rows.append(Row(kind: .unchanged, text: line))
+            } else if beforeSet.contains(trimmed) {
+                rows.append(Row(kind: .unchanged, text: line))
+            } else {
+                rows.append(Row(kind: .added, text: line))
+            }
+        }
+        return rows
     }
 }

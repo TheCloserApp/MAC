@@ -1,61 +1,39 @@
 import SwiftUI
 
+/// The small pill visible when the shell is collapsed. Rendered as the same
+/// 36×36 glass cell the sidebar uses for its close button — so when the user
+/// clicks to expand, the X cell lands on the exact same screen pixels the
+/// waveform was occupying. Transition feels like the waveform morphs into an
+/// X and the sidebar + panels grow out from around it.
 struct CollapsedPillView: View {
     @Environment(OverlayViewModel.self) private var vm
-    @Binding var expanded: Bool
 
     var body: some View {
         Button {
-            // Quick Ask has its own dedicated lifecycle — tapping the pill
-            // while it's active toggles it off. Otherwise, the pill is just
-            // the "expand the shell" action.
             if vm.isQuickAsking {
                 vm.toggleQuickAsk()
             } else {
                 withAnimation(Design.Motion.spring) {
-                    expanded = true
+                    vm.isShellExpanded = true
                 }
             }
         } label: {
             WaveformLogo()
-                .padding(.horizontal, 13)
-                .padding(.vertical, 10)
-                .background {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 14)
-                            .fill(.ultraThinMaterial)
-                            .opacity(vm.backgroundOpacity)
-                        RoundedRectangle(cornerRadius: 14)
-                            .stroke(borderColor, lineWidth: borderWidth)
-                    }
+                .frame(width: 36, height: 36)
+                .glassCard(cornerRadius: 12, shadow: Design.Shadow.card)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(recordingBorder, lineWidth: recordingBorder == .clear ? 0 : 1.5)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: 2)
         }
         .buttonStyle(.plain)
         .help("Open overlay")
-        .animation(.easeInOut(duration: 0.2), value: vm.isDictating)
-        .animation(.easeInOut(duration: 0.2), value: vm.isRecording)
     }
 
-    private var borderColor: Color {
+    private var recordingBorder: Color {
         if vm.isDictating    { return .orange.opacity(0.6) }
         if vm.isQuickAsking  { return .red.opacity(0.5) }
-        if vm.isRecording    { return .red.opacity(0.4) }
-        return .primary.opacity(0.06)
-    }
-
-    private var borderWidth: CGFloat {
-        (vm.isDictating || vm.isQuickAsking || vm.isRecording) ? 1.5 : 1
-    }
-
-    private var shadowColor: Color {
-        if vm.isDictating { return .orange.opacity(0.25) }
-        if vm.isRecording { return .red.opacity(0.2) }
-        return .black.opacity(0.12)
-    }
-
-    private var shadowRadius: CGFloat {
-        (vm.isDictating || vm.isRecording) ? 10 : 6
+        if vm.isRecording    { return .red.opacity(0.45) }
+        return .clear
     }
 }

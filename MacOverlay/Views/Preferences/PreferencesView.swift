@@ -4,30 +4,33 @@ import SwiftUI
 struct PreferencesView: View {
     @Environment(OverlayViewModel.self) private var vm
     @State private var tab: Tab = .general
+    @State private var showNewWorkspaceSheet = false
 
     enum Tab: String, CaseIterable, Identifiable {
-        case general   = "General"
-        case profile   = "Profile"
-        case ai        = "AI"
-        case memory    = "Memory"
-        case peer      = "Peer"
-        case shortcuts = "Shortcuts"
+        case general    = "General"
+        case profile    = "Profile"
+        case ai         = "AI"
+        case memory     = "Memory"
+        case workspaces = "Workspaces"
+        case peer       = "Peer"
+        case shortcuts  = "Shortcuts"
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .general:   return "slider.horizontal.3"
-            case .profile:   return "person.crop.circle"
-            case .ai:        return "sparkles"
-            case .memory:    return "brain"
-            case .peer:      return "person.2"
-            case .shortcuts: return "keyboard"
+            case .general:    return "slider.horizontal.3"
+            case .profile:    return "person.crop.circle"
+            case .ai:         return "sparkles"
+            case .memory:     return "brain"
+            case .workspaces: return "square.grid.2x2"
+            case .peer:       return "person.2"
+            case .shortcuts:  return "keyboard"
             }
         }
     }
 
     var body: some View {
         HStack(spacing: 0) {
-            // Sidebar
+            // Left tab rail
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Tab.allCases) { t in
                     tabRow(t)
@@ -35,7 +38,7 @@ struct PreferencesView: View {
                 Spacer()
             }
             .padding(10)
-            .frame(width: 150)
+            .frame(width: 140)
             .background(Color.primary.opacity(0.03))
 
             Divider()
@@ -44,19 +47,24 @@ struct PreferencesView: View {
             ScrollView {
                 Group {
                     switch tab {
-                    case .general:   generalTab
-                    case .profile:   profileTab
-                    case .ai:        aiTab
-                    case .memory:    memoryTab
-                    case .peer:      peerTab
-                    case .shortcuts: shortcutsTab
+                    case .general:    generalTab
+                    case .profile:    profileTab
+                    case .ai:         aiTab
+                    case .memory:     memoryTab
+                    case .workspaces: workspacesTab
+                    case .peer:       peerTab
+                    case .shortcuts:  shortcutsTab
                     }
                 }
-                .padding(20)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
-        .frame(width: 580, height: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $showNewWorkspaceSheet) {
+            NewWorkspaceSheet(isPresented: $showNewWorkspaceSheet)
+                .environment(vm)
+        }
     }
 
     private func tabRow(_ t: Tab) -> some View {
@@ -99,6 +107,20 @@ struct PreferencesView: View {
                              subtitle: "Sends after ~2s of silence while recording.")
             }
             .toggleStyle(.switch)
+
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                labelTwoLine(title: "Transcription engine",
+                             subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
+                Spacer()
+                Picker("", selection: $vm.transcriptionPreference) {
+                    ForEach(OverlayViewModel.TranscriptionPreference.allCases) { p in
+                        Text(p.displayName).tag(p)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 220)
+            }
         }
 
         section(title: "Onboarding") {
@@ -128,6 +150,32 @@ struct PreferencesView: View {
             KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
             KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+        }
+
+        section(title: "Resume prompts",
+                subtitle: "Pick a saved prompt, or drop in a one-off override. Save-as-preset to reuse across sessions.") {
+            resumePromptPicker(
+                kind: .resumeGeneration,
+                label: "Generation prompt",
+                overrideBinding: $vm.customResumeGenerationPrompt,
+                activeIDBinding: Binding(
+                    get: { store.activeResumeGenerationID },
+                    set: { store.activeResumeGenerationID = $0 }
+                ),
+                defaultText: OverlayViewModel.defaultResumeGenerationPrompt
+            )
+            .padding(.bottom, 8)
+
+            resumePromptPicker(
+                kind: .resumeScoring,
+                label: "Scoring prompt",
+                overrideBinding: $vm.customResumeScoringPrompt,
+                activeIDBinding: Binding(
+                    get: { store.activeResumeScoringID },
+                    set: { store.activeResumeScoringID = $0 }
+                ),
+                defaultText: OverlayViewModel.defaultResumeScoringPrompt
+            )
         }
 
         section(title: "Usage") {
@@ -189,7 +237,6 @@ struct PreferencesView: View {
 
                 Button("Manage…") {
                     vm.primarySurface = .prompts
-                    PreferencesWindowController.shared.close()
                 }
                 .buttonStyle(.bordered)
             }
@@ -245,6 +292,52 @@ struct PreferencesView: View {
                         .font(.system(size: 12).monospacedDigit())
                 }
                 .padding(.leading, 8)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var workspacesTab: some View {
+        @Bindable var vm = vm
+        let store = vm.workspaceStore
+        section(title: "Active workspace",
+                subtitle: "Each workspace has its own sidebar of features.") {
+            HStack {
+                Spacer()
+                Button {
+                    showNewWorkspaceSheet = true
+                } label: {
+                    Label("New workspace", systemImage: "plus")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(.bottom, 4)
+
+            VStack(spacing: 6) {
+                ForEach(store.workspaces) { w in
+                    WorkspaceRow(
+                        workspace: w,
+                        isActive: w.id == store.activeWorkspaceID,
+                        onSelect: { vm.switchWorkspace(to: w.id) },
+                        onRename: { newName in
+                            var updated = w
+                            updated.name = newName
+                            store.update(updated)
+                        },
+                        onToggleFeature: { feature in
+                            var updated = w
+                            if updated.enabledFeatures.contains(feature) {
+                                updated.enabledFeatures.remove(feature)
+                            } else {
+                                updated.enabledFeatures.insert(feature)
+                            }
+                            store.update(updated)
+                        },
+                        onDelete: w.isDefault ? nil : { vm.deleteWorkspace(id: w.id) }
+                    )
+                }
             }
         }
     }
@@ -388,6 +481,121 @@ struct PreferencesView: View {
         }
     }
 
+    /// Per-kind resume-prompt picker row. Shows a menu of saved presets (for
+    /// that kind), an inline override editor, and a "Save as preset" button
+    /// so users can turn a tweaked override into a named library item.
+    @ViewBuilder
+    private func resumePromptPicker(
+        kind: PromptPreset.Kind,
+        label: String,
+        overrideBinding: Binding<String>,
+        activeIDBinding: Binding<UUID?>,
+        defaultText: String
+    ) -> some View {
+        let store = vm.promptStore
+        let kindPresets = kind == .resumeGeneration
+            ? store.resumeGenerationPresets
+            : store.resumeScoringPresets
+        let activePreset = kind == .resumeGeneration
+            ? store.activeResumeGenerationPreset
+            : store.activeResumeScoringPreset
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                if !overrideBinding.wrappedValue.isEmpty {
+                    Button("Reset override") { overrideBinding.wrappedValue = "" }
+                        .font(.caption2).foregroundColor(.orange)
+                        .buttonStyle(.plain)
+                }
+            }
+
+            Menu {
+                Button {
+                    activeIDBinding.wrappedValue = nil
+                } label: {
+                    HStack {
+                        Text("Default")
+                        if activeIDBinding.wrappedValue == nil { Image(systemName: "checkmark") }
+                    }
+                }
+                if !kindPresets.isEmpty {
+                    Divider()
+                    ForEach(kindPresets) { p in
+                        Button {
+                            activeIDBinding.wrappedValue = p.id
+                        } label: {
+                            HStack {
+                                Text(p.name)
+                                if activeIDBinding.wrappedValue == p.id { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    let trimmed = overrideBinding.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let content = trimmed.isEmpty ? defaultText : trimmed
+                    let preset = store.add(
+                        name: kind == .resumeGeneration ? "New gen prompt" : "New score prompt",
+                        content: content,
+                        kind: kind,
+                        icon: "doc.text"
+                    )
+                    activeIDBinding.wrappedValue = preset.id
+                    overrideBinding.wrappedValue = ""
+                } label: {
+                    Label("Save override as preset", systemImage: "square.and.arrow.down")
+                }
+                .disabled(overrideBinding.wrappedValue.isEmpty)
+                Button {
+                    vm.primarySurface = .prompts
+                } label: {
+                    Label("Manage prompts library", systemImage: "text.bubble")
+                }
+            } label: {
+                HStack {
+                    Text(activePreset?.name ?? (overrideBinding.wrappedValue.isEmpty ? "Default" : "Custom override"))
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .menuStyle(.borderlessButton)
+
+            // Inline override editor — applies when no preset is selected.
+            TextEditor(text: overrideBinding)
+                .font(.system(size: 11))
+                .frame(height: 52)
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .disabled(activePreset != nil)
+                .opacity(activePreset == nil ? 1.0 : 0.45)
+
+            Group {
+                if let preset = activePreset {
+                    Text("Using preset “\(preset.name)”")
+                        .font(.caption2).foregroundColor(.accentColor)
+                } else {
+                    Text(overrideBinding.wrappedValue.isEmpty
+                         ? "Default: \(defaultText)"
+                         : "Using inline override.")
+                        .font(.caption2).foregroundColor(.secondary.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func shortcut(_ keys: String, _ desc: String) -> some View {
         HStack {
             Text(keys)
@@ -402,5 +610,140 @@ struct PreferencesView: View {
                 .foregroundColor(.secondary)
         }
         .padding(.vertical, 3)
+    }
+}
+
+// MARK: - Workspace row (used in Workspaces tab)
+
+private struct WorkspaceRow: View {
+    let workspace: Workspace
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onRename: (String) -> Void
+    let onToggleFeature: (String) -> Void
+    let onDelete: (() -> Void)?
+
+    @State private var isEditing = false
+    @State private var draftName = ""
+
+    private let allFeatures: [(key: String, label: String, icon: String)] = [
+        ("sessions", "History",  "clock.arrow.circlepath"),
+        ("prompts",  "Prompts",  "text.bubble"),
+        ("resumes",  "Resumes",  "doc.text"),
+        ("calendar", "Calendar", "calendar"),
+        ("browser",  "Browser",  "globe"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color(nsColor: NSColor(hex: workspace.colorHex) ?? .systemPurple))
+                    .frame(width: 10, height: 10)
+
+                if isEditing {
+                    TextField("Workspace name", text: $draftName, onCommit: commitRename)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, weight: .semibold))
+                        .onExitCommand { isEditing = false }
+                } else {
+                    Text(workspace.name)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+
+                if isActive {
+                    Text("ACTIVE")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.accentColor)
+                        .clipShape(Capsule())
+                }
+                if workspace.isDefault {
+                    Text("DEFAULT")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.2))
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                if !isActive {
+                    Button("Switch") { onSelect() }
+                        .font(.caption)
+                        .buttonStyle(.borderless)
+                }
+                Button {
+                    if isEditing { commitRename() }
+                    else {
+                        draftName = workspace.name
+                        isEditing = true
+                    }
+                } label: {
+                    Image(systemName: isEditing ? "checkmark" : "pencil")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                if let onDelete {
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // Feature toggles
+            VStack(spacing: 2) {
+                ForEach(allFeatures, id: \.key) { f in
+                    let on = workspace.enabledFeatures.contains(f.key)
+                    Button {
+                        onToggleFeature(f.key)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: f.icon)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(width: 16)
+                            Text(f.label)
+                                .font(.system(size: 11))
+                                .foregroundColor(.primary)
+                            Spacer()
+                            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 13))
+                                .foregroundColor(on ? .accentColor : .secondary.opacity(0.5))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isActive ? Color.accentColor.opacity(0.06) : Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isActive ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
+    }
+
+    private func commitRename() {
+        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty && trimmed != workspace.name {
+            onRename(trimmed)
+        }
+        isEditing = false
     }
 }

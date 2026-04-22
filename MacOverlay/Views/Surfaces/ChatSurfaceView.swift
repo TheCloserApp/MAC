@@ -11,7 +11,13 @@ struct ChatSurfaceView: View {
 
     var body: some View {
         let session = vm.sessionStore.activeSession
-        content(session: session)
+        VStack(spacing: 0) {
+            if vm.sessionMode == .interview && (vm.isInterviewSession || vm.isRecording) {
+                InterviewHUD()
+                Divider().opacity(0.4)
+            }
+            content(session: session)
+        }
             .overlay {
                 if isDropTargeted {
                     dropOverlay

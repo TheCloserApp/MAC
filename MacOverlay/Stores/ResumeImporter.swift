@@ -31,13 +31,22 @@ enum ResumeImporter {
     }
 
     static func importFile(url: URL) throws -> String {
+        try importFileWithSource(url: url).text
+    }
+
+    /// Extracts text, plus the original DOCX bytes when the input is a .docx.
+    /// Having the raw bytes lets the resume generator rewrite text in-place
+    /// while keeping fonts, styles, and layout from the original document.
+    static func importFileWithSource(url: URL) throws -> (text: String, originalDOCX: Data?) {
         let ext = url.pathExtension.lowercased()
         let text: String
+        var original: Data? = nil
         switch ext {
         case "pdf":
             text = try extractPDF(url: url)
         case "docx":
             text = try extractDOCX(url: url)
+            original = try? Data(contentsOf: url)
         case "rtf":
             text = try extractRTF(url: url)
         case "txt", "md", "markdown":
@@ -49,7 +58,7 @@ enum ResumeImporter {
         }
         let cleaned = normalizeWhitespace(text)
         if cleaned.isEmpty { throw ImportError.empty }
-        return cleaned
+        return (cleaned, original)
     }
 
     // MARK: - PDF

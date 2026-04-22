@@ -33,6 +33,10 @@ struct ChatSession: Identifiable, Codable, Hashable {
     /// this session. Guards against the auto-title routine overwriting a
     /// user-chosen name.
     var titleManuallySet: Bool = false
+    /// Pinned sessions float to the top of History and survive normal
+    /// date-based sorting. Defaults to false for back-compat with older
+    /// JSON stores that don't have the key.
+    var isPinned: Bool = false
     var mode: SessionMode
     var promptPresetID: UUID?
     /// The workspace this session belongs to. Optional for back-compat with
@@ -46,6 +50,7 @@ struct ChatSession: Identifiable, Codable, Hashable {
     init(id: UUID = UUID(),
          title: String = "",
          titleManuallySet: Bool = false,
+         isPinned: Bool = false,
          mode: SessionMode = .general,
          promptPresetID: UUID? = nil,
          workspaceID: UUID? = nil,
@@ -55,12 +60,34 @@ struct ChatSession: Identifiable, Codable, Hashable {
         self.id = id
         self.title = title
         self.titleManuallySet = titleManuallySet
+        self.isPinned = isPinned
         self.mode = mode
         self.promptPresetID = promptPresetID
         self.workspaceID = workspaceID
         self.turns = turns
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    // Codable migration: sessions saved before `isPinned` existed decode
+    // with a sensible default instead of throwing.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, titleManuallySet, isPinned, mode,
+             promptPresetID, workspaceID, turns, createdAt, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id               = try c.decode(UUID.self,         forKey: .id)
+        self.title            = try c.decodeIfPresent(String.self,      forKey: .title) ?? ""
+        self.titleManuallySet = try c.decodeIfPresent(Bool.self,        forKey: .titleManuallySet) ?? false
+        self.isPinned         = try c.decodeIfPresent(Bool.self,        forKey: .isPinned) ?? false
+        self.mode             = try c.decodeIfPresent(SessionMode.self, forKey: .mode) ?? .general
+        self.promptPresetID   = try c.decodeIfPresent(UUID.self,        forKey: .promptPresetID)
+        self.workspaceID      = try c.decodeIfPresent(UUID.self,        forKey: .workspaceID)
+        self.turns            = try c.decodeIfPresent([ChatTurn].self,  forKey: .turns) ?? []
+        self.createdAt        = try c.decodeIfPresent(Date.self,        forKey: .createdAt) ?? Date()
+        self.updatedAt        = try c.decodeIfPresent(Date.self,        forKey: .updatedAt) ?? Date()
     }
 
     /// Title auto-derived from the first user turn if not explicitly set.

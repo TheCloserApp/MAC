@@ -2,7 +2,7 @@ import Foundation
 
 /// Result of scoring a resume against a JD. Parsed from the strict plain-text
 /// format the AI is asked to return.
-struct ResumeScore {
+struct ResumeScore: Codable, Hashable {
     let score:     Int
     let verdict:   String
     let missing:   [String]

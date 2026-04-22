@@ -1,138 +1,185 @@
 import SwiftUI
 
-/// Vertical column of separate glass pills. Each cell floats independently
-/// with a visible gap from its neighbours. The top cell is the brand/close
-/// toggle — when expanded it reads as X (collapse), when collapsed it's the
-/// waveform logo.
+/// Sidebar column. Cells are Control-Center-style tinted glass pills, grouped
+/// into a primary (close / + / feature) block and a footer (workspace /
+/// settings) block. When the shell expands, each cell cascades in with a
+/// small staggered drop so the sidebar feels like it unfolds from the pill.
 struct SidebarView: View {
     @Environment(OverlayViewModel.self) private var vm
-    @Binding var expanded: Bool
+
+    private let alwaysVisible: [OverlayViewModel.PrimarySurface] = [.chat]
+    private let toggleable: [OverlayViewModel.PrimarySurface] = [
+        .sessions, .prompts, .resumes, .calendar, .browser
+    ]
+
+    private var visibleFeatures: [OverlayViewModel.PrimarySurface] {
+        let enabled = vm.workspaceStore.activeWorkspace.enabledFeatures
+        return alwaysVisible + toggleable.filter { enabled.contains($0.rawValue) }
+    }
 
     var body: some View {
-        VStack(spacing: Design.cardGap) {
-            closeCell
-            WorkspaceSwitcherView()
-                .frame(width: 36, height: 36)
-                .glassCard(cornerRadius: 12, shadow: Design.Shadow.card)
-            newSessionCell
-
-            surfaceCell(.chat,     icon: "bubble.left.and.bubble.right",
-                        activeIcon: "bubble.left.and.bubble.right.fill", tooltip: "Session")
-            surfaceCell(.sessions, icon: "clock.arrow.circlepath",
-                        activeIcon: "clock.arrow.circlepath",            tooltip: "History")
-            surfaceCell(.prompts,  icon: "text.bubble",
-                        activeIcon: "text.bubble.fill",                  tooltip: "Prompts")
-            surfaceCell(.resumes,  icon: "doc.text",
-                        activeIcon: "doc.text.fill",                     tooltip: "Resumes")
-            surfaceCell(.calendar, icon: "calendar",
-                        activeIcon: "calendar",                          tooltip: "Calendar")
-            surfaceCell(.browser,  icon: "globe",
-                        activeIcon: "globe",                             tooltip: "Browser")
-
-            Spacer()
-
-            preferencesCell
+        // Fixed top-to-bottom order regardless of where the pill sits on screen.
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 10) {
+                headerGroup
+                Spacer(minLength: 0)
+                footerGroup
+            }
+            .padding(.vertical, 2)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(width: 44)
     }
 
+    // MARK: - Groups
+
+    private var headerGroup: some View {
+        VStack(spacing: 6) {
+            cascaded(index: 0) { closeCell }
+            cascaded(index: 1) { newSessionCell }
+            ForEach(Array(visibleFeatures.enumerated()), id: \.element) { i, surface in
+                cascaded(index: 2 + i) { surfaceCell(surface) }
+            }
+        }
+    }
+
+private var footerGroup: some View {
+        VStack(spacing: 6) {
+            cascaded(index: 99) { workspaceCell }
+            cascaded(index: 100) { surfaceCell(.settings) }
+        }
+    }
+
+    @ViewBuilder
+    private func cascaded<V: View>(index: Int, @ViewBuilder _ content: () -> V) -> some View {
+        content()
+    }
+
     // MARK: - Cells
 
-    /// Brand-or-close cell. Expanded: X (click collapses). Collapsed: waveform.
     private var closeCell: some View {
         Button {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
-                expanded = false
+                vm.isShellExpanded = false
             }
         } label: {
-            ZStack {
-                if expanded {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.primary.opacity(0.75))
-                        .transition(.opacity.combined(with: .scale(scale: 0.7)))
-                } else {
-                    WaveformLogo()
-                        .transition(.opacity.combined(with: .scale(scale: 0.7)))
-                }
-            }
-            .frame(width: 36, height: 36)
+            TintedIconCell(
+                icon: "xmark",
+                weight: .semibold,
+                tint: .primary.opacity(0.75),
+                isActive: false
+            )
         }
         .buttonStyle(.plain)
-        .glassCard(cornerRadius: 12, shadow: Design.Shadow.card)
         .help("Collapse to pill")
-        .animation(Design.Motion.pop, value: expanded)
     }
 
     private var newSessionCell: some View {
         Button { vm.startNewSession() } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 36, height: 36)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.accentColor)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-                }
-                .designShadow(Design.Shadow.card)
+            TintedIconCell(
+                icon: "plus",
+                weight: .semibold,
+                tint: .white,
+                backgroundTint: .accentColor,
+                isActive: true
+            )
         }
         .buttonStyle(.plain)
         .help("New session (⌘N)")
     }
 
-    private var preferencesCell: some View {
-        Button {
-            PreferencesWindowController.shared.show(vm: vm)
-        } label: {
-            Image(systemName: "gearshape")
-                .font(.system(size: 14))
-                .foregroundColor(vm.needsKeyForCurrentModel ? .orange : .primary.opacity(0.7))
-                .frame(width: 36, height: 36)
-        }
-        .buttonStyle(.plain)
-        .glassCard(cornerRadius: 12, shadow: Design.Shadow.card)
-        .help("Preferences (⌘,)")
+    private var workspaceCell: some View {
+        WorkspaceSwitcherView()
+            .frame(width: 34, height: 34)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.regularMaterial)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     @ViewBuilder
-    private func surfaceCell(_ surface: OverlayViewModel.PrimarySurface,
-                             icon: String,
-                             activeIcon: String,
-                             tooltip: String) -> some View {
+    private func surfaceCell(_ surface: OverlayViewModel.PrimarySurface) -> some View {
         let active = vm.primarySurface == surface
-        let label = Image(systemName: active ? activeIcon : icon)
-            .font(.system(size: 14, weight: active ? .semibold : .regular))
-            .foregroundColor(active ? .white : .primary.opacity(0.75))
-            .frame(width: 36, height: 36)
-
         Button {
             withAnimation(Design.Motion.pop) {
-                // Click again to close the right panel.
                 vm.primarySurface = active ? nil : surface
             }
         } label: {
-            if active {
-                label
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.accentColor)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5)
-                    }
-                    .designShadow(Design.Shadow.card)
-            } else {
-                label.glassCard(cornerRadius: 12, shadow: Design.Shadow.card)
-            }
+            TintedIconCell(
+                icon: active ? surface.activeIcon : surface.icon,
+                weight: active ? .semibold : .regular,
+                tint: active ? tintColor(for: surface) : .primary.opacity(0.6),
+                backgroundTint: active ? tintColor(for: surface).opacity(0.16) : nil,
+                isActive: active,
+                highlightTint: surface == .settings && vm.needsKeyForCurrentModel ? .orange : nil
+            )
         }
         .buttonStyle(.plain)
-        .help(tooltip)
-        .scaleEffect(active ? 1.04 : 1.0)
-        .animation(Design.Motion.pop, value: active)
+        .help(surface.displayName)
+    }
+
+    /// Per-surface accent. Slightly desaturated so a column of pills doesn't
+    /// look like a Christmas tree — similar to macOS system-setting icons.
+    private func tintColor(for surface: OverlayViewModel.PrimarySurface) -> Color {
+        switch surface {
+        case .chat:     return .accentColor
+        case .sessions: return Color(nsColor: .systemIndigo)
+        case .prompts:  return Color(nsColor: .systemPink)
+        case .resumes:  return Color(nsColor: .systemBlue)
+        case .calendar: return Color(nsColor: .systemRed)
+        case .browser:  return Color(nsColor: .systemTeal)
+        case .settings: return Color(nsColor: .secondaryLabelColor)
+        }
+    }
+}
+
+// MARK: - Tinted cell
+
+/// 34×34 glass pill with a tinted icon. Mirrors macOS Control-Center look:
+/// subtle material base, very light border, color tint only on the icon when
+/// inactive, soft tint fill on the icon's background when active.
+private struct TintedIconCell: View {
+    let icon: String
+    var weight: Font.Weight = .regular
+    let tint: Color
+    /// When set, the cell's background fills with this tint (active state).
+    var backgroundTint: Color? = nil
+    var isActive: Bool = false
+    /// Override color for attention states (e.g. missing API key).
+    var highlightTint: Color? = nil
+
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            // Soft material background so the cell reads as "glass chip".
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.regularMaterial)
+            // Hover / active tint — kept light so pills stay cohesive.
+            if let backgroundTint {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(backgroundTint)
+                    .transition(.opacity)
+            } else if hovering {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(isActive ? 0.08 : 0.05), lineWidth: 0.5)
+
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: weight))
+                .foregroundColor(highlightTint ?? tint)
+        }
+        .frame(width: 34, height: 34)
+        .scaleEffect(hovering ? 1.03 : 1.0)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(Design.Motion.pop, value: isActive)
     }
 }

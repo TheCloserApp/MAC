@@ -24,19 +24,22 @@ class AIManager {
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
-        history: [(user: String, assistant: String)] = []
+        history: [(user: String, assistant: String)] = [],
+        maxTokens: Int = 1024,
+        timeoutInterval: TimeInterval = 60
     ) async throws -> String {
         if isOpenAIModel(model) {
-            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history)
+            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
         } else {
-            return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history)
+            return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
         }
     }
 
-    private func sendAnthropic(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)]) async throws -> String {
+    private func sendAnthropic(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval) async throws -> String {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        req.timeoutInterval = timeoutInterval
         req.setValue(apiKey,        forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",  forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -56,7 +59,7 @@ class AIManager {
         messages.append(["role": "user", "content": parts])
 
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_tokens": 1024,
+            "model": model, "max_tokens": maxTokens,
             "system": systemPrompt,
             "messages": messages
         ])
@@ -71,10 +74,11 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)]) async throws -> String {
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval) async throws -> String {
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        req.timeoutInterval = timeoutInterval
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
 
@@ -93,7 +97,7 @@ class AIManager {
         messages.append(["role": "user", "content": parts])
 
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_tokens": 1024,
+            "model": model, "max_tokens": maxTokens,
             "messages": messages
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -106,6 +110,255 @@ class AIManager {
             let text    = result["content"] as? String
         else { throw AIError.parseError }
         return text
+    }
+
+    // MARK: - Tool use (agent loop)
+
+    /// One tool definition advertised to Claude. Supports both:
+    /// - **Custom tools** — fully user-defined with a JSON-schema input.
+    /// - **Built-in Anthropic tools** like `text_editor_20250429`, where
+    ///   Claude is specifically trained on the tool's commands. For those,
+    ///   the payload only carries `type` + `name`; Anthropic supplies the
+    ///   schema and command catalogue server-side.
+    struct Tool {
+        let type: String?       // Anthropic built-in tool type, if applicable
+        let name: String
+        let description: String
+        let inputSchema: [String: Any]
+
+        /// Construct a custom tool with your own JSON-schema input.
+        init(name: String, description: String, inputSchema: [String: Any]) {
+            self.type = nil
+            self.name = name
+            self.description = description
+            self.inputSchema = inputSchema
+        }
+
+        /// Construct a built-in Anthropic tool (e.g. `text_editor_20250429`,
+        /// `bash_20250124`). `type` is the Anthropic tool identifier; `name`
+        /// is the local name you'll see in `tool_use` callbacks.
+        init(builtInType: String, name: String) {
+            self.type = builtInType
+            self.name = name
+            self.description = ""
+            self.inputSchema = [:]
+        }
+    }
+
+    /// Run an Anthropic tool-use loop: Claude asks to call a tool, we execute
+    /// it and feed the result back, repeat until Claude stops calling tools.
+    /// This is exactly how the `docx` skill works in the browser — small,
+    /// verified edits with feedback at every step instead of one big blob.
+    ///
+    /// `handle` is called synchronously for each tool request. Returning a
+    /// string means success; throwing inserts an error tool_result (Claude
+    /// sees the error and can adapt).
+    func sendWithTools(
+        initialUserMessage: String,
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        tools: [Tool],
+        maxIterations: Int = 24,
+        maxTokens: Int = 8192,
+        timeoutInterval: TimeInterval = 300,
+        onStatus: (@Sendable (String) -> Void)? = nil,
+        handle: (_ name: String, _ input: [String: Any]) async throws -> String
+    ) async throws -> String {
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { throw AIError.invalidURL }
+
+        let toolsPayload: [[String: Any]] = tools.map { t in
+            if let type = t.type {
+                return ["type": type, "name": t.name]
+            }
+            return ["name": t.name, "description": t.description, "input_schema": t.inputSchema]
+        }
+        // Built-in tools require the computer-use beta header. Safe to set
+        // unconditionally when any built-in tool is present — the server
+        // ignores it for requests that don't need it.
+        let hasBuiltIn = tools.contains { $0.type != nil }
+
+        // Running transcript — we append assistant turns and user turns
+        // (tool_result blocks) until Claude stops requesting tools.
+        var messages: [[String: Any]] = [
+            ["role": "user", "content": initialUserMessage]
+        ]
+
+        for iteration in 0..<maxIterations {
+            onStatus?(iteration == 0 ? "Thinking about your résumé…" : "Thinking…")
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = timeoutInterval
+            req.setValue(apiKey,             forHTTPHeaderField: "x-api-key")
+            req.setValue("2023-06-01",       forHTTPHeaderField: "anthropic-version")
+            req.setValue("application/json", forHTTPHeaderField: "content-type")
+            if hasBuiltIn {
+                // Covers text_editor_20250728 / bash_20250124 — Claude 4 betas.
+                req.setValue("computer-use-2025-01-24", forHTTPHeaderField: "anthropic-beta")
+            }
+            // Prompt caching: emit system prompt and the first user message as
+            // content blocks with `cache_control: ephemeral`. Cached prefixes
+            // skip 90% of input-token billing on reuse across the agent loop.
+            // Only the first user message (not subsequent tool_result turns)
+            // is cached — later turns are always different.
+            var cachedMessages: [[String: Any]] = messages
+            if let first = cachedMessages.first,
+               (first["role"] as? String) == "user",
+               let text = first["content"] as? String {
+                cachedMessages[0] = [
+                    "role": "user",
+                    "content": [[
+                        "type": "text",
+                        "text": text,
+                        "cache_control": ["type": "ephemeral"]
+                    ]]
+                ]
+            }
+            let systemBlocks: [[String: Any]] = [[
+                "type": "text",
+                "text": systemPrompt,
+                "cache_control": ["type": "ephemeral"]
+            ]]
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": model,
+                "max_tokens": maxTokens,
+                "system": systemBlocks,
+                "tools": toolsPayload,
+                "messages": cachedMessages,
+            ])
+
+            // 429 retry loop — long agent flows carry a growing conversation
+            // history, so per-minute input token limits get hit often. Honour
+            // the `retry-after` / `anthropic-ratelimit-*-reset` headers when
+            // present, else back off exponentially (5s → 15s → 30s → 60s).
+            var attempt = 0
+            let maxAttempts = 6
+            var data: Data = Data()
+            var http: HTTPURLResponse = HTTPURLResponse()
+            while true {
+                let (d, r) = try await URLSession.shared.data(for: req)
+                guard let h = r as? HTTPURLResponse else { throw AIError.invalidResponse }
+                if h.statusCode == 200 { data = d; http = h; break }
+                if h.statusCode == 429, attempt < maxAttempts {
+                    let waitSec = Self.rateLimitWait(from: h, attempt: attempt)
+                    onStatus?("Rate-limited — waiting \(Int(waitSec))s before retrying…")
+                    try await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
+                    attempt += 1
+                    continue
+                }
+                throw AIError.apiError(h.statusCode, String(data: d, encoding: .utf8) ?? "")
+            }
+            _ = http
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let content = json["content"] as? [[String: Any]]
+            else { throw AIError.parseError }
+
+            // Record the assistant's turn verbatim so the next call includes it.
+            messages.append(["role": "assistant", "content": content])
+
+            // Collect any tool_use blocks and execute them.
+            var toolResults: [[String: Any]] = []
+            var sawToolUse = false
+            for block in content {
+                guard let type = block["type"] as? String else { continue }
+                if type == "tool_use" {
+                    sawToolUse = true
+                    let toolName = block["name"] as? String ?? ""
+                    let toolId   = block["id"] as? String ?? ""
+                    let toolInput = block["input"] as? [String: Any] ?? [:]
+                    onStatus?(Self.statusLine(for: toolInput))
+                    do {
+                        let output = try await handle(toolName, toolInput)
+                        toolResults.append([
+                            "type": "tool_result",
+                            "tool_use_id": toolId,
+                            "content": output
+                        ])
+                    } catch {
+                        toolResults.append([
+                            "type": "tool_result",
+                            "tool_use_id": toolId,
+                            "content": "Error: \(error.localizedDescription)",
+                            "is_error": true
+                        ])
+                    }
+                }
+            }
+
+            // No tool calls → Claude is done. Return concatenated text blocks.
+            if !sawToolUse {
+                let texts = content.compactMap { $0["text"] as? String }
+                return texts.joined(separator: "\n")
+            }
+
+            // Feed tool results back as the next user turn and loop.
+            messages.append(["role": "user", "content": toolResults])
+        }
+        throw AIError.apiError(0, "Tool-use loop exceeded \(maxIterations) iterations without a final response")
+    }
+
+    /// Translate a tool_use `input` dict into a short user-facing status line.
+    /// Keeps the viewer in the loop without exposing raw XML or tool internals.
+    private static func statusLine(for input: [String: Any]) -> String {
+        let cmd = input["command"] as? String ?? ""
+        switch cmd {
+        case "view":
+            if let r = input["view_range"] as? [Int], r.count >= 2 {
+                return "Reviewing résumé (lines \(r[0])–\(r[1]))…"
+            }
+            return "Reading the résumé…"
+        case "str_replace":
+            let old = (input["old_str"] as? String ?? "")
+            let snippet = old
+                .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let preview = snippet.count > 60 ? String(snippet.prefix(60)) + "…" : snippet
+            if preview.isEmpty { return "Editing a section…" }
+            return "Editing: “\(preview)”"
+        case "insert":
+            return "Adding a new bullet…"
+        case "create":
+            return "Rewriting the document…"
+        case "undo_edit":
+            return "Undoing last edit…"
+        default:
+            return "Working…"
+        }
+    }
+
+    /// Compute how long to wait before retrying a 429. Prefers Anthropic's
+    /// per-bucket reset timestamp headers when present; falls back to a
+    /// capped exponential backoff so the loop always makes forward progress.
+    private static func rateLimitWait(from response: HTTPURLResponse, attempt: Int) -> Double {
+        // Anthropic's rate-limit reset headers are ISO-8601 timestamps.
+        let resetHeaders = [
+            "anthropic-ratelimit-input-tokens-reset",
+            "anthropic-ratelimit-requests-reset",
+            "anthropic-ratelimit-tokens-reset",
+        ]
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var longestWait: TimeInterval = 0
+        for key in resetHeaders {
+            if let val = response.value(forHTTPHeaderField: key) {
+                if let d = fmt.date(from: val) ?? ISO8601DateFormatter().date(from: val) {
+                    let delta = d.timeIntervalSinceNow
+                    if delta > longestWait { longestWait = delta }
+                }
+            }
+        }
+        // `retry-after` is a standard HTTP header: integer seconds.
+        if let ra = response.value(forHTTPHeaderField: "retry-after"),
+           let sec = Double(ra), sec > longestWait {
+            longestWait = sec
+        }
+        if longestWait <= 0 {
+            // Exponential backoff: 5, 15, 30, 60, 90, 120 seconds.
+            let steps: [Double] = [5, 15, 30, 60, 90, 120]
+            longestWait = steps[min(attempt, steps.count - 1)]
+        }
+        // Small cushion + hard cap at 2 minutes per attempt.
+        return min(120, longestWait + 1)
     }
 
     // MARK: - Streaming
