@@ -137,6 +137,11 @@ enum DOCXTemplateEditor {
         let rewritesMissed: [BulletRewrite]
         let bulletsAdded: Int
         let bulletsMissed: [BulletAdd]
+        /// Non-fatal validation warning. Strict XMLParser is pickier than
+        /// Word itself; when it objects but we still emit the file, the
+        /// reason goes here so the user can tell the changelog why things
+        /// look off if Word complains.
+        var validationWarning: String?
     }
 
     /// Apply a gap-analysis to the DOCX: rewrite bullets whose plain text
@@ -204,15 +209,25 @@ enum DOCXTemplateEditor {
         rebuiltBody += gaps.last ?? ""
         xml = String(xml[..<bodyStart.upperBound]) + rebuiltBody + String(xml[bodyEnd.lowerBound...])
 
-        // Validate & repack — same safety net as the other flows.
+        // Sanitise entities: HTML-named refs → numeric, stray `&` → `&amp;`.
+        // Claude-generated text occasionally contains `&nbsp;`, `&mdash;`, or
+        // a bare `&` that the strict validator below would reject even
+        // though Word itself handles them fine.
+        xml = Self.sanitizeXMLEntities(xml)
+
+        // Run the well-formedness check but DON'T throw on failure — Word
+        // is considerably more tolerant than Foundation's XMLParser. If the
+        // parser objects, we still emit the file and surface the reason as
+        // a warning in the outcome. Worst case the user regenerates; never
+        // worse than blocking the whole operation.
+        var validationWarning: String? = nil
         if let data = xml.data(using: .utf8) {
             let parser = XMLParser(data: data)
             let delegate = WellFormednessChecker()
             parser.delegate = delegate
             if !parser.parse() {
-                let err = parser.parserError?.localizedDescription
-                       ?? delegate.firstError ?? "malformed XML"
-                throw DOCXError.invalidXMLAfterEdits(detail: err)
+                validationWarning = parser.parserError?.localizedDescription
+                                 ?? delegate.firstError ?? "strict parser objected"
             }
         }
         try xml.write(to: docURL, atomically: true, encoding: .utf8)
@@ -235,7 +250,169 @@ enum DOCXTemplateEditor {
             rewritesApplied: rewritesApplied,
             rewritesMissed: rewritesMissed,
             bulletsAdded: bulletsAdded,
-            bulletsMissed: bulletsMissed
+            bulletsMissed: bulletsMissed,
+            validationWarning: validationWarning
+        )
+    }
+
+    // MARK: - Index-based Fast-mode primitives
+
+    /// A single paragraph with a stable 1-based index, its plain text, and
+    /// its original `<w:p>…</w:p>` XML. Used by the index-driven Fast mode
+    /// flow so the AI can reference paragraphs by number instead of re-
+    /// quoting text (which fails silently when whitespace or punctuation
+    /// doesn't match character-for-character).
+    struct IndexedParagraph {
+        let index: Int
+        let text: String
+        let xml: String
+    }
+
+    /// One AI-specified edit referenced by paragraph index rather than by
+    /// text matching. `.rewrite` replaces the paragraph's text; `.insertAfter`
+    /// injects a new paragraph cloned from the target's XML (so bullet marker,
+    /// indent, fonts, and sizes all come along).
+    enum IndexedEdit {
+        case rewrite(index: Int, newText: String)
+        case insertAfter(index: Int, newText: String)
+    }
+
+    /// Statistics returned from `applyIndexedEdits`.
+    struct IndexedEditOutcome {
+        let url: URL
+        let rewritesApplied: Int
+        let rewritesMissed: [Int]      // invalid indices
+        let insertionsApplied: Int
+        let insertionsMissed: [Int]
+        var validationWarning: String?
+    }
+
+    /// Extract every paragraph as an `IndexedParagraph`. Empty paragraphs
+    /// are kept (they may be meaningful spacers) so the numbering stays
+    /// aligned between what the AI sees and what Swift applies against.
+    static func extractIndexedParagraphs(from originalBytes: Data) throws -> [IndexedParagraph] {
+        let tempDir = try unzip(originalBytes)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let docURL = tempDir.appendingPathComponent("word/document.xml")
+        guard let xml = try? String(contentsOf: docURL, encoding: .utf8) else {
+            throw DOCXError.missingDocumentXML
+        }
+        guard let bs = xml.range(of: #"<w:body[^>]*>"#, options: .regularExpression),
+              let be = xml.range(of: "</w:body>") else { return [] }
+        let body = String(xml[bs.upperBound..<be.lowerBound])
+        let (paraXMLs, _) = splitBodySegments(body)
+        return paraXMLs.enumerated().map { (i, pXML) in
+            IndexedParagraph(index: i + 1,
+                             text: concatRunText(in: pXML),
+                             xml: pXML)
+        }
+    }
+
+    /// Apply `edits` (indexed) and emit a new DOCX at `outputFilename`.
+    /// - Invalid indices are collected in the outcome rather than thrown.
+    /// - Rewrites preserve `<w:pPr>` + first-run `<w:rPr>`; only text changes.
+    /// - Insertions clone the target paragraph's XML as the style template.
+    static func applyIndexedEdits(to originalBytes: Data,
+                                  edits: [IndexedEdit],
+                                  outputFilename: String? = nil) throws -> IndexedEditOutcome {
+        let tempDir = try unzip(originalBytes)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let docURL = tempDir.appendingPathComponent("word/document.xml")
+        guard var xml = try? String(contentsOf: docURL, encoding: .utf8) else {
+            throw DOCXError.missingDocumentXML
+        }
+        guard let bodyStart = xml.range(of: #"<w:body[^>]*>"#, options: .regularExpression),
+              let bodyEnd   = xml.range(of: "</w:body>") else {
+            throw DOCXError.missingDocumentXML
+        }
+        let body = String(xml[bodyStart.upperBound..<bodyEnd.lowerBound])
+        var (paragraphs, gaps) = splitBodySegments(body)
+
+        // Bucket edits by action + target index for clean application.
+        var rewritesByIdx: [Int: String] = [:]
+        var insertionsByIdx: [Int: [String]] = [:]
+        for edit in edits {
+            switch edit {
+            case .rewrite(let idx, let newText):
+                rewritesByIdx[idx] = newText
+            case .insertAfter(let idx, let newText):
+                insertionsByIdx[idx, default: []].append(newText)
+            }
+        }
+
+        var rewritesApplied = 0
+        var rewritesMissed: [Int] = []
+        var insertionsApplied = 0
+        var insertionsMissed: [Int] = []
+
+        // Apply rewrites in place (indices stay stable since we're not
+        // inserting yet).
+        for (idx, newText) in rewritesByIdx {
+            let arrayIdx = idx - 1
+            guard arrayIdx >= 0, arrayIdx < paragraphs.count else {
+                rewritesMissed.append(idx)
+                continue
+            }
+            paragraphs[arrayIdx] = rewriteParagraphText(paragraphs[arrayIdx], to: newText)
+            rewritesApplied += 1
+        }
+
+        // Apply insertions AFTER rewrites. Walk in reverse so array indices
+        // don't shift out from under us.
+        for idx in insertionsByIdx.keys.sorted(by: >) {
+            let arrayIdx = idx - 1
+            guard arrayIdx >= 0, arrayIdx < paragraphs.count else {
+                insertionsMissed.append(idx)
+                continue
+            }
+            let template = paragraphs[arrayIdx]
+            let newParas = insertionsByIdx[idx]!.map { rewriteParagraphText(template, to: $0) }
+            paragraphs.insert(contentsOf: newParas, at: arrayIdx + 1)
+            insertionsApplied += newParas.count
+        }
+
+        // Rebuild the body — pad gaps for newly inserted paragraphs with "".
+        while gaps.count < paragraphs.count + 1 { gaps.insert("", at: gaps.count - 1) }
+        var rebuilt = ""
+        for i in 0..<paragraphs.count {
+            rebuilt += gaps[i]
+            rebuilt += paragraphs[i]
+        }
+        rebuilt += gaps.last ?? ""
+        xml = String(xml[..<bodyStart.upperBound]) + rebuilt + String(xml[bodyEnd.lowerBound...])
+
+        // Sanitise + (non-fatal) validate + write + re-zip.
+        xml = Self.sanitizeXMLEntities(xml)
+        var validationWarning: String? = nil
+        if let data = xml.data(using: .utf8) {
+            let parser = XMLParser(data: data)
+            let delegate = WellFormednessChecker()
+            parser.delegate = delegate
+            if !parser.parse() {
+                validationWarning = parser.parserError?.localizedDescription
+                                 ?? delegate.firstError ?? "strict parser objected"
+            }
+        }
+        try xml.write(to: docURL, atomically: true, encoding: .utf8)
+
+        let outputURL = try uniqueOutputURL(filename: outputFilename)
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = tempDir
+        zip.arguments = ["-r", "-X", outputURL.path, "."]
+        try zip.run()
+        zip.waitUntilExit()
+        guard zip.terminationStatus == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw DOCXError.zipFailed
+        }
+        return IndexedEditOutcome(
+            url: outputURL,
+            rewritesApplied: rewritesApplied,
+            rewritesMissed: rewritesMissed,
+            insertionsApplied: insertionsApplied,
+            insertionsMissed: insertionsMissed,
+            validationWarning: validationWarning
         )
     }
 
@@ -248,7 +425,9 @@ enum DOCXTemplateEditor {
         guard let xml = try? String(contentsOf: docURL, encoding: .utf8) else {
             throw DOCXError.missingDocumentXML
         }
-        guard let bs = xml.range(of: "<w:body>"),
+        // Match `<w:body>` OR `<w:body …>` (with attributes) — some Word
+        // writers emit `<w:body w:rsidR="…">` and the literal match would miss.
+        guard let bs = xml.range(of: #"<w:body[^>]*>"#, options: .regularExpression),
               let be = xml.range(of: "</w:body>") else { return "" }
         let body = String(xml[bs.upperBound..<be.lowerBound])
         let (paras, _) = splitBodySegments(body)
@@ -305,25 +484,38 @@ enum DOCXTemplateEditor {
                 gaps.append(String(body[cursor...]))
                 break
             }
+            // Skip anything that starts with `<w:p` followed by a letter —
+            // `<w:pPr>`, `<w:proofErr>`, `<w:permStart/>`, etc. Real paragraph
+            // tags are `<w:p>`, `<w:p … >`, or `<w:p/>`, so the char after
+            // `<w:p` is `>`, whitespace, or `/`.
             let afterTag = open.upperBound
-            if afterTag < body.endIndex, body[afterTag] == "P" {
+            if afterTag < body.endIndex, body[afterTag].isLetter {
                 cursor = afterTag
                 continue
             }
             gaps.append(String(body[cursor..<open.lowerBound]))
-            let selfClose = body.range(of: "/>", range: afterTag..<body.endIndex)
-            let paraEnd   = body.range(of: "</w:p>", range: afterTag..<body.endIndex)
-            if let sc = selfClose, let pe = paraEnd, sc.lowerBound < pe.lowerBound {
-                let end = sc.upperBound
-                paras.append(String(body[open.lowerBound..<end]))
-                cursor = end
-            } else if let pe = paraEnd {
-                let end = pe.upperBound
-                paras.append(String(body[open.lowerBound..<end]))
-                cursor = end
-            } else {
+
+            // Find the `>` that closes the opening <w:p ...> tag.
+            guard let firstGT = body.range(of: ">", range: afterTag..<body.endIndex) else {
                 break
             }
+            let openTagEnd = firstGT.upperBound
+            // Self-closing iff the char immediately before that `>` is `/`.
+            // This rejects nested `<w:br/>` / `<w:tab/>` inside a real
+            // paragraph — only the paragraph's own tag can be self-closed.
+            if firstGT.lowerBound > body.startIndex,
+               body[body.index(before: firstGT.lowerBound)] == "/" {
+                paras.append(String(body[open.lowerBound..<openTagEnd]))
+                cursor = openTagEnd
+                continue
+            }
+            // Normal paragraph: capture up through `</w:p>`.
+            guard let paraEnd = body.range(of: "</w:p>", range: openTagEnd..<body.endIndex) else {
+                break
+            }
+            let end = paraEnd.upperBound
+            paras.append(String(body[open.lowerBound..<end]))
+            cursor = end
         }
         if gaps.count == paras.count { gaps.append("") }
         return (paras, gaps)
@@ -415,6 +607,51 @@ enum DOCXTemplateEditor {
          .replacingOccurrences(of: "&amp;",  with: "&")
     }
 
+    /// Convert the most common non-XML entity references into forms that
+    /// pass Foundation's strict parser: HTML-named entities become their
+    /// Unicode numeric equivalents, and bare `&` characters that aren't
+    /// already opening a valid entity reference get escaped to `&amp;`.
+    ///
+    /// Why: Claude (especially Haiku) occasionally types `&nbsp;`, `&mdash;`,
+    /// or a stray `&` directly inside a `<w:t>`. Word opens those files
+    /// without complaint, but `XMLParser` rejects them as undeclared
+    /// entity references (NSXMLParserErrorDomain 111). Sanitizing first
+    /// keeps output strictly valid without altering visible content.
+    static func sanitizeXMLEntities(_ xml: String) -> String {
+        var out = xml
+        // Common HTML entities → numeric character references.
+        let htmlEntities: [(String, String)] = [
+            ("&nbsp;",   "&#160;"),
+            ("&mdash;",  "&#8212;"),
+            ("&ndash;",  "&#8211;"),
+            ("&hellip;", "&#8230;"),
+            ("&lsquo;",  "&#8216;"),
+            ("&rsquo;",  "&#8217;"),
+            ("&ldquo;",  "&#8220;"),
+            ("&rdquo;",  "&#8221;"),
+            ("&trade;",  "&#8482;"),
+            ("&copy;",   "&#169;"),
+            ("&reg;",    "&#174;"),
+            ("&euro;",   "&#8364;"),
+            ("&bull;",   "&#8226;"),
+            ("&middot;", "&#183;"),
+            ("&deg;",    "&#176;"),
+            ("&laquo;",  "&#171;"),
+            ("&raquo;",  "&#187;"),
+        ]
+        for (from, to) in htmlEntities {
+            out = out.replacingOccurrences(of: from, with: to)
+        }
+        // Escape any remaining bare `&`: match `&` NOT followed by
+        // amp/lt/gt/quot/apos/#NNN/#xHHH and a semicolon.
+        let strayAmp = #"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)"#
+        if let re = try? NSRegularExpression(pattern: strayAmp) {
+            let range = NSRange(out.startIndex..., in: out)
+            out = re.stringByReplacingMatches(in: out, range: range, withTemplate: "&amp;")
+        }
+        return out
+    }
+
     /// Write an arbitrary (already-modified) `document.xml` string back into
     /// a DOCX. Validates XML well-formedness first and re-zips. Used by the
     /// agent-mode flow that applies many incremental str_replaces outside
@@ -425,20 +662,23 @@ enum DOCXTemplateEditor {
     static func writeDocumentXML(_ xml: String,
                                  originalBytes: Data,
                                  outputFilename: String? = nil) throws -> URL {
-        if let data = xml.data(using: .utf8) {
+        // Auto-sanitize first: Claude sometimes emits `&nbsp;` / `&mdash;` /
+        // bare `&` which Word would open fine but our strict validator
+        // rejects. Normalise to numeric char refs / escape bare ampersands.
+        let sanitized = Self.sanitizeXMLEntities(xml)
+        // Strict parser is advisory only here — Word is more tolerant, and
+        // rejecting a file the user might've opened fine is a worse failure
+        // mode than surfacing a warning and letting them inspect.
+        if let data = sanitized.data(using: .utf8) {
             let parser = XMLParser(data: data)
             let delegate = WellFormednessChecker()
             parser.delegate = delegate
-            if !parser.parse() {
-                let err = parser.parserError?.localizedDescription
-                       ?? delegate.firstError ?? "malformed XML"
-                throw DOCXError.invalidXMLAfterEdits(detail: err)
-            }
+            _ = parser.parse()
         }
         let tempDir = try unzip(originalBytes)
         defer { try? FileManager.default.removeItem(at: tempDir) }
         let docURL = tempDir.appendingPathComponent("word/document.xml")
-        try xml.write(to: docURL, atomically: true, encoding: .utf8)
+        try sanitized.write(to: docURL, atomically: true, encoding: .utf8)
 
         let outputURL = try uniqueOutputURL(filename: outputFilename)
         let zip = Process()

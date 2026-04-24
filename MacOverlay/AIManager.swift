@@ -186,21 +186,32 @@ class AIManager {
 
         for iteration in 0..<maxIterations {
             onStatus?(iteration == 0 ? "Thinking about your résumé…" : "Thinking…")
+            // History trimming: a long tool loop carries every prior turn's
+            // full tool_result payload in every subsequent request. That
+            // grows the input-token bill quadratically and blows past
+            // per-minute rate limits. Once we've accumulated more than
+            // `recentToKeep` round-trips, elide the CONTENT of older
+            // tool_result blocks while keeping their structure — Claude
+            // still sees the scaffolding and an "elided" marker.
+            if iteration > 4 {
+                messages = Self.trimOldToolResults(in: messages, recentToKeep: 4)
+            }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.timeoutInterval = timeoutInterval
             req.setValue(apiKey,             forHTTPHeaderField: "x-api-key")
             req.setValue("2023-06-01",       forHTTPHeaderField: "anthropic-version")
             req.setValue("application/json", forHTTPHeaderField: "content-type")
-            if hasBuiltIn {
-                // Covers text_editor_20250728 / bash_20250124 — Claude 4 betas.
-                req.setValue("computer-use-2025-01-24", forHTTPHeaderField: "anthropic-beta")
-            }
-            // Prompt caching: emit system prompt and the first user message as
-            // content blocks with `cache_control: ephemeral`. Cached prefixes
-            // skip 90% of input-token billing on reuse across the agent loop.
-            // Only the first user message (not subsequent tool_result turns)
-            // is cached — later turns are always different.
+            // Layer the required betas. `computer-use-*` enables built-in
+            // tools; `extended-cache-ttl-*` enables the 1-hour cache option
+            // we ask for below. Comma-separating is the supported form.
+            var betas: [String] = []
+            if hasBuiltIn { betas.append("computer-use-2025-01-24") }
+            betas.append("extended-cache-ttl-2025-04-11")
+            req.setValue(betas.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+            // Prompt caching with 1-hour TTL: cost-optimises repeated runs
+            // of the same résumé/JD and stretches the cache window across
+            // a whole editing session instead of the default 5 min.
             var cachedMessages: [[String: Any]] = messages
             if let first = cachedMessages.first,
                (first["role"] as? String) == "user",
@@ -210,14 +221,14 @@ class AIManager {
                     "content": [[
                         "type": "text",
                         "text": text,
-                        "cache_control": ["type": "ephemeral"]
+                        "cache_control": ["type": "ephemeral", "ttl": "1h"]
                     ]]
                 ]
             }
             let systemBlocks: [[String: Any]] = [[
                 "type": "text",
                 "text": systemPrompt,
-                "cache_control": ["type": "ephemeral"]
+                "cache_control": ["type": "ephemeral", "ttl": "1h"]
             ]]
             req.httpBody = try JSONSerialization.data(withJSONObject: [
                 "model": model,
@@ -294,7 +305,46 @@ class AIManager {
             // Feed tool results back as the next user turn and loop.
             messages.append(["role": "user", "content": toolResults])
         }
-        throw AIError.apiError(0, "Tool-use loop exceeded \(maxIterations) iterations without a final response")
+        // Exhausted iterations. Don't throw — the caller's tool-state actor
+        // may have already accumulated successful edits that we should save.
+        // Return an empty string and let the caller decide what to do based
+        // on whatever progress its own state tracks.
+        onStatus?("Reached iteration limit — saving edits made so far.")
+        return ""
+    }
+
+    /// Replace the `content` of tool_result blocks on all but the last
+    /// `recentToKeep` user turns with a short "elided" stub. Keeps the
+    /// conversation shape intact so Claude still sees that tools were used,
+    /// but drops the payload that would otherwise balloon input tokens.
+    /// Tool_results under 200 chars are left alone — they're already cheap.
+    private static func trimOldToolResults(in messages: [[String: Any]],
+                                           recentToKeep: Int) -> [[String: Any]] {
+        var result = messages
+        // Indices of user messages whose content is an array of tool_result
+        // blocks (i.e. not the opening prompt, which is a plain string).
+        var toolResultIndices: [Int] = []
+        for (i, msg) in result.enumerated() {
+            guard (msg["role"] as? String) == "user",
+                  let content = msg["content"] as? [[String: Any]],
+                  content.contains(where: { ($0["type"] as? String) == "tool_result" })
+            else { continue }
+            toolResultIndices.append(i)
+        }
+        guard toolResultIndices.count > recentToKeep else { return result }
+        let cutoff = toolResultIndices.count - recentToKeep
+        for k in 0..<cutoff {
+            let idx = toolResultIndices[k]
+            guard var content = result[idx]["content"] as? [[String: Any]] else { continue }
+            for i in 0..<content.count {
+                guard (content[i]["type"] as? String) == "tool_result",
+                      let payload = content[i]["content"] as? String,
+                      payload.count > 200 else { continue }
+                content[i]["content"] = "(earlier tool output elided — \(payload.count) chars)"
+            }
+            result[idx]["content"] = content
+        }
+        return result
     }
 
     /// Translate a tool_use `input` dict into a short user-facing status line.

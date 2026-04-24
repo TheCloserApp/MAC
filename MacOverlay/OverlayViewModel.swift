@@ -165,6 +165,58 @@ final class OverlayViewModel {
                                       forKey: "transcriptionPreference")
         }
     }
+
+    /// Which Claude model runs the DOCX `text_editor` tool loop that rewrites
+    /// résumés to match a JD. Sonnet 4.5 is the quality default; Haiku 4.5
+    /// is ~3× cheaper per run — usually the right choice unless a résumé is
+    /// unusually nuanced.
+    enum ResumeGenerationModel: String, CaseIterable, Identifiable {
+        case sonnet46 = "claude-sonnet-4-6"
+        case sonnet45 = "claude-sonnet-4-5"
+        case haiku45  = "claude-haiku-4-5-20251001"
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .sonnet46: return "Claude Sonnet 4.6 — newest, top quality"
+            case .sonnet45: return "Claude Sonnet 4.5 — strong quality"
+            case .haiku45:  return "Claude Haiku 4.5 — best value (~3× cheaper)"
+            }
+        }
+    }
+    var resumeGenerationModel: ResumeGenerationModel {
+        didSet {
+            UserDefaults.standard.set(resumeGenerationModel.rawValue,
+                                      forKey: "resumeGenerationModel")
+        }
+    }
+
+    /// How to drive the résumé-tailoring call.
+    /// - `.fast`    — single JSON call; Swift does the XML surgery. ~15× cheaper.
+    /// - `.hybrid`  — Sonnet analysis (JSON) + Haiku text_editor execution.
+    ///                Sonnet-quality edits applied via Claude's tool, ~10×
+    ///                cheaper than Quality mode.
+    /// - `.quality` — text_editor agent loop end-to-end; Claude plans AND
+    ///                verifies each edit live.
+    enum ResumeMode: String, CaseIterable, Identifiable {
+        case fast, hybrid, quality
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .fast:    return "Fast — single call, ~15× cheaper"
+            case .hybrid:  return "Hybrid — Sonnet plan + Haiku apply"
+            case .quality: return "Quality — agent loop, best precision"
+            }
+        }
+    }
+    var resumeMode: ResumeMode {
+        didSet { UserDefaults.standard.set(resumeMode.rawValue, forKey: "resumeMode") }
+    }
+
+    /// When true, skip the pre- and post-generation ATS score calls. Saves
+    /// ~25% of per-run cost at the cost of not showing a before/after score.
+    var resumeSkipScoring: Bool {
+        didSet { UserDefaults.standard.set(resumeSkipScoring, forKey: "resumeSkipScoring") }
+    }
     var opacity: Double {
         didSet {
             UserDefaults.standard.set(opacity, forKey: "overlayOpacity")
@@ -409,6 +461,16 @@ final class OverlayViewModel {
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
+        // Default to Haiku 4.5 — most résumé rewrites don't need Sonnet's
+        // extra reasoning, and the 3× cost difference is substantial.
+        resumeGenerationModel = ResumeGenerationModel(
+            rawValue: UserDefaults.standard.string(forKey: "resumeGenerationModel") ?? ""
+        ) ?? .haiku45
+        // Default to fast mode — real-time, ~15× cheaper than agent loop.
+        resumeMode = ResumeMode(
+            rawValue: UserDefaults.standard.string(forKey: "resumeMode") ?? ""
+        ) ?? .fast
+        resumeSkipScoring = UserDefaults.standard.bool(forKey: "resumeSkipScoring")
         selectedModel      = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0

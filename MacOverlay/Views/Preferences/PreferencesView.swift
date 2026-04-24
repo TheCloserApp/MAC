@@ -152,6 +152,41 @@ struct PreferencesView: View {
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
 
+        section(title: "Resume model",
+                subtitle: "Which Claude model edits the DOCX. Haiku handles most résumé tweaks well and is roughly 3× cheaper per run.") {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                labelTwoLine(title: "Generation model",
+                             subtitle: "Used for the tailoring call(s). Scoring always runs on Haiku.")
+                Spacer()
+                Picker("", selection: $vm.resumeGenerationModel) {
+                    ForEach(OverlayViewModel.ResumeGenerationModel.allCases) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 280)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                labelTwoLine(title: "Generation mode",
+                             subtitle: "Fast does one call. Quality runs an agent loop that verifies each edit but is ~15× more expensive.")
+                Spacer()
+                Picker("", selection: $vm.resumeMode) {
+                    ForEach(OverlayViewModel.ResumeMode.allCases) { m in
+                        Text(m.displayName).tag(m)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 280)
+            }
+            Toggle(isOn: $vm.resumeSkipScoring) {
+                labelTwoLine(title: "Skip ATS scoring",
+                             subtitle: "Skips the pre- and post-generation score calls. Saves ~25% per run; hides the before/after delta.")
+            }
+            .toggleStyle(.switch)
+        }
+
         section(title: "Resume prompts",
                 subtitle: "Pick a saved prompt, or drop in a one-off override. Save-as-preset to reuse across sessions.") {
             resumePromptPicker(

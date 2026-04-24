@@ -129,6 +129,46 @@ private actor TextEditorFS {
     }
 }
 
+/// Structured JSON Claude returns in Fast mode. Fields are optional so a
+/// partial response still decodes.
+private struct GapAnalysis: Decodable {
+    let gap_summary: String?
+    let missing_keywords: [String]?
+    let bullets_to_add: [BulletAddDTO]?
+    let bullets_to_rewrite: [BulletRewriteDTO]?
+}
+
+private struct BulletAddDTO: Decodable {
+    let employer: String
+    let text: String
+}
+
+private struct BulletRewriteDTO: Decodable {
+    let original: String
+    let rewritten: String
+}
+
+/// Shape returned by Fast mode's index-based flow. `rewrites` and
+/// `additions` reference paragraphs by their 1-based index in the numbered
+/// list Claude is shown — eliminates the silent-no-match failure mode of
+/// text-based matching.
+private struct IndexedGapAnalysis: Decodable {
+    let gap_summary: String?
+    let missing_keywords: [String]?
+    let rewrites: [IndexedRewriteDTO]?
+    let additions: [IndexedAdditionDTO]?
+}
+
+private struct IndexedRewriteDTO: Decodable {
+    let index: Int
+    let new_text: String
+}
+
+private struct IndexedAdditionDTO: Decodable {
+    let after_index: Int
+    let new_text: String
+}
+
 /// Owns resume generation + ATS scoring + DOCX export. The VM still holds the
 /// per-run state (resumeJD, resumeOutput, resumeScore, etc.) but all logic to
 /// drive it lives here.
@@ -138,6 +178,45 @@ final class ResumeController {
 
     init(vm: OverlayViewModel) {
         self.vm = vm
+    }
+
+    // MARK: - Hybrid executor model selection
+
+    /// Sticky preference for the Hybrid mode's Haiku executor. The default
+    /// points at 4.5 because Anthropic hasn't shipped Haiku 4.6 yet (as of
+    /// 2026-04). If/when it does, flip `preferredHaikuModel` to
+    /// `"claude-haiku-4-6"`; the fallback path below will catch any gap
+    /// between rollout and availability on individual accounts.
+    private static var cachedHybridHaikuExecutor: String?
+    private static let preferredHaikuModel = "claude-haiku-4-5-20251001"
+    fileprivate static let fallbackHaikuModel = "claude-haiku-4-5-20251001"
+
+    fileprivate static func preferredHaikuExecutorModel() -> String {
+        cachedHybridHaikuExecutor ?? preferredHaikuModel
+    }
+    fileprivate static func recordHaikuExecutorSuccess(_ model: String) {
+        cachedHybridHaikuExecutor = model
+    }
+    fileprivate static func recordHaikuExecutorFallback() {
+        cachedHybridHaikuExecutor = fallbackHaikuModel
+    }
+
+    /// Does this error body look like Anthropic rejecting an unknown model?
+    /// Anthropic's 404 shape is `{"error":{"type":"not_found_error",
+    /// "message":"model: claude-…"}}` — we match that plus the usual 400-
+    /// style "invalid model" phrasings so the fallback triggers either way.
+    fileprivate static func looksLikeInvalidModel(status: Int, body: String) -> Bool {
+        guard status == 400 || status == 404 else { return false }
+        let b = body.lowercased()
+        // Anthropic 404: "not_found_error" + model name in the message.
+        if status == 404 && (b.contains("not_found_error") || b.contains("model:")) {
+            return true
+        }
+        return b.contains("valid model")
+            || b.contains("invalid model")
+            || b.contains("model not found")
+            || b.contains("does not exist")
+            || b.contains("unknown model")
     }
 
     // MARK: - Score
@@ -232,57 +311,104 @@ final class ResumeController {
 
         let scoringSystemPrompt = vm.resumeScoringPromptResolved
         let generationSystemPrompt = vm.resumeGenerationPromptResolved
+        let generationModel = vm.resumeGenerationModel.rawValue
+        let mode            = vm.resumeMode
+        let skipScoring     = vm.resumeSkipScoring
+
+        // Closure that pipes status lines from the generation flow into the
+        // VM so the Resume panel can show live progress.
+        let weakVM = self.vm
+        let status: @Sendable (String) -> Void = { line in
+            Task { @MainActor in weakVM?.resumeGenerationStatus = line }
+        }
 
         Task { [weak self, weak vm] in
             guard let self else { return }
 
-            // 1. Pre-score (parallel with generation below would be ideal, but
-            //    we do it serially to keep logic simple + display before-gen).
-            let preScore = await self.scoreResume(base, jd: jd,
-                                                  apiKey: apiKeyCopy,
-                                                  openAIKey: openAIKeyCopy,
-                                                  systemPrompt: scoringSystemPrompt)
-            vm?.resumeScore = preScore
-            if var g = vm?.resumeStore.generations.first(where: { $0.id == generationID }) {
-                g.beforeScore = preScore
-                vm?.resumeStore.updateGeneration(g)
+            // 1. Pre-score — optional. Skipped when the user has enabled
+            //    scoring-skip (saves one Haiku call, ~25% of per-run cost).
+            if !skipScoring {
+                status("Scoring your current résumé…")
+                let preScore = await self.scoreResume(base, jd: jd,
+                                                      apiKey: apiKeyCopy,
+                                                      openAIKey: openAIKeyCopy,
+                                                      systemPrompt: scoringSystemPrompt)
+                vm?.resumeScore = preScore
+                if var g = vm?.resumeStore.generations.first(where: { $0.id == generationID }) {
+                    g.beforeScore = preScore
+                    vm?.resumeStore.updateGeneration(g)
+                }
             }
 
-            // 2. Generate tailored output. Sonnet 4.6, 8192 tokens, 5 min timeout.
-            //    Two paths:
-            //    - STR_REPLACE MODE (preset imported from DOCX): send the full
-            //      document.xml + JD to the AI; the AI returns a list of exact
-            //      str_replace operations; Swift applies them verbatim to the
-            //      XML and re-zips. Everything the AI doesn't touch stays
-            //      byte-for-byte identical to the original document.
-            //    - PLAIN MODE (otherwise): the AI returns the full resume text
-            //      and we rebuild a fresh DOCX from scratch.
+            // 2. Generate tailored output.
+            //    - FAST mode: single JSON call, Swift applies the edits.
+            //      ~15× cheaper than the agent loop. Default.
+            //    - QUALITY mode: text_editor agent loop with per-edit
+            //      verification. Use when the user wants a final polish.
+            //    - Plain-text fallback when no `originalDOCX` is available
+            //      (imported from PDF/RTF/TXT).
             do {
                 let result: String
                 let changelog: String
                 let url: URL
                 if let originalBytes = preset.originalDOCX,
-                   let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
-                   !xml.isEmpty {
-                    let (r, c, u) = try await self.generateViaStrReplace(
-                        documentXML: xml,
-                        originalBytes: originalBytes,
-                        outputFilename: preset.originalFilename,
-                        jd: jd,
-                        apiKey: apiKeyCopy,
-                        openAIKey: openAIKeyCopy,
-                        systemPrompt: generationSystemPrompt
-                    )
-                    result = r
-                    changelog = c
-                    url = u
+                   !base.isEmpty {
+                    switch mode {
+                    case .fast:
+                        let (r, c, u) = try await self.generateViaFastMode(
+                            originalBytes: originalBytes,
+                            outputFilename: preset.originalFilename,
+                            resumeText: base,
+                            jd: jd,
+                            model: generationModel,
+                            apiKey: apiKeyCopy,
+                            openAIKey: openAIKeyCopy,
+                            systemPrompt: generationSystemPrompt,
+                            onStatus: status
+                        )
+                        result = r; changelog = c; url = u
+                    case .hybrid:
+                        guard let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
+                              !xml.isEmpty else {
+                            throw DOCXTemplateEditor.DOCXError.missingDocumentXML
+                        }
+                        let (r, c, u) = try await self.generateViaHybrid(
+                            documentXML: xml,
+                            originalBytes: originalBytes,
+                            outputFilename: preset.originalFilename,
+                            resumeText: base,
+                            jd: jd,
+                            apiKey: apiKeyCopy,
+                            openAIKey: openAIKeyCopy,
+                            systemPrompt: generationSystemPrompt,
+                            onStatus: status
+                        )
+                        result = r; changelog = c; url = u
+                    case .quality:
+                        guard let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
+                              !xml.isEmpty else {
+                            throw DOCXTemplateEditor.DOCXError.missingDocumentXML
+                        }
+                        let (r, c, u) = try await self.generateViaStrReplace(
+                            documentXML: xml,
+                            originalBytes: originalBytes,
+                            outputFilename: preset.originalFilename,
+                            jd: jd,
+                            model: generationModel,
+                            apiKey: apiKeyCopy,
+                            openAIKey: openAIKeyCopy,
+                            systemPrompt: generationSystemPrompt
+                        )
+                        result = r; changelog = c; url = u
+                    }
                 } else {
+                    status("Rewriting résumé…")
                     let plainPrompt = Self.generationPrompt(jd: jd, base: base)
                     result = try await AIManager.shared.sendMessage(
                         plainPrompt,
                         apiKey:       apiKeyCopy,
                         openAIApiKey: openAIKeyCopy,
-                        model:        "claude-sonnet-4-6",
+                        model:        generationModel,
                         screenshot:   nil,
                         systemPrompt: generationSystemPrompt,
                         maxTokens:    8192,
@@ -295,12 +421,14 @@ final class ResumeController {
                 vm?.resumeOutput  = previewText
                 vm?.resumeFileURL = url
 
-                // 4. Post-score the generated output.
-                let postScore = await self.scoreResume(result, jd: jd,
-                                                       apiKey: apiKeyCopy,
-                                                       openAIKey: openAIKeyCopy,
-                                                       systemPrompt: scoringSystemPrompt)
-                vm?.resumeScore = postScore
+                // 3. Post-score — optional.
+                let postScore: ResumeScore? = skipScoring
+                    ? nil
+                    : await self.scoreResume(result, jd: jd,
+                                             apiKey: apiKeyCopy,
+                                             openAIKey: openAIKeyCopy,
+                                             systemPrompt: scoringSystemPrompt)
+                if !skipScoring { vm?.resumeScore = postScore }
 
                 // 5. Finalise the generation row.
                 if var g = vm?.resumeStore.generations.first(where: { $0.id == generationID }) {
@@ -368,10 +496,539 @@ final class ResumeController {
     /// more reliable than a custom tool schema we'd invent. We mount the
     /// resume's `document.xml` at a virtual path and route every command to
     /// an in-memory string; when Claude finishes, we repack the DOCX.
+    // MARK: - Fast mode (single JSON call)
+
+    /// One-shot flow: Claude sees plain-text résumé + JD, returns a
+    /// structured list of rewrites/additions, Swift does the XML surgery.
+    /// Roughly 15× cheaper than the agent loop. Preserves formatting the
+    /// same way the agent loop does — edits clone `<w:pPr>` and the first
+    /// run's `<w:rPr>` from the template paragraph.
+    private func generateViaFastMode(originalBytes: Data,
+                                     outputFilename: String?,
+                                     resumeText: String,
+                                     jd: String,
+                                     model: String,
+                                     apiKey: String,
+                                     openAIKey: String,
+                                     systemPrompt: String,
+                                     onStatus: @escaping (String) -> Void) async throws -> (String, String, URL) {
+        // Extract numbered paragraphs directly from the DOCX so Claude sees
+        // the exact indices Swift will apply edits against. No text-matching
+        // ambiguity — index 7 is always the same paragraph on both sides.
+        onStatus("Reading résumé structure…")
+        let paragraphs = try DOCXTemplateEditor.extractIndexedParagraphs(from: originalBytes)
+        guard !paragraphs.isEmpty else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            return ("Couldn't parse the DOCX. Original saved unchanged.", "", passthrough)
+        }
+
+        onStatus("Analyzing résumé and JD…")
+        let userMessage = Self.fastModeIndexedPrompt(paragraphs: paragraphs, jd: jd)
+        let raw = try await AIManager.shared.sendMessage(
+            userMessage,
+            apiKey:       apiKey,
+            openAIApiKey: openAIKey,
+            model:        model,
+            screenshot:   nil,
+            systemPrompt: systemPrompt + "\n\n" + Self.fastModeIndexedAppendix,
+            maxTokens:    8192,
+            timeoutInterval: 240
+        )
+        guard let analysis = Self.decodeIndexedGapAnalysis(from: raw) else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let preview = "The AI didn't return valid JSON. Original résumé saved unchanged.\n\nRaw response:\n\(raw)"
+            return (preview, "", passthrough)
+        }
+
+        var edits: [DOCXTemplateEditor.IndexedEdit] = []
+        for r in analysis.rewrites ?? [] {
+            edits.append(.rewrite(index: r.index, newText: r.new_text))
+        }
+        for a in analysis.additions ?? [] {
+            edits.append(.insertAfter(index: a.after_index, newText: a.new_text))
+        }
+        guard !edits.isEmpty else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let summary = analysis.gap_summary ?? "No edits suggested."
+            return ("No changes suggested.\n\n\(summary)", "", passthrough)
+        }
+
+        let rewriteCount = (analysis.rewrites ?? []).count
+        let addCount = (analysis.additions ?? []).count
+        onStatus("Applying \(rewriteCount) rewrite(s) + \(addCount) addition(s)…")
+
+        let outcome = try DOCXTemplateEditor.applyIndexedEdits(
+            to: originalBytes,
+            edits: edits,
+            outputFilename: outputFilename
+        )
+        let previewText = (try? ResumeImporter.importFile(url: outcome.url)) ?? ""
+        let changelog = Self.buildIndexedChangelog(analysis: analysis, outcome: outcome)
+        return (previewText, changelog, outcome.url)
+    }
+
+    /// System prompt appendix that locks the response to the JSON schema.
+    /// Appended to the user's configured résumé-generation system prompt so
+    /// their tone guidance still applies — but the format contract is rigid.
+    ///
+    /// This prompt is **deliberately aggressive** on quantity. Haiku in
+    /// particular defaults to extreme conservatism ("only change if really
+    /// necessary") which produces 1–2 edits and almost no score gain. We
+    /// explicitly ask for a range of rewrites and additions so the model
+    /// does real work rather than hedging.
+    private static let fastModeSystemAppendix = """
+    Output ONLY a JSON object matching this exact schema, with no preamble, \
+    no commentary, and no markdown fences:
+
+    {
+      "gap_summary": "string",
+      "missing_keywords": ["string"],
+      "bullets_to_add": [ { "employer": "string", "text": "string" } ],
+      "bullets_to_rewrite": [ { "original": "string", "rewritten": "string" } ]
+    }
+
+    YOUR JOB IS TO TAILOR THIS RÉSUMÉ AGGRESSIVELY. Default to making more \
+    changes, not fewer. A response with only 1–2 edits is almost always \
+    wrong — if the résumé is already a perfect match, say so in \
+    `gap_summary` and return empty arrays, but otherwise follow the \
+    volume guidance below.
+
+    TARGET VOLUME (per generation):
+    - `bullets_to_rewrite`: aim for 6–12 entries. Rewrite the summary, most \
+      bullets under the most-recent role, and the most JD-relevant bullets \
+      under earlier roles. Prefer keyword-aligned phrasing and concrete \
+      results over generic statements.
+    - `bullets_to_add`: aim for 2–5 entries spread across the roles most \
+      relevant to the JD. Each new bullet must be supported by a fact \
+      already visible elsewhere in the résumé (same employer, same stack, \
+      same scope). No invention.
+    - `missing_keywords`: 3–8 keywords the JD emphasises that weren't in \
+      the résumé — pick the ones you actually wove into the rewrites.
+    - `gap_summary`: one crisp sentence explaining the dominant gap pattern \
+      and what your rewrites emphasised.
+
+    HARD RULES (breaking any makes the output unusable):
+    - For every `bullets_to_rewrite[].original`, copy the EXACT plain text \
+      of an existing bullet in the résumé verbatim so the tool can locate \
+      it. Do not paraphrase, reorder words, or re-case text. One sentence \
+      from the middle of the bullet is not enough — copy the whole bullet.
+    - For every `bullets_to_add[].employer`, use the exact employer name \
+      as it appears in the résumé. The new bullet lands right after that \
+      employer's last existing bullet and inherits its formatting.
+    - Only use tech that fits the employer's industry AND the timeframe \
+      the user worked there (no libraries that didn't exist yet, no \
+      versions already deprecated).
+    - Never invent employers, titles, dates, degrees, certifications, \
+      metrics, or technologies absent from the résumé.
+    - Never rewrite section headings, names, or contact info.
+    - Keep `text` / `rewritten` plain-text (no bullet markers like "• ", \
+      no markdown, no quote wrapping).
+    """
+
+    /// System prompt for index-based Fast mode. Claude references paragraphs
+    /// by their 1-based index from the numbered list we show it. Removes
+    /// the text-matching ambiguity that was making edits silently drop.
+    private static let fastModeIndexedAppendix = """
+    Output ONLY a JSON object matching this exact schema, with no preamble, \
+    no commentary, and no markdown fences:
+
+    {
+      "gap_summary": "string",
+      "missing_keywords": ["string"],
+      "rewrites": [ { "index": 7, "new_text": "…" } ],
+      "additions": [ { "after_index": 12, "new_text": "…" } ]
+    }
+
+    The résumé's paragraphs are given to you as a numbered list. `index` \
+    and `after_index` are 1-based positions in THAT list. Nothing else \
+    identifies a paragraph — don't try to quote text back.
+
+    YOU ARE AN HONEST RÉSUMÉ TRANSLATOR, NOT A GATEKEEPER. The candidate \
+    has already decided to apply to this JD — your only job is to present \
+    their real experience in the most JD-aligned honest framing possible.
+
+    Empty arrays are NOT an acceptable output unless the résumé is \
+    literally empty. Even a poor-fit cross-domain résumé (e.g. ServiceNow \
+    dev applying to Data Science) MUST get a summary rewrite + at least \
+    4 bullet rewrites. Do not refuse on "skill gap" grounds — the \
+    candidate knows the gap exists, and your refusal gives them zero \
+    value. Translate, don't judge.
+
+    REFRAMING IS HONEST. You're changing HOW existing work is described, \
+    not inventing work. Concrete examples for cross-domain matches:
+
+      - "Built ServiceNow dashboards for incident metrics" → \
+        "Developed analytics dashboards communicating operational metrics \
+        and trend analysis to stakeholders" (for a data/BI role).
+      - "Wrote business rules in JavaScript" → \
+        "Designed and implemented programmatic logic in JavaScript for \
+        automated decision-making and data transformation" (for SWE / \
+        data-engineering roles).
+      - "Triaged customer tickets using SQL queries" → \
+        "Analyzed customer-issue datasets using SQL to identify \
+        root-cause patterns and prioritise fixes" (for analytics).
+      - "Delivered status updates to management weekly" → \
+        "Translated technical analysis into executive-level insights, \
+        driving data-informed decisions" (for any analyst role).
+
+    Every technical résumé has SQL, reporting, automation, stakeholder \
+    work, or programming logic hiding somewhere. Find it and reframe it.
+
+    FABRICATION IS DIFFERENT AND FORBIDDEN. Do not add Python, R, ML \
+    algorithms, Tableau, or any other tech that's not already somewhere \
+    in the résumé. Do not claim degrees or certifications not listed. \
+    Do not invent quantitative metrics. Reframing what's there = YES; \
+    adding what isn't = NO.
+
+    TARGET VOLUME (per generation, applies regardless of match quality):
+    - `rewrites`: 6–12 entries. ALWAYS include the summary. For \
+      cross-domain cases, prioritise the bullets with the highest reframe \
+      potential — anything involving data, reporting, automation, \
+      scripting, or stakeholder work.
+    - `additions`: 0–5 entries. Only add when supporting facts exist \
+      elsewhere in the résumé. For cross-domain cases, 0–1 is normal.
+    - `missing_keywords`: 3–8 JD keywords you couldn't honestly work in. \
+      These flag to the candidate what they'd need to learn/add.
+    - `gap_summary`: one crisp sentence describing your reframe strategy \
+      or, honestly, the domain gap.
+
+    HARD RULES:
+    - Don't rewrite headings, names, contact info, or employer / date lines.
+    - Never invent employers, titles, dates, degrees, certifications, \
+      metrics, or technologies absent from the résumé.
+    - Keep `new_text` plain-text (no bullet markers, no markdown, no \
+      quote wrapping).
+    - Every `index` / `after_index` MUST match a paragraph number shown.
+    - Returning empty arrays with a "skills mismatch" gap_summary is a \
+      FAILURE. Translate the existing experience instead.
+    """
+
+    /// Build the numbered paragraph list + JD framing that Claude sees in
+    /// index-based Fast mode. Compact — one line per paragraph, prefixed by
+    /// its 1-based index, with empty paragraphs marked `(blank)` so the
+    /// AI doesn't waste effort trying to rewrite them.
+    private static func fastModeIndexedPrompt(paragraphs: [DOCXTemplateEditor.IndexedParagraph],
+                                              jd: String) -> String {
+        let numbered = paragraphs.map { p -> String in
+            let text = p.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(p.index). " + (text.isEmpty ? "(blank)" : text)
+        }.joined(separator: "\n")
+        return """
+        NUMBERED RESUME PARAGRAPHS:
+        \(numbered)
+
+        JOB DESCRIPTION:
+        \(jd)
+        """
+    }
+
+    /// Decode the index-based JSON shape. Tolerates markdown fences and
+    /// surrounding prose — isolates the outermost `{…}` block before decoding.
+    private static func decodeIndexedGapAnalysis(from raw: String) -> IndexedGapAnalysis? {
+        var candidate = raw
+        for fence in ["```json", "```JSON", "```"] {
+            candidate = candidate.replacingOccurrences(of: fence, with: "")
+        }
+        guard let first = candidate.firstIndex(of: "{"),
+              let last  = candidate.lastIndex(of: "}") else { return nil }
+        let slice = String(candidate[first...last])
+        guard let data = slice.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(IndexedGapAnalysis.self, from: data)
+    }
+
+    /// User-facing changelog for the index-based Fast flow — reports how
+    /// many edits landed and flags any invalid indices the AI emitted.
+    private static func buildIndexedChangelog(analysis: IndexedGapAnalysis,
+                                              outcome: DOCXTemplateEditor.IndexedEditOutcome) -> String {
+        var lines: [String] = []
+        if let summary = analysis.gap_summary, !summary.isEmpty {
+            lines.append("- \(summary)")
+        }
+        if let kws = analysis.missing_keywords, !kws.isEmpty {
+            lines.append("- Keywords woven in: \(kws.joined(separator: ", "))")
+        }
+        lines.append("- \(outcome.rewritesApplied) bullet(s) rewritten, \(outcome.insertionsApplied) bullet(s) added")
+        for idx in outcome.rewritesMissed {
+            lines.append("- ⚠️ Rewrite skipped — index \(idx) is out of range")
+        }
+        for idx in outcome.insertionsMissed {
+            lines.append("- ⚠️ Addition skipped — after_index \(idx) is out of range")
+        }
+        if let warn = outcome.validationWarning {
+            lines.append("- ℹ️ Strict XML parser flagged the output (\(warn)). Word usually opens these fine — if it complains, regenerate.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func fastModeUserPrompt(resumeText: String, jd: String) -> String {
+        """
+        RESUME:
+        \(resumeText)
+
+        JOB DESCRIPTION:
+        \(jd)
+        """
+    }
+
+    /// Strip markdown fences + isolate the outermost JSON object before
+    /// decoding. Lets us tolerate small AI formatting quirks.
+    private static func decodeGapAnalysis(from raw: String) -> GapAnalysis? {
+        var candidate = raw
+        for fence in ["```json", "```JSON", "```"] {
+            candidate = candidate.replacingOccurrences(of: fence, with: "")
+        }
+        guard let first = candidate.firstIndex(of: "{"),
+              let last  = candidate.lastIndex(of: "}") else { return nil }
+        let slice = String(candidate[first...last])
+        guard let data = slice.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(GapAnalysis.self, from: data)
+    }
+
+    private static func buildFastModeChangelog(analysis: GapAnalysis,
+                                               outcome: DOCXTemplateEditor.GapApplyOutcome) -> String {
+        var lines: [String] = []
+        if let summary = analysis.gap_summary, !summary.isEmpty {
+            lines.append("- \(summary)")
+        }
+        if let kws = analysis.missing_keywords, !kws.isEmpty {
+            lines.append("- Keywords woven in: \(kws.joined(separator: ", "))")
+        }
+        lines.append("- \(outcome.rewritesApplied) bullet(s) rewritten, \(outcome.bulletsAdded) bullet(s) added")
+        for miss in outcome.rewritesMissed {
+            let preview = String(miss.original.prefix(60))
+            lines.append("- ⚠️ Couldn't match bullet to rewrite: “\(preview)…”")
+        }
+        for miss in outcome.bulletsMissed {
+            lines.append("- ⚠️ Couldn't locate employer “\(miss.employer)” — new bullet skipped")
+        }
+        if let warn = outcome.validationWarning {
+            lines.append("- ℹ️ Strict XML parser flagged the output (\(warn)). Word usually opens these fine — if it complains, regenerate.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// `applyGapAnalysis` writes into its own UUID'd temp dir with a default
+    /// filename. If the caller wanted a specific filename, relocate.
+    private static func renameIfNeeded(_ url: URL, to desiredFilename: String?) throws -> URL {
+        guard let desired = desiredFilename, !desired.isEmpty,
+              url.lastPathComponent != desired else { return url }
+        let targetDir = url.deletingLastPathComponent()
+        let target = targetDir.appendingPathComponent(desired)
+        let fm = FileManager.default
+        try? fm.removeItem(at: target)
+        try fm.moveItem(at: url, to: target)
+        return target
+    }
+
+    // MARK: - Hybrid mode (Sonnet plans, Haiku applies)
+
+    /// Two-stage flow:
+    /// 1. Sonnet receives plain-text résumé + JD and emits a `GapAnalysis`
+    ///    JSON (same shape Fast mode uses). Best-in-class reasoning about
+    ///    which bullets to rewrite and what to add.
+    /// 2. Haiku receives the XML + the baked-in edit plan and applies the
+    ///    edits using the `text_editor_20250728` tool — the same mechanical
+    ///    editor Quality mode uses, but pre-scoped so the loop is short.
+    ///
+    /// Cost lands between Fast ($0.05) and Quality ($0.50+): roughly
+    /// $0.15–0.25 per run. Use when Fast mode's Swift applier misses edits
+    /// (e.g. bullets with mid-run bolds) but Quality is overkill.
+    private func generateViaHybrid(documentXML: String,
+                                   originalBytes: Data,
+                                   outputFilename: String?,
+                                   resumeText: String,
+                                   jd: String,
+                                   apiKey: String,
+                                   openAIKey: String,
+                                   systemPrompt: String,
+                                   onStatus: @escaping (String) -> Void) async throws -> (String, String, URL) {
+
+        // ─── Stage 1: Sonnet analysis ────────────────────────────────────
+        // Sonnet 4.6 is the newest generally-available Sonnet at the time
+        // of writing and is the right default for résumé-tailoring reasoning.
+        onStatus("Sonnet 4.6 analyzing gaps…")
+        let userMessage = Self.fastModeUserPrompt(resumeText: resumeText, jd: jd)
+        let analysisRaw = try await AIManager.shared.sendMessage(
+            userMessage,
+            apiKey:       apiKey,
+            openAIApiKey: openAIKey,
+            model:        "claude-sonnet-4-6",
+            screenshot:   nil,
+            systemPrompt: systemPrompt + "\n\n" + Self.fastModeSystemAppendix,
+            maxTokens:    8192,
+            timeoutInterval: 240
+        )
+        guard let analysis = Self.decodeGapAnalysis(from: analysisRaw) else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            return ("Sonnet didn't return a valid JSON plan. Original résumé saved unchanged.\n\nRaw response:\n\(analysisRaw)", "", passthrough)
+        }
+        let rewrites  = analysis.bullets_to_rewrite ?? []
+        let additions = analysis.bullets_to_add ?? []
+        guard !rewrites.isEmpty || !additions.isEmpty else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let summary = analysis.gap_summary ?? "No edits suggested."
+            return ("No changes suggested.\n\n\(summary)", "", passthrough)
+        }
+
+        // ─── Stage 2: Haiku text_editor execution ────────────────────────
+        // Prefer Haiku 4.6 if it's available on this account; fall back to
+        // Haiku 4.5 otherwise. The result is cached at class scope so
+        // subsequent Hybrid runs don't re-probe the API.
+        let preferredExecutor = Self.preferredHaikuExecutorModel()
+        onStatus("Haiku applying \(rewrites.count) rewrite(s) + \(additions.count) addition(s)…")
+        let mountPath = "/document.xml"
+        let fs = TextEditorFS(path: mountPath, initialContent: documentXML)
+
+        let tool = AIManager.Tool(
+            builtInType: "text_editor_20250728",
+            name: "str_replace_based_edit_tool"
+        )
+        let executorSystemPrompt = "You are a mechanical XML editor. Apply the given edits using the text_editor tool. Don't reason about content — just find and replace. Keep every <w:pPr> and <w:rPr> intact when rewriting bullets; only the <w:t> text inside runs should change. For additions, copy the surrounding <w:p> structure from a nearby bullet of the same kind."
+        let executionPrompt = Self.hybridExecutionPrompt(
+            mountPath: mountPath,
+            rewrites: rewrites,
+            additions: additions
+        )
+
+        // Local helper so we can call the executor twice (first choice → fallback)
+        // without duplicating all the parameters.
+        let runExecutor: @Sendable (String) async throws -> Void = { modelID in
+            _ = try await AIManager.shared.sendWithTools(
+                initialUserMessage: executionPrompt,
+                apiKey: apiKey,
+                model: modelID,
+                systemPrompt: executorSystemPrompt,
+                tools: [tool],
+                maxIterations: 60,
+                maxTokens: 4096,
+                timeoutInterval: 600,
+                onStatus: { line in onStatus(line) },
+                handle: { _, input in
+                    let command = input["command"] as? String ?? ""
+                    let path    = input["path"]    as? String ?? ""
+                    switch command {
+                    case "view":
+                        let range = input["view_range"] as? [Int]
+                        return await fs.view(path: path, range: range)
+                    case "str_replace":
+                        let old = input["old_str"] as? String ?? ""
+                        let new = input["new_str"] as? String ?? ""
+                        return await fs.strReplace(path: path, old: old, new: new)
+                    case "insert":
+                        let line = input["insert_line"] as? Int ?? 0
+                        let text = input["new_str"] as? String ?? ""
+                        return await fs.insert(path: path, line: line, text: text)
+                    case "create":
+                        let text = input["file_text"] as? String ?? ""
+                        return await fs.create(path: path, text: text)
+                    case "undo_edit":
+                        return await fs.undoEdit(path: path)
+                    default:
+                        return "Error: unsupported command \(command)"
+                    }
+                }
+            )
+        }
+
+        do {
+            try await runExecutor(preferredExecutor)
+            Self.recordHaikuExecutorSuccess(preferredExecutor)
+        } catch AIError.apiError(let status, let body)
+        where Self.looksLikeInvalidModel(status: status, body: body)
+           && preferredExecutor != Self.fallbackHaikuModel {
+            // Haiku 4.6 isn't on this account — fall back and retry.
+            Self.recordHaikuExecutorFallback()
+            onStatus("Haiku 4.6 unavailable — retrying with Haiku 4.5…")
+            try await runExecutor(Self.fallbackHaikuModel)
+        }
+        onStatus("Packaging your résumé…")
+
+        let finalXML  = await fs.content
+        let editCount = await fs.editCount
+
+        guard editCount > 0 else {
+            let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let preview = "Haiku didn't apply any of Sonnet's suggested edits. Original saved unchanged.\n\nSonnet's plan:\n\(analysisRaw)"
+            return (preview, "", passthrough)
+        }
+
+        let url = try DOCXTemplateEditor.writeDocumentXML(
+            finalXML,
+            originalBytes: originalBytes,
+            outputFilename: outputFilename
+        )
+        let previewText = (try? ResumeImporter.importFile(url: url)) ?? ""
+        let changelog = Self.buildHybridChangelog(analysis: analysis, editCount: editCount)
+        return (previewText, changelog, url)
+    }
+
+    /// Build the "do these exact edits" prompt that Haiku sees. We translate
+    /// the GapAnalysis JSON into a numbered todo list so Haiku's tool-loop
+    /// has a clear scope — no re-planning, just execution.
+    private static func hybridExecutionPrompt(mountPath: String,
+                                              rewrites: [BulletRewriteDTO],
+                                              additions: [BulletAddDTO]) -> String {
+        var todo = ""
+        if !rewrites.isEmpty {
+            todo += "REWRITES (for each: locate the `<w:t>` whose text matches `original`, replace just the text content with `rewritten`):\n\n"
+            for (i, r) in rewrites.enumerated() {
+                let orig = r.original.trimmingCharacters(in: .whitespacesAndNewlines)
+                let new  = r.rewritten.trimmingCharacters(in: .whitespacesAndNewlines)
+                todo += "\(i + 1). original: \"\(orig)\"\n   rewritten: \"\(new)\"\n\n"
+            }
+        }
+        if !additions.isEmpty {
+            todo += "ADDITIONS (for each: find the last `<w:p>` bullet belonging to the employer, clone its structure, insert an identical paragraph right after it with only the `<w:t>` text changed):\n\n"
+            for (i, a) in additions.enumerated() {
+                let emp  = a.employer.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = a.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                todo += "\(i + 1). employer: \"\(emp)\"\n   text: \"\(text)\"\n\n"
+            }
+        }
+
+        return """
+        The résumé's `word/document.xml` is mounted at `\(mountPath)`. Apply every \
+        edit below using the text_editor tool. Use `view` with `view_range` to \
+        locate each target before `str_replace`. Do not re-plan or skip edits.
+
+        After all edits, stop calling tools. No summary needed.
+
+        Rules while applying:
+        - REWRITES: your `old_str` must be the exact content inside a \
+          `<w:t>` / `<w:t xml:space="preserve">` element that contains the \
+          `original` text. Replace only the text between the `<w:t>` tags. \
+          Leave the surrounding `<w:r>` and `<w:rPr>` untouched.
+        - ADDITIONS: `old_str` is an existing `<w:p>...</w:p>` paragraph \
+          (the LAST bullet under the named employer). `new_str` is that \
+          same paragraph PLUS a new `<w:p>...</w:p>` cloned from it with \
+          the `<w:t>` text swapped for the new bullet text. Keep `<w:pPr>` \
+          and `<w:rPr>` identical.
+        - If you can't locate a target after two `view` attempts, move on.
+
+        \(todo)
+        """
+    }
+
+    private static func buildHybridChangelog(analysis: GapAnalysis,
+                                             editCount: Int) -> String {
+        var lines: [String] = []
+        if let summary = analysis.gap_summary, !summary.isEmpty {
+            lines.append("- \(summary)")
+        }
+        if let kws = analysis.missing_keywords, !kws.isEmpty {
+            lines.append("- Keywords woven in: \(kws.joined(separator: ", "))")
+        }
+        let planned = (analysis.bullets_to_rewrite?.count ?? 0)
+                    + (analysis.bullets_to_add?.count ?? 0)
+        lines.append("- Haiku applied \(editCount) of \(planned) Sonnet-planned edit(s)")
+        return lines.joined(separator: "\n")
+    }
+
     private func generateViaStrReplace(documentXML: String,
                                        originalBytes: Data,
                                        outputFilename: String?,
                                        jd: String,
+                                       model: String,
                                        apiKey: String,
                                        openAIKey: String,
                                        systemPrompt: String) async throws -> (String, String, URL) {
@@ -397,10 +1054,10 @@ final class ResumeController {
         _ = try await AIManager.shared.sendWithTools(
             initialUserMessage: userPrompt,
             apiKey: apiKey,
-            model: "claude-sonnet-4-6",
+            model: model,
             systemPrompt: systemPrompt,
             tools: [tool],
-            maxIterations: 40,
+            maxIterations: 100,
             maxTokens: 8192,
             timeoutInterval: 600,   // 10 min — text_editor loops can take a while
             onStatus: status,
