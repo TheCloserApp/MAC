@@ -399,32 +399,34 @@ private struct TurnBubble: View {
     @State private var copied = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: Design.Space.sm) {
+        HStack(alignment: .top, spacing: 0) {
             if turn.role == .user {
-                Spacer(minLength: 40)
+                Spacer(minLength: 48)
                 userContent
             } else {
-                assistantAvatar
                 assistantContent
-                Spacer(minLength: 40)
+                Spacer(minLength: 24)
             }
         }
         .onHover { hovering = $0 }
     }
 
+    /// User: compact pill-shaped bubble, accent-tinted, right-aligned.
     private var userContent: some View {
-        VStack(alignment: .trailing, spacing: 2) {
+        VStack(alignment: .trailing, spacing: 3) {
             Text(turn.content)
                 .font(Design.Font.body)
                 .foregroundColor(.primary)
                 .textSelection(.enabled)
-                .padding(.horizontal, Design.Space.md)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(Color.accentColor.opacity(0.14))
-                .clipShape(RoundedRectangle(cornerRadius: Design.Radius.md))
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.accentColor.opacity(0.18))
+                )
                 .overlay(
-                    RoundedRectangle(cornerRadius: Design.Radius.md)
-                        .stroke(Color.accentColor.opacity(0.18), lineWidth: 0.5)
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5)
                 )
 
             HStack(spacing: 4) {
@@ -445,40 +447,29 @@ private struct TurnBubble: View {
         }
     }
 
-    private var assistantAvatar: some View {
-        ZStack {
-            Circle()
-                .fill(.linearGradient(
-                    colors: [.accentColor.opacity(0.2), .purple.opacity(0.15)],
-                    startPoint: .top, endPoint: .bottom))
-                .frame(width: 24, height: 24)
-            Image(systemName: "sparkle")
-                .font(.system(size: 11))
-                .foregroundColor(.accentColor)
-        }
-        .padding(.top, 2)
-    }
-
+    /// Assistant: no avatar, no bubble. An eyebrow label sits above the
+    /// markdown text — looks like a doc/spec entry rather than a chat reply.
     private var assistantContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if turn.content.isEmpty {
-                // Pre-first-chunk state: the streaming path has created this
-                // turn but the model hasn't sent anything yet. Show the
-                // typing dots inside the bubble — replaces the separate
-                // "thinking" bubble below.
-                TypingIndicatorView()
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color.primary.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.md))
-            } else {
-                MarkdownResponseView(text: turn.content)
-                    .padding(.horizontal, 2)
-                    .padding(.vertical, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
+                Text("Claude")
+                    .font(Design.Font.eyebrow)
+                    .tracking(0.4)
+                    .foregroundColor(.secondary.opacity(0.85))
             }
 
-            HStack(spacing: 6) {
-                if !turn.content.isEmpty {
+            if turn.content.isEmpty {
+                TypingIndicatorView()
+                    .padding(.vertical, 4)
+            } else {
+                MarkdownResponseView(text: turn.content)
+            }
+
+            if !turn.content.isEmpty {
+                HStack(spacing: 6) {
                     Text(relativeTime)
                         .font(Design.Font.micro.monospacedDigit())
                         .foregroundStyle(.tertiary)
@@ -512,9 +503,19 @@ private struct TurnBubble: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .frame(height: 14)
+                .animation(Design.Motion.fast, value: hovering)
             }
-            .frame(height: turn.content.isEmpty ? 0 : 14)
-            .animation(Design.Motion.fast, value: hovering)
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+            // Subtle vertical rail — lights up while streaming.
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(turn.content.isEmpty
+                      ? Color.accentColor.opacity(0.55)
+                      : Color.white.opacity(0.10))
+                .frame(width: 2)
+                .padding(.vertical, 2)
         }
     }
 

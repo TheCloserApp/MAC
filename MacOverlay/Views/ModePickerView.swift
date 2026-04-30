@@ -24,9 +24,13 @@ struct ModePickerView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 14)
-                .fill(.ultraThinMaterial)
+                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
                 .opacity(vm.backgroundOpacity)
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.14), radius: 10, x: 0, y: 4)
     }

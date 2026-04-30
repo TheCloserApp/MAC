@@ -72,6 +72,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.animateShellFrame(expanded: expanded)
         }
 
+        vm.onMinimizeChange = { [weak self] _ in
+            // Re-evaluate panel size to swap between full and mini.
+            self?.animateShellFrame(expanded: self?.vm?.isShellExpanded ?? false)
+        }
+
         // Watch the panel's position so the shell can flip the sidebar to the
         // correct side as the user drags the overlay around the screen.
         updatePillAnchor()
@@ -124,10 +129,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Overlay Panel
 
-    /// Collapsed: just the pill + drag handle. Small so the pill can reach any screen edge.
-    static let collapsedSize = NSSize(width: 70, height: 80)
-    /// When expanded, the panel grows to fit the full glass shell.
-    static let expandedSize  = NSSize(width: 520, height: 460)
+    /// Collapsed: small capsule that expands on hover into a horizontal
+    /// quick-access strip (~310pt wide). Panel is sized to fit the hover-
+    /// expanded width so the strip never clips.
+    static let collapsedSize = NSSize(width: 440, height: 96)
+    /// When expanded, the panel grows to fit the full chat shell.
+    static let expandedSize  = NSSize(width: 560, height: 500)
+    /// When the user "parks" the panel — only the composer + a lift handle
+    /// remains. Width matches the full panel so the composer keeps its
+    /// horizontal layout intact.
+    static let miniSize      = NSSize(width: 560, height: 132)
+
+    /// Last-known full-state size. Captured whenever the user transitions
+    /// from full → mini so we can restore exactly what they had on expand,
+    /// and so the mini state preserves the user's manual panel width.
+    private var lastFullSize: NSSize = expandedSize
 
     func setupOverlayPanel() {
         let w: CGFloat = Self.collapsedSize.width, h: CGFloat = Self.collapsedSize.height
@@ -547,10 +563,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func animateShellFrame(expanded: Bool) {
         guard let panel = overlayPanel else { return }
         let cur = panel.frame
-        let sz  = expanded ? Self.expandedSize : Self.collapsedSize
-        // Keep the top edge of the panel fixed.
-        let newY = cur.maxY - sz.height
+        let goingToMini = expanded && (vm?.isShellMinimized ?? false)
+
+        // Capture the user's current full size before collapsing into mini,
+        // so expanding back restores exactly what they had — and the mini
+        // state inherits the user's manual width.
+        let curIsMini = abs(cur.size.height - Self.miniSize.height) < 1
+        if expanded && !curIsMini {
+            lastFullSize = cur.size
+        }
+
+        let sz: NSSize
+        if expanded {
+            if goingToMini {
+                // Keep the user's width, drop down to mini's height.
+                sz = NSSize(width: cur.size.width, height: Self.miniSize.height)
+            } else {
+                // Restore the user's full size (defaults to expandedSize on first launch).
+                sz = lastFullSize
+            }
+        } else {
+            sz = Self.collapsedSize
+        }
+
+        // Anchor logic:
+        //   • Full ↔ mini transitions keep the BOTTOM edge fixed so the
+        //     composer stays put under the user's cursor — the title bar /
+        //     content collapse downward into the composer.
+        //   • Capsule ↔ full transitions keep the TOP edge fixed so the pill
+        //     stays where the user dragged it.
+        let goingToFull  = expanded && !(vm?.isShellMinimized ?? false)
+        let anchorBottom = goingToMini || (goingToFull && curIsMini)
+
         let newX = cur.origin.x
+        let newY: CGFloat = anchorBottom
+            ? cur.origin.y           // bottom edge fixed
+            : (cur.maxY - sz.height) // top edge fixed
         panel.setFrame(NSRect(x: newX, y: newY, width: sz.width, height: sz.height),
                        display: true, animate: true)
     }

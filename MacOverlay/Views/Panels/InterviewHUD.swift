@@ -104,7 +104,7 @@ struct InterviewHUD: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(Color.white.opacity(0.06))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)

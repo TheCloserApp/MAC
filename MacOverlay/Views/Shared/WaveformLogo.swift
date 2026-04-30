@@ -16,7 +16,7 @@ struct WaveformLogo: View {
     private var barColor: Color {
         if vm.isDictating  { return .orange }
         if vm.isQuickAsking { return .red }
-        return Color.primary.opacity(0.8)
+        return Color.white
     }
 
     var body: some View {

@@ -23,41 +23,47 @@ struct BrowserPanelView: View {
                     }
                 }
                 .padding(.horizontal, 6)
-                .padding(.vertical, 5)
+                .padding(.vertical, 4)
             }
-
-            Divider().frame(height: 16)
 
             Button { vm.addTab() } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Color.white.opacity(0.05)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
             }
             .buttonStyle(.plain)
             .help("New tab (Google)")
+            .padding(.horizontal, 4)
 
-            Divider().frame(height: 16)
+            Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
 
-            HStack(spacing: 1) {
+            HStack(spacing: 2) {
                 layoutBtn(1, "rectangle")
                 layoutBtn(2, "rectangle.split.2x1")
                 layoutBtn(3, "rectangle.split.3x1")
             }
             .padding(.horizontal, 6)
         }
-        .background(Color.secondary.opacity(0.08))
+        .background(Color.white.opacity(0.025))
     }
 
     private func layoutBtn(_ n: Int, _ icon: String) -> some View {
-        Button {
+        let active = vm.splitCount == n
+        return Button {
             vm.splitCount = n
             while vm.browserTabs.count < n { vm.addTab() }
         } label: {
             Image(systemName: icon)
-                .font(.system(size: 10))
-                .foregroundColor(vm.splitCount == n ? .primary : .secondary.opacity(0.5))
-                .frame(width: 24, height: 24)
+                .font(.system(size: 10, weight: active ? .semibold : .regular))
+                .foregroundColor(active ? .primary : .secondary.opacity(0.55))
+                .frame(width: 24, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(active ? Color.white.opacity(0.10) : .clear)
+                )
         }
         .buttonStyle(.plain)
         .help(n == 1 ? "Single" : "Split \(n)")
@@ -104,26 +110,54 @@ struct BrowserTabItemView: View {
 
     private var isActive: Bool { vm.activeTabID == tab.id }
 
-    var body: some View {
-        HStack(spacing: 4) {
-            Text(tab.title.isEmpty ? (tab.url.host ?? "Tab") : tab.title)
-                .font(.system(size: 10))
-                .lineLimit(1)
-                .frame(maxWidth: 90, alignment: .leading)
+    @State private var hovering = false
 
-            Button { vm.closeTab(id: tab.id) } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(.secondary)
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 5) {
+                Image(systemName: faviconIcon)
+                    .font(.system(size: 9))
+                    .foregroundColor(isActive ? .accentColor : .secondary.opacity(0.7))
+                Text(tab.title.isEmpty ? (tab.url.host ?? "Tab") : tab.title)
+                    .font(.system(size: 11, weight: isActive ? .medium : .regular))
+                    .foregroundColor(isActive ? .primary : .secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 100, alignment: .leading)
+
+                Button { vm.closeTab(id: tab.id) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.secondary.opacity(hovering || isActive ? 0.85 : 0))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                isActive ? Color.white.opacity(0.06)
+                         : (hovering ? Color.white.opacity(0.03) : .clear)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+
+            // Browser-style underline indicator for the active tab.
+            Rectangle()
+                .fill(isActive ? Color.accentColor : .clear)
+                .frame(height: 1.5)
+                .padding(.horizontal, 4)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(isActive ? Color.secondary.opacity(0.2) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
         .contentShape(Rectangle())
         .onTapGesture { vm.activeTabID = tab.id }
+        .onHover { hovering = $0 }
+        .animation(Design.Motion.fast, value: hovering)
+    }
+
+    private var faviconIcon: String {
+        let s = tab.url.absoluteString
+        if s.contains("claude")  { return "sparkles" }
+        if s.contains("chatgpt") { return "bubble.left.fill" }
+        if s.contains("google")  { return "magnifyingglass" }
+        if s.contains("github")  { return "chevron.left.forwardslash.chevron.right" }
+        return "globe"
     }
 }
 
@@ -159,43 +193,49 @@ struct BrowserTabContentView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Button { webState.goBack() } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(webState.canGoBack ? .primary : .primary.opacity(0.25))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(webState.canGoBack ? .primary : .primary.opacity(0.22))
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .disabled(!webState.canGoBack)
 
             Button { webState.goForward() } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(webState.canGoForward ? .primary : .primary.opacity(0.25))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(webState.canGoForward ? .primary : .primary.opacity(0.22))
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .disabled(!webState.canGoForward)
 
-            Image(systemName: toolbarIcon)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-
-            TextField("URL", text: $urlInput)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundColor(.primary)
-                .onSubmit { navigate() }
-
-            Button { navigate() } label: {
-                Image(systemName: "return")
+            HStack(spacing: 6) {
+                Image(systemName: toolbarIcon)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
+                TextField("URL", text: $urlInput)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(.primary)
+                    .onSubmit { navigate() }
+                Button { navigate() } label: {
+                    Image(systemName: "return")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.05)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.secondary.opacity(0.06))
+        .background(Color.white.opacity(0.02))
     }
 
     private var toolbarIcon: String {

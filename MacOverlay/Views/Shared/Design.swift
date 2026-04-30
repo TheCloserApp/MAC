@@ -41,6 +41,17 @@ enum Design {
         static let eyebrow = SwiftUI.Font.system(size: 10, weight: .semibold)
     }
 
+    // MARK: - macOS system accents (used by sidebar / top strip / chat rail)
+    enum Accent {
+        static let blue   = Color(red: 10/255,  green: 132/255, blue: 255/255)
+        static let green  = Color(red: 52/255,  green: 199/255, blue: 89/255)
+        static let red    = Color(red: 255/255, green: 69/255,  blue: 58/255)
+        static let amber  = Color(red: 255/255, green: 159/255, blue: 10/255)
+        static let pink   = Color(red: 255/255, green: 55/255,  blue: 95/255)
+        static let purple = Color(red: 191/255, green: 90/255,  blue: 242/255)
+        static let teal   = Color(red: 100/255, green: 210/255, blue: 255/255)
+    }
+
     // MARK: - Animation curves
     enum Motion {
         /// Quick feedback (press, reveal)
@@ -67,7 +78,7 @@ enum Design {
     }
 
     /// Gap between floating glass cards / cells.
-    static let cardGap: CGFloat = 8
+    static let cardGap: CGFloat = 14
 
     // MARK: - Semantic colors for the 4 session modes
     static func modeColor(_ mode: SessionMode) -> Color {
@@ -94,21 +105,35 @@ extension View {
         self
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
                     .opacity(opacity)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        .linearGradient(
-                            colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.5
-                    )
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .designShadow(shadow)
+    }
+
+    /// Card with separate top and bottom corner radii — used for stacked
+    /// cards that meet flush with sharp inner corners and rounded outer
+    /// corners. Same dark surface + hairline border + raised shadow as
+    /// `glassCard()`.
+    func cardSurface(topRadius: CGFloat,
+                     bottomRadius: CGFloat,
+                     shadow: Design.ShadowStyle = Design.Shadow.raised) -> some View {
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: topRadius,
+            bottomLeadingRadius: bottomRadius,
+            bottomTrailingRadius: bottomRadius,
+            topTrailingRadius: topRadius,
+            style: .continuous
+        )
+        return self
+            .background { shape.fill(Color(red: 22/255, green: 22/255, blue: 24/255)) }
+            .overlay { shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75) }
+            .clipShape(shape)
             .designShadow(shadow)
     }
 }

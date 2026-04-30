@@ -295,38 +295,53 @@ struct ResumePanelView: View {
     }
 
     private var header: some View {
-        HStack {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Resume")
+                .font(.system(size: 14, weight: .semibold))
+                .tracking(-0.2)
+                .foregroundColor(.primary)
             Text("Tailor a resume to any job description")
-                .font(.caption)
+                .font(.system(size: 11))
                 .foregroundColor(.secondary)
-            Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private var tabBar: some View {
         let count = vm.resumeStore.generations.count
-        return HStack(spacing: 4) {
-            tabChip("Build", isActive: tab == .build) { tab = .build }
-            tabChip(count > 0 ? "Generations (\(count))" : "Generations",
-                    isActive: tab == .history) { tab = .history }
-            Spacer()
+        return VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                tabChip("Build", isActive: tab == .build) { tab = .build }
+                tabChip(count > 0 ? "Generations (\(count))" : "Generations",
+                        isActive: tab == .history) { tab = .history }
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 0.5)
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 6)
     }
 
     private func tabChip(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: { withAnimation(Design.Motion.fast) { action() } }) {
             Text(label)
                 .font(.system(size: 11, weight: isActive ? .semibold : .medium))
-                .foregroundColor(isActive ? .white : .secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(isActive ? Color.accentColor : Color.secondary.opacity(0.1))
-                .clipShape(Capsule())
+                .foregroundColor(isActive ? .primary : .secondary.opacity(0.85))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(
+                    Capsule().fill(isActive ? Color.white.opacity(0.10) : .clear)
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        isActive ? Color.white.opacity(0.18) : Color.white.opacity(0.08),
+                        lineWidth: 0.5
+                    )
+                )
         }
         .buttonStyle(.plain)
     }
@@ -757,9 +772,13 @@ struct ResumeFloatingPillView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 12)
-                .fill(.ultraThinMaterial)
+                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
                 .opacity(vm.backgroundOpacity)
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
     }

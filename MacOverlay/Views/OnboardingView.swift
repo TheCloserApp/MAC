@@ -31,9 +31,13 @@ struct OnboardingView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 14)
-                .fill(.ultraThinMaterial)
+                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
                 .opacity(vm.backgroundOpacity)
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(8)
     }

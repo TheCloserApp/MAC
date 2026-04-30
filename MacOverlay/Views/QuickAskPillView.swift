@@ -39,9 +39,13 @@ struct QuickAskPillView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 12)
-                .fill(.ultraThinMaterial)
+                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
                 .opacity(vm.backgroundOpacity)
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.12), radius: 6, x: 0, y: 2)
         .frame(maxWidth: 420)

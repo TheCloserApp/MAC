@@ -385,6 +385,14 @@ final class OverlayViewModel {
     }
     @ObservationIgnored var onExpansionChange: ((Bool) -> Void)?
 
+    /// True when expanded but only the slim title bar should show (no
+    /// content, no composer). Useful as a "park it out of the way" state
+    /// without going all the way to the capsule.
+    var isShellMinimized: Bool = false {
+        didSet { onMinimizeChange?(isShellMinimized) }
+    }
+    @ObservationIgnored var onMinimizeChange: ((Bool) -> Void)?
+
     // MARK: - Peer control
     @ObservationIgnored let peerServer = PeerControlServer.shared
     var peerControlEnabled: Bool {

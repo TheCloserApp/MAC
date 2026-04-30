@@ -29,60 +29,67 @@ struct PromptLibraryView: View {
     var body: some View {
         @Bindable var vm = vm
         VStack(alignment: .leading, spacing: 0) {
-            header
+            panelHeader
             filterBar
 
-            Divider()
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 0.5)
 
             if filteredPresets.isEmpty && editingID == nil {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 4) {
+                    LazyVStack(spacing: 2) {
                         ForEach(filteredPresets) { p in
                             row(p)
                         }
                     }
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 8)
                 }
             }
         }
     }
 
-    private var header: some View {
-        HStack {
-            Text("\(store.presets.count) saved prompt\(store.presets.count == 1 ? "" : "s")")
-                .font(.caption)
+    private var panelHeader: some View {
+        HStack(spacing: 8) {
+            Text("Prompts")
+                .font(.system(size: 14, weight: .semibold))
+                .tracking(-0.2)
+                .foregroundColor(.primary)
+            Text("\(store.presets.count)")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(Color.white.opacity(0.06)))
             Spacer()
             Menu {
-                Button {
-                    beginEdit(.new(kind: .conversation))
-                } label: {
+                Button { beginEdit(.new(kind: .conversation)) } label: {
                     Label("New conversation prompt", systemImage: "bubble.left.and.bubble.right")
                 }
-                Button {
-                    beginEdit(.new(kind: .resumeGeneration))
-                } label: {
+                Button { beginEdit(.new(kind: .resumeGeneration)) } label: {
                     Label("New resume generation prompt", systemImage: "doc.text")
                 }
-                Button {
-                    beginEdit(.new(kind: .resumeScoring))
-                } label: {
+                Button { beginEdit(.new(kind: .resumeScoring)) } label: {
                     Label("New resume scoring prompt", systemImage: "chart.bar")
                 }
             } label: {
-                Label("New", systemImage: "plus")
-                    .font(.caption.weight(.medium))
+                HStack(spacing: 4) {
+                    Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                    Text("New").font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Capsule().fill(Design.Accent.blue))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .foregroundColor(.accentColor)
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 
     private var filterBar: some View {
@@ -93,8 +100,8 @@ struct PromptLibraryView: View {
             filterChip("Scoring", match: .kind(.resumeScoring))
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 10)
     }
 
     private func filterChip(_ label: String, match: Filter) -> some View {
@@ -104,10 +111,17 @@ struct PromptLibraryView: View {
         } label: {
             Text(label)
                 .font(.system(size: 10, weight: active ? .semibold : .medium))
-                .foregroundColor(active ? .white : .secondary)
-                .padding(.horizontal, 8).padding(.vertical, 3)
-                .background(active ? Color.accentColor : Color.secondary.opacity(0.1))
-                .clipShape(Capsule())
+                .foregroundColor(active ? .primary : .secondary.opacity(0.85))
+                .padding(.horizontal, 9).padding(.vertical, 3)
+                .background(
+                    Capsule().fill(active ? Color.white.opacity(0.10) : .clear)
+                )
+                .overlay(
+                    Capsule().strokeBorder(
+                        active ? Color.white.opacity(0.18) : Color.white.opacity(0.08),
+                        lineWidth: 0.5
+                    )
+                )
         }
         .buttonStyle(.plain)
     }
@@ -145,40 +159,40 @@ struct PromptLibraryView: View {
         let isActive = p.id == store.activePresetID
         let isEditing = p.id == editingID
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
-                Rectangle()
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                     .fill(isActive ? Color.accentColor : .clear)
-                    .frame(width: 2)
+                    .frame(width: 2.5)
+                    .padding(.vertical, 4)
+
+                Image(systemName: p.icon)
+                    .font(.system(size: 11))
+                    .foregroundColor(isActive ? .accentColor : .secondary.opacity(0.7))
+                    .frame(width: 18, height: 18)
+                    .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text(p.name)
                             .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                            .foregroundColor(.primary)
                             .lineLimit(1)
-                        if isActive {
-                            Text("ACTIVE")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
-                                .background(Color.accentColor)
-                                .clipShape(Capsule())
-                        }
                         Spacer()
                     }
                     Text(p.content)
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.secondary.opacity(0.85))
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Button { beginEdit(.existing(p)) } label: {
                         Image(systemName: "square.and.pencil")
                             .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.secondary.opacity(0.7))
+                            .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
 
@@ -188,19 +202,24 @@ struct PromptLibraryView: View {
                         Image(systemName: "trash")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary.opacity(0.6))
+                            .frame(width: 22, height: 22)
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.vertical, 6)
-            .padding(.trailing, 6)
+            .padding(.vertical, 5)
+            .padding(.trailing, 4)
 
             if isEditing {
                 editor(id: p.id)
             }
         }
-        .background(isActive && !isEditing ? Color.accentColor.opacity(0.06) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .background(
+            RoundedRectangle(cornerRadius: Design.Radius.md, style: .continuous)
+                .fill(isActive && !isEditing
+                      ? Color.accentColor.opacity(0.08)
+                      : .clear)
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             if editingID == nil { store.activePresetID = p.id }

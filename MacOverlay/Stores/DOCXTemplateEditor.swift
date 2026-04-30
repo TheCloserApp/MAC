@@ -100,15 +100,7 @@ enum DOCXTemplateEditor {
             .appendingPathComponent("resume_\(Int(Date().timeIntervalSince1970)).docx")
         try? fm.removeItem(at: outputURL)
 
-        let zip = Process()
-        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        zip.currentDirectoryURL = tempDir
-        zip.arguments = ["-r", "-X", outputURL.path, "."]
-        try zip.run()
-        zip.waitUntilExit()
-        guard zip.terminationStatus == 0, fm.fileExists(atPath: outputURL.path) else {
-            throw DOCXError.zipFailed
-        }
+        try Self.repackDOCX(from: tempDir, to: outputURL)
         return (outputURL, applied, missed)
     }
 
@@ -178,6 +170,19 @@ enum DOCXTemplateEditor {
                 rewritesMissed.append(r)
                 continue
             }
+            // For paragraphs with tabs/breaks, use SURGICAL replacement so
+            // we don't destroy alignment. For everything else, collapse
+            // runs as before (clean text, loses bold sub-phrases).
+            if hasInlineLayoutElements(paragraphs[idx]) {
+                let edited = surgicallyReplaceLargestText(paragraphs[idx], with: r.rewritten)
+                if edited == paragraphs[idx] {
+                    rewritesMissed.append(r)
+                    continue
+                }
+                paragraphs[idx] = edited
+                rewritesApplied += 1
+                continue
+            }
             paragraphs[idx] = rewriteParagraphText(paragraphs[idx], to: r.rewritten)
             rewritesApplied += 1
         }
@@ -192,7 +197,10 @@ enum DOCXTemplateEditor {
                 continue
             }
             let template = paragraphs[anchorIdx]
-            let injected = rewriteParagraphText(template, to: add.text)
+            // Clone-for-insert strips unique-ID attributes so we don't end
+            // up with two paragraphs sharing the same `w14:paraId` — which
+            // makes Google Docs reject the upload.
+            let injected = cloneParagraphForInsert(template, to: add.text)
             paragraphs.insert(injected, at: anchorIdx + 1)
             bulletsAdded += 1
         }
@@ -236,15 +244,7 @@ enum DOCXTemplateEditor {
         let outputURL = fm.temporaryDirectory
             .appendingPathComponent("resume_\(Int(Date().timeIntervalSince1970)).docx")
         try? fm.removeItem(at: outputURL)
-        let zip = Process()
-        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        zip.currentDirectoryURL = tempDir
-        zip.arguments = ["-r", "-X", outputURL.path, "."]
-        try zip.run()
-        zip.waitUntilExit()
-        guard zip.terminationStatus == 0, fm.fileExists(atPath: outputURL.path) else {
-            throw DOCXError.zipFailed
-        }
+        try Self.repackDOCX(from: tempDir, to: outputURL)
         return GapApplyOutcome(
             url: outputURL,
             rewritesApplied: rewritesApplied,
@@ -284,7 +284,86 @@ enum DOCXTemplateEditor {
         let rewritesMissed: [Int]      // invalid indices
         let insertionsApplied: Int
         let insertionsMissed: [Int]
+        /// Edits we deliberately refused because the target paragraph uses
+        /// inline tabs / breaks for layout (right-aligned dates, tab-spaced
+        /// skills lists, table-cell alignment). Collapsing those runs would
+        /// destroy the visual layout.
+        var layoutPreserved: [Int] = []
         var validationWarning: String?
+    }
+
+    /// True if the paragraph contains inline layout elements that we'd
+    /// destroy by collapsing its runs to a single text run.
+    fileprivate static func hasInlineLayoutElements(_ paraXML: String) -> Bool {
+        let markers = [
+            "<w:tab/>", "<w:tab>", "<w:tab ",   // tab character (most common)
+            "<w:br/>",  "<w:br>",  "<w:br ",    // soft line break
+            "<w:cr/>",                           // carriage return
+            "<w:ptab/>", "<w:ptab ",            // position tab
+        ]
+        for m in markers where paraXML.contains(m) { return true }
+        return false
+    }
+
+    /// Heuristic: does this short text fragment look like a date or date
+    /// range? Used to AVOID replacing date segments during surgical edits —
+    /// a tab-aligned date in a role header should never be touched.
+    fileprivate static func looksLikeDateSpan(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 50, !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        if lower.contains("present") || lower.contains("current") ||
+           lower.contains("ongoing") || lower.contains("till date") ||
+           lower.contains("to date") {
+            return true
+        }
+        // Month abbrev / name + year (e.g. "Dec 2023", "September 2021").
+        if trimmed.range(of: #"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}\b"#,
+                         options: .regularExpression) != nil { return true }
+        // Year-range: "2019 – 2021", "2019-2022".
+        if trimmed.range(of: #"\b\d{4}\s*[–—\-]\s*\d{4}\b"#,
+                         options: .regularExpression) != nil { return true }
+        // MM/YYYY: "01/2020".
+        if trimmed.range(of: #"\b\d{1,2}/\d{4}\b"#,
+                         options: .regularExpression) != nil { return true }
+        return false
+    }
+
+    /// Surgical text replacement: find every `<w:t>…</w:t>` element, drop
+    /// any that look like dates, and swap the inner text of whichever
+    /// non-date element holds the most characters. Everything else in the
+    /// paragraph (other runs, tabs, breaks, bold sub-phrases, hyperlinks,
+    /// run properties, paragraph properties) is left byte-for-byte intact.
+    /// Used for paragraphs whose layout depends on inline tabs/breaks —
+    /// collapsing those to a single run would shift dates onto a new line
+    /// or scrunch tab-aligned skills lists.
+    fileprivate static func surgicallyReplaceLargestText(_ paraXML: String,
+                                                         with newText: String) -> String {
+        let safeText = stripInvalidXMLChars(newText)
+        let escaped  = escapeXML(safeText)
+        guard let re = try? NSRegularExpression(pattern: #"<w:t\b[^>]*?>([\s\S]*?)</w:t>"#)
+        else { return paraXML }
+        let nsXml = paraXML as NSString
+        let matches = re.matches(in: paraXML,
+                                 range: NSRange(location: 0, length: nsXml.length))
+        guard !matches.isEmpty else { return paraXML }
+
+        var bestInnerRange: NSRange?
+        var bestSize = 0
+        for match in matches {
+            guard match.numberOfRanges >= 2 else { continue }
+            let innerRange = match.range(at: 1)
+            guard innerRange.location != NSNotFound else { continue }
+            let raw = nsXml.substring(with: innerRange)
+            let plain = unescapeXML(raw)
+            if looksLikeDateSpan(plain) { continue }     // never touch date segments
+            if raw.count > bestSize {
+                bestSize = raw.count
+                bestInnerRange = innerRange
+            }
+        }
+        guard let target = bestInnerRange else { return paraXML }
+        return nsXml.replacingCharacters(in: target, with: escaped) as String
     }
 
     /// Extract every paragraph as an `IndexedParagraph`. Empty paragraphs
@@ -345,13 +424,32 @@ enum DOCXTemplateEditor {
         var rewritesMissed: [Int] = []
         var insertionsApplied = 0
         var insertionsMissed: [Int] = []
+        var layoutPreserved: [Int] = []
 
         // Apply rewrites in place (indices stay stable since we're not
-        // inserting yet).
+        // inserting yet). For paragraphs with inline layout elements
+        // (tabs / breaks / position tabs) we use SURGICAL replacement —
+        // swap only the largest non-date `<w:t>` text node, leaving runs,
+        // tabs, breaks, and bold sub-phrases untouched. For paragraphs
+        // without those elements we collapse to a single run via
+        // `rewriteParagraphText`, which gives clean text but loses bold
+        // sub-phrases (acceptable trade-off for clean rewrites).
         for (idx, newText) in rewritesByIdx {
             let arrayIdx = idx - 1
             guard arrayIdx >= 0, arrayIdx < paragraphs.count else {
                 rewritesMissed.append(idx)
+                continue
+            }
+            if hasInlineLayoutElements(paragraphs[arrayIdx]) {
+                let edited = surgicallyReplaceLargestText(paragraphs[arrayIdx], with: newText)
+                if edited == paragraphs[arrayIdx] {
+                    // Every text segment looked like a date — there was
+                    // nothing safe to swap. Preserve the paragraph as-is.
+                    layoutPreserved.append(idx)
+                    continue
+                }
+                paragraphs[arrayIdx] = edited
+                rewritesApplied += 1
                 continue
             }
             paragraphs[arrayIdx] = rewriteParagraphText(paragraphs[arrayIdx], to: newText)
@@ -366,8 +464,18 @@ enum DOCXTemplateEditor {
                 insertionsMissed.append(idx)
                 continue
             }
+            // Cloning a tab/break-bearing paragraph as a template would
+            // emit a new paragraph that loses those layout elements, so
+            // refuse to clone such paragraphs.
+            if hasInlineLayoutElements(paragraphs[arrayIdx]) {
+                layoutPreserved.append(idx)
+                continue
+            }
             let template = paragraphs[arrayIdx]
-            let newParas = insertionsByIdx[idx]!.map { rewriteParagraphText(template, to: $0) }
+            // Use the clone-for-insert variant so the new paragraphs don't
+            // carry duplicate `w14:paraId` / `w:rsidR` with the template —
+            // Google Docs rejects files with duplicate paragraph IDs.
+            let newParas = insertionsByIdx[idx]!.map { cloneParagraphForInsert(template, to: $0) }
             paragraphs.insert(contentsOf: newParas, at: arrayIdx + 1)
             insertionsApplied += newParas.count
         }
@@ -397,21 +505,14 @@ enum DOCXTemplateEditor {
         try xml.write(to: docURL, atomically: true, encoding: .utf8)
 
         let outputURL = try uniqueOutputURL(filename: outputFilename)
-        let zip = Process()
-        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        zip.currentDirectoryURL = tempDir
-        zip.arguments = ["-r", "-X", outputURL.path, "."]
-        try zip.run()
-        zip.waitUntilExit()
-        guard zip.terminationStatus == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
-            throw DOCXError.zipFailed
-        }
+        try Self.repackDOCX(from: tempDir, to: outputURL)
         return IndexedEditOutcome(
             url: outputURL,
             rewritesApplied: rewritesApplied,
             rewritesMissed: rewritesMissed,
             insertionsApplied: insertionsApplied,
             insertionsMissed: insertionsMissed,
+            layoutPreserved: layoutPreserved,
             validationWarning: validationWarning
         )
     }
@@ -442,27 +543,185 @@ enum DOCXTemplateEditor {
     /// `<w:rPr>` as the style for the new text, replace all runs with a
     /// single run containing `newText`.
     private static func rewriteParagraphText(_ paraXML: String, to newText: String) -> String {
+        // Strip XML-invalid control characters. XML 1.0 allows only 0x09
+        // (tab), 0x0A (LF), 0x0D (CR) in the 0x00–0x1F range; anything
+        // else is illegal and makes Word / Google Docs refuse to open
+        // the file even when the broader schema is correct.
+        let safeText = Self.stripInvalidXMLChars(newText)
+
         // Empty paragraph → nothing to replace against. Fall back to
         // injecting a single plain run with the new text.
-        if paraXML.contains("<w:p/>") || paraXML.hasSuffix("<w:p />") {
-            return #"<w:p><w:r><w:t xml:space="preserve">\#(escapeXML(newText))</w:t></w:r></w:p>"#
+        if paraXML.contains("<w:p/>") || paraXML.contains("<w:p />") {
+            return #"<w:p><w:r><w:t xml:space="preserve">\#(escapeXML(safeText))</w:t></w:r></w:p>"#
         }
 
-        let pPr = substring(of: paraXML, between: "<w:pPr>", and: "</w:pPr>")
+        // Preserve the original `<w:p ... attrs>` opening tag verbatim.
+        // Word / Google sometimes reject paragraphs that lose their
+        // `w14:paraId` or `w:rsidR` attributes, so we never rebuild the
+        // tag from scratch — only rewrite what's BETWEEN it and `</w:p>`.
+        guard let pOpenStart = paraXML.range(of: "<w:p"),
+              let pOpenEnd   = paraXML.range(of: ">", range: pOpenStart.upperBound..<paraXML.endIndex),
+              let pCloseStart = paraXML.range(of: "</w:p>", range: pOpenEnd.upperBound..<paraXML.endIndex)
+        else {
+            // Couldn't locate the paragraph boundaries — play it safe and
+            // emit a minimal paragraph rather than a broken one.
+            return #"<w:p><w:r><w:t xml:space="preserve">\#(escapeXML(safeText))</w:t></w:r></w:p>"#
+        }
+        let openingTag = String(paraXML[pOpenStart.lowerBound..<pOpenEnd.upperBound])
+        let body       = String(paraXML[pOpenEnd.upperBound..<pCloseStart.lowerBound])
+
+        // Extract pPr from the body (always the first child of <w:p> by spec).
+        let pPr = substring(of: body, between: "<w:pPr>", and: "</w:pPr>")
                     .map { "<w:pPr>\($0)</w:pPr>" } ?? ""
-
         // First run's rPr — inherit font, size, colour.
-        let rPrInner = firstRunProperties(in: paraXML)
+        let rPrInner = firstRunProperties(in: body)
         let rPr = rPrInner.map { "<w:rPr>\($0)</w:rPr>" } ?? ""
+        // Preserve the original first run's opening tag (with its rsid
+        // attrs) verbatim. Word otherwise rejects rewritten paragraphs
+        // even though they're schema-valid.
+        let runOpen = firstRunOpeningTag(in: body) ?? "<w:r>"
 
-        let newRun = #"<w:r>\#(rPr)<w:t xml:space="preserve">\#(escapeXML(newText))</w:t></w:r>"#
-        return "<w:p>\(pPr)\(newRun)</w:p>"
+        let newRun = #"\#(runOpen)\#(rPr)<w:t xml:space="preserve">\#(escapeXML(safeText))</w:t></w:r>"#
+        return openingTag + pPr + newRun + "</w:p>"
+    }
+
+    /// Drop characters that XML 1.0 forbids. Keeps tab (0x09), LF (0x0A),
+    /// CR (0x0D) and everything ≥ 0x20. Other C0 controls slip in when
+    /// a model pastes junk from the training data or accidentally emits
+    /// form-feed / vertical-tab inside bullet text; those break Word's
+    /// schema validation even though our validator may wave them through.
+    fileprivate static func stripInvalidXMLChars(_ s: String) -> String {
+        var out = String()
+        out.reserveCapacity(s.count)
+        for scalar in s.unicodeScalars {
+            let v = scalar.value
+            if v == 0x09 || v == 0x0A || v == 0x0D { out.unicodeScalars.append(scalar); continue }
+            if v < 0x20 { continue }                      // forbidden C0 controls
+            if v >= 0x7F && v <= 0x84 { continue }        // DEL + C1 controls subset
+            if v >= 0x86 && v <= 0x9F { continue }        // rest of C1 controls
+            out.unicodeScalars.append(scalar)
+        }
+        return out
+    }
+
+    /// Re-pack the contents of `tempDir` into a `.docx` at `outputURL`.
+    ///
+    /// Two strict-reader correctness requirements that the naive
+    /// `zip -r -X .` invocation misses:
+    /// 1. ECMA-376 requires `[Content_Types].xml` to be the FIRST entry
+    ///    in the archive so it can be read without scanning the central
+    ///    directory. Google Docs enforces this; Word doesn't.
+    /// 2. Hidden / OS-junk files (`.DS_Store`, `__MACOSX/`, AppleDouble
+    ///    `._*` files) must not be in the archive — Google Docs treats
+    ///    their presence as a malformed package.
+    ///
+    /// We do this in two passes: first zip ONLY `[Content_Types].xml`, then
+    /// append everything else with a recursive call that excludes the
+    /// already-added file and hidden cruft.
+    fileprivate static func repackDOCX(from tempDir: URL,
+                                       to outputURL: URL) throws {
+        let fm = FileManager.default
+        // Strip macOS metadata so it never lands in the package.
+        let cleanup = Process()
+        cleanup.executableURL = URL(fileURLWithPath: "/usr/bin/find")
+        cleanup.currentDirectoryURL = tempDir
+        cleanup.arguments = [".",
+                             "-name", ".DS_Store", "-delete",
+                             "-o", "-name", "._*", "-delete"]
+        try? cleanup.run()
+        cleanup.waitUntilExit()
+
+        // Pass 1: write `[Content_Types].xml` as the first entry.
+        // `-D` suppresses directory entries; `-X` strips extra fields.
+        let pass1 = Process()
+        pass1.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        pass1.currentDirectoryURL = tempDir
+        pass1.arguments = ["-X", "-D", outputURL.path, "[Content_Types].xml"]
+        try pass1.run()
+        pass1.waitUntilExit()
+        guard pass1.terminationStatus == 0 else { throw DOCXError.zipFailed }
+
+        // Pass 2: append the remaining top-level entries.
+        //
+        // We deliberately AVOID zip's `-x` exclude flag for `[Content_Types].xml`
+        // because zip's pattern parser treats `[...]` as a character class —
+        // `-x "[Content_Types].xml"` matches single-char filenames like
+        // `C.xml`/`o.xml`, NOT the literal `[Content_Types].xml`. Earlier
+        // attempts to backslash-escape the brackets weren't reliably
+        // honoured by BSD zip on macOS, so pass 2 kept re-adding the file
+        // and moving it from entry 0 to the end of the archive. Google Docs
+        // requires the content-types map to be the first entry, so it
+        // rejected every output.
+        //
+        // Solution: enumerate the top-level entries with FileManager,
+        // filter out `[Content_Types].xml` and OS junk explicitly, and pass
+        // each remaining name as a positional argument. `zip -r` recurses
+        // into subdirectories on its own.
+        let topLevel = (try? FileManager.default.contentsOfDirectory(
+            at: tempDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let entriesToAdd = topLevel
+            .map { $0.lastPathComponent }
+            .filter { $0 != "[Content_Types].xml" && $0 != "__MACOSX" }
+        guard !entriesToAdd.isEmpty else { return }
+
+        let pass2 = Process()
+        pass2.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        pass2.currentDirectoryURL = tempDir
+        // -D suppresses directory entries (size-0 records like `docProps/`)
+        // that some validators (Google Docs included) treat as malformed
+        // when the spec doesn't require them.
+        pass2.arguments = ["-r", "-X", "-D", outputURL.path] + entriesToAdd
+        try pass2.run()
+        pass2.waitUntilExit()
+        guard pass2.terminationStatus == 0,
+              fm.fileExists(atPath: outputURL.path) else {
+            throw DOCXError.zipFailed
+        }
+    }
+
+    /// Clone a template paragraph for INSERTION, stripping the unique-ID
+    /// attributes that Word stamps on every `<w:p>`. Without stripping,
+    /// two paragraphs would share the same `w14:paraId`, and Google Docs
+    /// will reject the upload with a "not a valid document" error. Word
+    /// tolerates duplicates but the file becomes subtly broken over time.
+    fileprivate static func cloneParagraphForInsert(_ paraXML: String, to newText: String) -> String {
+        // Start from the standard rewrite (which preserves pPr + first-run
+        // rPr and only swaps text) then strip the identifier attributes
+        // from the outer `<w:p ...>` tag so the new paragraph gets implicit
+        // fresh IDs when Word reopens the file.
+        let rewritten = rewriteParagraphText(paraXML, to: newText)
+        guard let pOpenStart = rewritten.range(of: "<w:p"),
+              let pOpenEnd   = rewritten.range(of: ">", range: pOpenStart.upperBound..<rewritten.endIndex)
+        else { return rewritten }
+
+        var openingTag = String(rewritten[pOpenStart.lowerBound..<pOpenEnd.upperBound])
+        // Attributes Word uses as unique identifiers per-paragraph. Remove
+        // all of them; Word regenerates as needed on next save.
+        let idAttrPatterns = [
+            #"\s+w14:paraId="[^"]*""#,
+            #"\s+w14:textId="[^"]*""#,
+            #"\s+w:rsidR="[^"]*""#,
+            #"\s+w:rsidRDefault="[^"]*""#,
+            #"\s+w:rsidP="[^"]*""#,
+            #"\s+w:rsidTr="[^"]*""#,
+        ]
+        for pattern in idAttrPatterns {
+            openingTag = openingTag.replacingOccurrences(of: pattern, with: "",
+                                                        options: .regularExpression)
+        }
+        return String(rewritten[..<pOpenStart.lowerBound])
+             + openingTag
+             + String(rewritten[pOpenEnd.upperBound...])
     }
 
     private static func firstRunProperties(in paraXML: String) -> String? {
         var cursor = paraXML.startIndex
-        while let rOpen = paraXML.range(of: "<w:r>", range: cursor..<paraXML.endIndex)
-                         ?? paraXML.range(of: "<w:r ", range: cursor..<paraXML.endIndex) {
+        while let rOpen = paraXML.range(of: #"<w:r[\s>/]"#,
+                                        options: .regularExpression,
+                                        range: cursor..<paraXML.endIndex) {
             guard let rClose = paraXML.range(of: "</w:r>", range: rOpen.upperBound..<paraXML.endIndex)
             else { break }
             let runSlice = String(paraXML[rOpen.lowerBound..<rClose.upperBound])
@@ -474,35 +733,71 @@ enum DOCXTemplateEditor {
         return nil
     }
 
+    /// Return the first `<w:r ...>` opening tag verbatim (with all of its
+    /// `w:rsidR` / `w:rsidDel` / `w:rsidRPr` metadata). Word treats runs
+    /// without these attributes as foreign-tooling output and is pickier
+    /// about validating them; preserving the original run's opening tag
+    /// makes our rewritten paragraphs look identical at the metadata
+    /// level. Skips false positives like `<w:rPr>`, `<w:rFonts>` (the
+    /// regex `[\s>/]` requirement excludes any letter immediately after
+    /// `<w:r`) and self-closing `<w:r/>` runs.
+    private static func firstRunOpeningTag(in paraXML: String) -> String? {
+        var cursor = paraXML.startIndex
+        while let openMatch = paraXML.range(of: #"<w:r[\s>/]"#,
+                                            options: .regularExpression,
+                                            range: cursor..<paraXML.endIndex) {
+            // Skip self-closing `<w:r/>` runs — they have no content to
+            // anchor a rewrite against.
+            let lastChar = paraXML[paraXML.index(before: openMatch.upperBound)]
+            if lastChar == "/" {
+                cursor = openMatch.upperBound
+                continue
+            }
+            // The match is `<w:r>` (5 chars including `>`) or `<w:r ` /
+            // `<w:r/`. Walk forward to the `>` that closes the opening tag.
+            let scanStart = paraXML.index(before: openMatch.upperBound)
+            guard let gt = paraXML.range(of: ">", range: scanStart..<paraXML.endIndex) else {
+                return nil
+            }
+            return String(paraXML[openMatch.lowerBound..<gt.upperBound])
+        }
+        return nil
+    }
+
     /// Split body into paragraph blocks and the gaps between them.
     private static func splitBodySegments(_ body: String) -> ([String], [String]) {
         var paras: [String] = []
         var gaps: [String] = []
         var cursor = body.startIndex
         while cursor < body.endIndex {
-            guard let open = body.range(of: "<w:p", range: cursor..<body.endIndex) else {
+            // CRITICAL: anchor the match to a REAL paragraph opening tag —
+            // `<w:p` followed by whitespace, `/`, or `>`. The previous
+            // approach searched for the bare prefix `<w:p` and tried to
+            // skip when followed by a letter; the skip path advanced the
+            // cursor 4 chars past `<w:p`, dropping those bytes from the
+            // body. That silently corrupted any `<w:p…>` element whose
+            // name didn't match a paragraph (like `<w:pgNumType>` inside
+            // `<w:sectPr>` or `<w:pBdr>` / `<w:pageBreakBefore>` inside
+            // `<w:pPr>`), producing torn XML in the output document.
+            guard let open = body.range(of: #"<w:p[\s/>]"#,
+                                        options: .regularExpression,
+                                        range: cursor..<body.endIndex) else {
                 gaps.append(String(body[cursor...]))
                 break
             }
-            // Skip anything that starts with `<w:p` followed by a letter —
-            // `<w:pPr>`, `<w:proofErr>`, `<w:permStart/>`, etc. Real paragraph
-            // tags are `<w:p>`, `<w:p … >`, or `<w:p/>`, so the char after
-            // `<w:p` is `>`, whitespace, or `/`.
-            let afterTag = open.upperBound
-            if afterTag < body.endIndex, body[afterTag].isLetter {
-                cursor = afterTag
-                continue
-            }
             gaps.append(String(body[cursor..<open.lowerBound]))
 
-            // Find the `>` that closes the opening <w:p ...> tag.
-            guard let firstGT = body.range(of: ">", range: afterTag..<body.endIndex) else {
+            // The regex match consumed the terminator char (the `[\s/>]`).
+            // Step one back so attribute/closing-tag scanning starts AT
+            // that terminator — necessary when it's `>` itself.
+            let scanStart = body.index(before: open.upperBound)
+            guard let firstGT = body.range(of: ">", range: scanStart..<body.endIndex) else {
                 break
             }
             let openTagEnd = firstGT.upperBound
             // Self-closing iff the char immediately before that `>` is `/`.
-            // This rejects nested `<w:br/>` / `<w:tab/>` inside a real
-            // paragraph — only the paragraph's own tag can be self-closed.
+            // Only the paragraph's own tag can be self-closed; nested
+            // `<w:br/>` / `<w:tab/>` are caught by the regex anchor above.
             if firstGT.lowerBound > body.startIndex,
                body[body.index(before: firstGT.lowerBound)] == "/" {
                 paras.append(String(body[open.lowerBound..<openTagEnd]))
@@ -681,15 +976,7 @@ enum DOCXTemplateEditor {
         try sanitized.write(to: docURL, atomically: true, encoding: .utf8)
 
         let outputURL = try uniqueOutputURL(filename: outputFilename)
-        let zip = Process()
-        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        zip.currentDirectoryURL = tempDir
-        zip.arguments = ["-r", "-X", outputURL.path, "."]
-        try zip.run()
-        zip.waitUntilExit()
-        guard zip.terminationStatus == 0, FileManager.default.fileExists(atPath: outputURL.path) else {
-            throw DOCXError.zipFailed
-        }
+        try Self.repackDOCX(from: tempDir, to: outputURL)
         return outputURL
     }
 

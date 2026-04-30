@@ -48,24 +48,40 @@ struct OverlayView: View {
     /// them. The layout flips based on `pillAnchor` so the sidebar always
     /// sits next to the pill's screen edge and panels flow away from it.
     private var expandedShell: some View {
-        HStack(alignment: .top, spacing: Design.cardGap) {
-            SidebarView()
-
-            if vm.primarySurface != nil {
-                VStack(spacing: Design.cardGap) {
-                    TopStripView()
-                        .glassCard()
-
-                    primarySurface
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .glassCard()
-
-                    InputBarView()
-                        .glassCard()
+        VStack(spacing: 0) {
+            // Top card swaps between the full chat surface and the slim
+            // mini lift-handle. The composer below stays the SAME view
+            // identity so it doesn't re-render or lose its state. The
+            // swap is instant — only the NSPanel resize animates — so
+            // SwiftUI's layout never lags the panel's frame change.
+            Group {
+                if vm.isShellMinimized {
+                    MiniBarView()
+                } else {
+                    fullTopCard
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .cardSurface(topRadius: 18, bottomRadius: 0)
+            .padding(.horizontal, 20)
+
+            InputBarView()
+                .cardSurface(topRadius: 18, bottomRadius: 18)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private var fullTopCard: some View {
+        VStack(spacing: 0) {
+            TopStripView()
+
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 0.5)
+
+            primarySurface
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Primary surface dispatch
@@ -78,24 +94,21 @@ struct OverlayView: View {
                 ChatSurfaceView()
             case .sessions:
                 HistoryPanelView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .resumes:
                 ScrollView { ResumePanelView() }
             case .prompts:
                 PromptLibraryView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .calendar:
                 CalendarPanelView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .browser:
                 BrowserShellSurface()
             case .settings:
                 PreferencesView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             case .none:
                 EmptyView()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(vm.primarySurface)
     }
 
@@ -103,29 +116,38 @@ struct OverlayView: View {
 
     @ViewBuilder
     private var collapsedHeader: some View {
+        @Bindable var vm = vm
         VStack(alignment: .leading, spacing: 4) {
-            CollapsedPillView()
+            HStack(alignment: .top, spacing: 6) {
+                CollapsedPillView()
 
-            // Drag handle — not a button, so dragging here moves the panel
-            // without accidentally opening the overlay.
-            HStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { _ in
-                    Circle()
-                        .fill(Color.primary.opacity(0.28))
-                        .frame(width: 4, height: 4)
+                // Score pill — visible during scoring AND once a score lands.
+                if vm.isScoringResume {
+                    ResumeIndicatorPill(kind: .scoring)
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if let score = vm.resumeScore {
+                    ResumeIndicatorPill(kind: .score(score)) {
+                        vm.resumeScore = nil
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+
+                // File pill — visible during generation AND once a file lands.
+                // Renders independently so a score + file can show together.
+                if vm.isGeneratingResume {
+                    ResumeIndicatorPill(kind: .generating(vm.resumeGenerationStatus))
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if let url = vm.resumeFileURL {
+                    ResumeIndicatorPill(kind: .file(url)) {
+                        vm.resumeFileURL = nil
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
                 }
             }
-            .frame(width: 36, height: 16)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(0.05))
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if vm.resumeFileURL != nil || vm.isGeneratingResume
-                || vm.resumeScore != nil || vm.isScoringResume {
-                ResumeFloatingPillView()
-            }
+            .animation(Design.Motion.standard, value: vm.isScoringResume)
+            .animation(Design.Motion.standard, value: vm.isGeneratingResume)
+            .animation(Design.Motion.standard, value: vm.resumeScore)
+            .animation(Design.Motion.standard, value: vm.resumeFileURL)
 
             if vm.isQuickAskSending || !vm.quickAskResponse.isEmpty {
                 QuickAskPillView()

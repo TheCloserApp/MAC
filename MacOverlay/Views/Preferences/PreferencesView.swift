@@ -30,20 +30,33 @@ struct PreferencesView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left tab rail
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Tab.allCases) { t in
-                    tabRow(t)
+            // Left tab rail.
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Preferences")
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(-0.2)
+                    .foregroundColor(.primary)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 14)
+                    .padding(.bottom, 10)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Tab.allCases) { t in
+                        tabRow(t)
+                    }
                 }
+                .padding(.horizontal, 6)
+
                 Spacer()
             }
-            .padding(10)
-            .frame(width: 140)
-            .background(Color.primary.opacity(0.03))
+            .frame(width: 156)
+            .background(Color.white.opacity(0.02))
 
-            Divider()
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(width: 0.5)
 
-            // Content
+            // Content.
             ScrollView {
                 Group {
                     switch tab {
@@ -56,7 +69,7 @@ struct PreferencesView: View {
                     case .shortcuts:  shortcutsTab
                     }
                 }
-                .padding(16)
+                .padding(18)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
@@ -70,21 +83,30 @@ struct PreferencesView: View {
     private func tabRow(_ t: Tab) -> some View {
         let active = tab == t
         return Button {
-            withAnimation(.easeInOut(duration: 0.12)) { tab = t }
+            withAnimation(Design.Motion.fast) { tab = t }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 0) {
+                // Leading active rail.
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(active ? Color.accentColor : .clear)
+                    .frame(width: 2.5, height: 16)
+                    .padding(.trailing, 8)
+
                 Image(systemName: t.icon)
-                    .font(.system(size: 12))
+                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .foregroundColor(active ? .primary : .secondary.opacity(0.75))
                     .frame(width: 18)
                 Text(t.rawValue)
                     .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .foregroundColor(active ? .primary : .secondary)
                 Spacer()
             }
-            .foregroundColor(active ? .primary : .secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(active ? Color.accentColor.opacity(0.12) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: Design.Radius.md, style: .continuous)
+                    .fill(active ? Color.white.opacity(0.06) : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

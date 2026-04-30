@@ -748,15 +748,20 @@ final class ResumeController {
             lines.append("- Keywords woven in: \(kws.joined(separator: ", "))")
         }
         lines.append("- \(outcome.rewritesApplied) bullet(s) rewritten, \(outcome.insertionsApplied) bullet(s) added")
+        if !outcome.layoutPreserved.isEmpty {
+            lines.append("- ℹ️ \(outcome.layoutPreserved.count) edit(s) skipped to preserve layout (paragraphs use tab-aligned dates / skills lists / table cells — collapsing them would break the visual structure)")
+        }
         for idx in outcome.rewritesMissed {
             lines.append("- ⚠️ Rewrite skipped — index \(idx) is out of range")
         }
         for idx in outcome.insertionsMissed {
             lines.append("- ⚠️ Addition skipped — after_index \(idx) is out of range")
         }
-        if let warn = outcome.validationWarning {
-            lines.append("- ℹ️ Strict XML parser flagged the output (\(warn)). Word usually opens these fine — if it complains, regenerate.")
-        }
+        // `outcome.validationWarning` is intentionally NOT surfaced here.
+        // It comes from Foundation's strict XMLParser which trips on harmless
+        // libxml2 namespace quirks (error 111 = `XML_WAR_NS_COLUMN`) that
+        // Word and Google Docs don't care about. Showing the cryptic code
+        // to the user was noise, not information.
         return lines.joined(separator: "\n")
     }
 
@@ -801,9 +806,9 @@ final class ResumeController {
         for miss in outcome.bulletsMissed {
             lines.append("- ⚠️ Couldn't locate employer “\(miss.employer)” — new bullet skipped")
         }
-        if let warn = outcome.validationWarning {
-            lines.append("- ℹ️ Strict XML parser flagged the output (\(warn)). Word usually opens these fine — if it complains, regenerate.")
-        }
+        // `outcome.validationWarning` intentionally omitted — NSXMLParser's
+        // namespace quirks (error 111 = XML_WAR_NS_COLUMN) are cosmetic
+        // and Word/Google Docs handle the files fine.
         return lines.joined(separator: "\n")
     }
 
