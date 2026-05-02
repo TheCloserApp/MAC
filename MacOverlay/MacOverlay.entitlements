@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Intentionally empty for the ad-hoc dev build.
+
+      `com.apple.developer.applesignin` is a restricted entitlement: macOS's
+      AppleMobileFileIntegrity daemon (amfid) rejects ad-hoc-signed bundles
+      that claim it, which manifests as `launchd job spawn failed`
+      (POSIX 163) at launch time.
+
+      Apple Sign-In requires a Developer ID-signed bundle anyway, so leaving
+      the entitlement out costs nothing on the ad-hoc dev path. When you
+      enroll in the Apple Developer Program and switch to a Developer ID
+      identity, add the entitlement back here — and only then will codesign
+      accept it.
+
+      Google OAuth (the current sign-in path) doesn't need any restricted
+      entitlement; it only needs the custom URL scheme registered in
+      Info.plist for the OAuth redirect.
+    -->
+</dict>
+</plist>

@@ -279,9 +279,9 @@ final class ResumeController {
     /// Generate a tailored resume + save as DOCX. Requires a JD, an active
     /// resume preset, and an Anthropic key.
     ///
-    /// Flow: pre-score base → generate → post-score output → save DOCX →
-    /// record everything in a `ResumeGeneration` so the Resume panel can
-    /// show the before/after diff and score delta.
+    /// Flow: quota gate → pre-score base → generate → post-score output →
+    /// save DOCX → record everything in a `ResumeGeneration` so the Resume
+    /// panel can show the before/after diff and score delta.
     func generate() {
         guard let vm else { return }
         let base = vm.currentResumeText
@@ -290,6 +290,17 @@ final class ResumeController {
               !base.isEmpty,
               !vm.apiKey.isEmpty,
               let preset = basePreset else { return }
+
+        // Free-tier quota gate. Premium users skip; free users hit the cap
+        // after `EntitlementStore.freeResumesPerWeek` in any rolling 7-day
+        // window. Surface the reason + open the paywall so the user has a
+        // clear next step instead of a silent no-op.
+        let isPremium = vm.entitlement.isPremium
+        if let reason = vm.quota.blockReason(isPremium: isPremium) {
+            vm.statusMessage   = reason
+            vm.showPaywall     = true
+            return
+        }
 
         vm.isGeneratingResume = true
         vm.resumeGenerationStatus = "Scoring your current résumé…"
@@ -420,6 +431,13 @@ final class ResumeController {
                 let previewText = changelog.isEmpty ? result : "\(result)\n\n— Changes —\n\(changelog)"
                 vm?.resumeOutput  = previewText
                 vm?.resumeFileURL = url
+
+                // Quota tick. Recorded only once per successful generation —
+                // not on the no-edits / passthrough paths above (those write
+                // the original DOCX unchanged so they're not "real" runs).
+                if let vm {
+                    vm.quota.recordGeneration(isPremium: vm.entitlement.isPremium)
+                }
 
                 // 3. Post-score — optional.
                 let postScore: ResumeScore? = skipScoring

@@ -28,9 +28,13 @@
     <string>MacOverlay needs microphone access to transcribe your speech in real time.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>MacOverlay uses speech recognition to convert audio to text.</string>
-    <key>NSCalendarsUsageDescription</key>
-    <string>MacOverlay reads your upcoming events to show personalised reminders before your meetings and interviews.</string>
-    <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>MacOverlay reads your calendar to display upcoming events and schedule personalised reminders before meetings and interviews.</string>
+    <!--
+      Calendar permission strings deliberately omitted in v1. The Calendar
+      feature is hidden behind FeatureFlags.calendarEnabled; without these
+      keys, macOS will never prompt the user for calendar access on launch.
+      Add them back when re-enabling Calendar in a future release:
+        - NSCalendarsUsageDescription
+        - NSCalendarsFullAccessUsageDescription
+    -->
 </dict>
 </plist>

@@ -34,7 +34,9 @@ struct InputBarView: View {
                 newSessionButton
                 permissionsMenu
                 surfaceButtons
-                workspaceButton
+                if FeatureFlags.workspacesEnabled {
+                    workspaceButton
+                }
                 Spacer(minLength: 8)
                 modelMenu
                 micButton
@@ -65,14 +67,18 @@ struct InputBarView: View {
 
     @ViewBuilder
     private var surfaceButtons: some View {
-        let enabled = vm.workspaceStore.activeWorkspace.enabledFeatures
-        surfaceButton(.sessions, icon: "clock.arrow.circlepath", label: "Sessions")
+        // v1 surface set is intentionally narrow: Prompts, Resumes, Settings.
+        // Sessions / Calendar / Browser are gated by FeatureFlags so we can
+        // bring them back in v2 without restructuring this view.
+        if FeatureFlags.sessionsHistoryEnabled {
+            surfaceButton(.sessions, icon: "clock.arrow.circlepath", label: "Sessions")
+        }
         surfaceButton(.prompts,  icon: "text.bubble",            label: "Prompts")
         surfaceButton(.resumes,  icon: "doc.richtext",           label: "Resumes")
-        if enabled.contains("calendar") {
+        if FeatureFlags.calendarEnabled {
             surfaceButton(.calendar, icon: "calendar", label: "Calendar")
         }
-        if enabled.contains("browser") {
+        if FeatureFlags.browserEnabled {
             surfaceButton(.browser, icon: "globe", label: "Browser")
         }
         surfaceButton(.settings, icon: "gearshape", label: "Settings",

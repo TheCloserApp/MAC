@@ -292,6 +292,18 @@ final class OverlayViewModel {
     @ObservationIgnored let sessionStore   = SessionStore.shared
     @ObservationIgnored let workspaceStore = WorkspaceStore.shared
 
+    // MARK: - Auth + entitlements
+    /// Shared singletons exposed on the VM so SwiftUI views can observe them
+    /// via `@Bindable`. The stores stay singletons because they hold
+    /// process-wide state (Keychain bindings) — only the VM proxy is per-instance.
+    let auth        = AuthManager.shared
+    let entitlement = EntitlementStore.shared
+    let quota       = ResumeQuotaTracker.shared
+
+    /// True when a paywall sheet should be visible. Flipped by quota gates
+    /// (e.g. ResumeController.generate() when the free user is at their cap).
+    var showPaywall: Bool = false
+
     // UI panel toggles for the new surfaces
     var showHistoryPanel       = false
     var showPromptLibraryPanel = false
@@ -496,22 +508,35 @@ final class OverlayViewModel {
             sessionMode = mode
         }
 
-        // Calendar manager still exposes Combine publishers; keep these subscriptions.
-        calendarManager.$upcomingEvents
-            .sink { [weak self] in self?.calendarEvents = $0 }.store(in: &cancellables)
-        calendarManager.$isAuthorized
-            .sink { [weak self] in self?.calendarAuthorized = $0 }.store(in: &cancellables)
+        // Bind the per-user stores to whoever is currently signed in (or the
+        // anonymous bucket if nobody is). The AuthGateView will trigger a
+        // re-bind once the user signs in / out via `bindUserScopedStores()`.
+        bindUserScopedStores()
 
-        // Refresh calendar every 5 minutes
-        calendarRefreshTimer = Timer.publish(every: 300, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] _ in
-                Task { await self?.calendarManager.refresh() }
-            }
+        // Calendar manager still exposes Combine publishers; keep these
+        // subscriptions wired so the manager keeps compiling, but skip the
+        // 5-minute refresh timer when the calendar feature is hidden in v1
+        // — no point burning a Timer + EventKit access for UI no user sees.
+        if FeatureFlags.calendarEnabled {
+            calendarManager.$upcomingEvents
+                .sink { [weak self] in self?.calendarEvents = $0 }.store(in: &cancellables)
+            calendarManager.$isAuthorized
+                .sink { [weak self] in self?.calendarAuthorized = $0 }.store(in: &cancellables)
 
-        // Connect peer server to self and start if previously enabled
+            calendarRefreshTimer = Timer.publish(every: 300, on: .main, in: .common)
+                .autoconnect()
+                .sink { [weak self] _ in
+                    Task { await self?.calendarManager.refresh() }
+                }
+        }
+
+        // Connect peer server to self and start if previously enabled.
+        // Gated so v1 doesn't even bind a port if the user had peer enabled
+        // in a prior build; the underlying setting is preserved for v2.
         peerServer.viewModel = self
-        if peerControlEnabled { peerServer.start() }
+        if FeatureFlags.peerControlEnabled && peerControlEnabled {
+            peerServer.start()
+        }
 
         // Sessions created before workspaces existed need to inherit the
         // default workspace so they still show up in the list.
@@ -563,6 +588,24 @@ final class OverlayViewModel {
         }
         transcriptionManager.onSilence = silenceHandler
         appleTranscriber.onSilence    = silenceHandler
+    }
+
+    // MARK: - Auth lifecycle
+
+    /// Re-bind entitlement + quota to the current user ID. Called on init and
+    /// whenever the auth state changes (sign-in, sign-out, switch to guest)
+    /// so the right Keychain bucket is in scope.
+    func bindUserScopedStores() {
+        let id = auth.currentUser?.userID
+        entitlement.bind(to: id)
+        quota.bind(to: id)
+    }
+
+    /// Sign out + re-bind to the anonymous bucket. Called from the Account
+    /// tab in Preferences.
+    func signOut() {
+        auth.signOut()
+        bindUserScopedStores()
     }
 
     // MARK: - Calendar

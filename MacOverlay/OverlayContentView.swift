@@ -12,7 +12,27 @@ struct OverlayView: View {
 
     var body: some View {
         @Bindable var vm = vm
-        ZStack {
+        AuthGateView {
+            authedShell
+        }
+        // When the user isn't signed in, AuthGateView force-expands the
+        // shell so the panel resizes to its full height — let SwiftUI use
+        // it. Otherwise (signed in), respect the user's expansion state.
+        .frame(maxWidth: .infinity,
+               maxHeight: (vm.isShellExpanded || !vm.auth.isSignedIn) ? .infinity : nil,
+               alignment: .topLeading)
+        .padding(Design.Space.sm)
+        .sheet(isPresented: $vm.showPaywall) {
+            PaywallSheet()
+        }
+    }
+
+    /// The original overlay UI, only mounted once the user is signed in
+    /// (Apple or guest). Keeping onboarding inside the gate means the
+    /// welcome tour only fires after sign-in.
+    private var authedShell: some View {
+        @Bindable var vm = vm
+        return ZStack {
             if vm.showOnboarding {
                 OnboardingView(isPresented: $vm.showOnboarding)
                     .zIndex(1)
@@ -22,10 +42,6 @@ struct OverlayView: View {
                 collapsedHeader
             }
         }
-        .frame(maxWidth: .infinity,
-               maxHeight: vm.isShellExpanded ? .infinity : nil,
-               alignment: .topLeading)
-        .padding(Design.Space.sm)
         .onAppear {
             if !vm.hasCompletedOnboarding {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

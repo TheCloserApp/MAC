@@ -32,16 +32,35 @@ swiftc \
     -framework WebKit \
     -framework PDFKit \
     -framework UniformTypeIdentifiers \
+    -framework Network \
+    -framework CryptoKit \
     -target arm64-apple-macos14.0 \
     "${SWIFT_SOURCES[@]}"
 
 cp "$SRC_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 
-# Ad-hoc sign so macOS TCC (privacy permissions) recognises the app
-# consistently across rebuilds. Without this, Screen Recording permission
-# resets every time the binary changes.
-echo "🔏 Signing..."
-codesign -f -s - "$APP_DIR" 2>/dev/null || true
+# Sign the bundle. We attach the entitlements file so the
+# `com.apple.developer.applesignin` capability is encoded into the bundle
+# signature — required for the SignInWithAppleButton to even render.
+#
+# Ad-hoc signing (the `-` identity) is fine for local development, but
+# Sign in with Apple will not actually return a credential against an
+# ad-hoc-signed bundle. To ship to real customers, rebuild with a
+# Developer ID Application identity that's been provisioned for the
+# `com.overlay.MacOverlay` bundle ID with the Sign in with Apple
+# capability enabled in Apple Developer's Identifiers panel.
+ENTITLEMENTS="$SRC_DIR/MacOverlay.entitlements"
+SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+echo "🔏 Signing (identity=$SIGN_IDENTITY)..."
+# Hardened Runtime (`--options runtime`) is intentionally NOT enabled. It's
+# only required for notarization, and turning it on with ad-hoc signing
+# trips launchd (POSIX 163) because the app uses microphone, screen
+# recording, calendar, etc. without the matching hardened-runtime
+# entitlements declared. Add it back alongside a Developer ID identity +
+# the full entitlement set when you're ready to notarize for distribution.
+codesign -f -s "$SIGN_IDENTITY" \
+    --entitlements "$ENTITLEMENTS" \
+    "$APP_DIR" 2>/dev/null || true
 
 echo ""
 echo "✅ Build complete!"

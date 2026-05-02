@@ -7,6 +7,7 @@ struct PreferencesView: View {
     @State private var showNewWorkspaceSheet = false
 
     enum Tab: String, CaseIterable, Identifiable {
+        case account    = "Account"
         case general    = "General"
         case profile    = "Profile"
         case ai         = "AI"
@@ -17,6 +18,7 @@ struct PreferencesView: View {
         var id: String { rawValue }
         var icon: String {
             switch self {
+            case .account:    return "person.crop.circle.badge.checkmark"
             case .general:    return "slider.horizontal.3"
             case .profile:    return "person.crop.circle"
             case .ai:         return "sparkles"
@@ -24,6 +26,16 @@ struct PreferencesView: View {
             case .workspaces: return "square.grid.2x2"
             case .peer:       return "person.2"
             case .shortcuts:  return "keyboard"
+            }
+        }
+        /// Whether this tab should be visible in the rail. Gated tabs are
+        /// kept in the enum (and their `case` arms below still resolve) so
+        /// flipping the corresponding FeatureFlag is a one-line change.
+        var isVisible: Bool {
+            switch self {
+            case .workspaces: return FeatureFlags.workspacesEnabled
+            case .peer:       return FeatureFlags.peerControlEnabled
+            default:          return true
             }
         }
     }
@@ -41,7 +53,7 @@ struct PreferencesView: View {
                     .padding(.bottom, 10)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    ForEach(Tab.allCases) { t in
+                    ForEach(Tab.allCases.filter(\.isVisible)) { t in
                         tabRow(t)
                     }
                 }
@@ -60,6 +72,7 @@ struct PreferencesView: View {
             ScrollView {
                 Group {
                     switch tab {
+                    case .account:    accountTab
                     case .general:    generalTab
                     case .profile:    profileTab
                     case .ai:         aiTab
@@ -113,6 +126,108 @@ struct PreferencesView: View {
     }
 
     // MARK: - Tabs
+
+    @ViewBuilder
+    private var accountTab: some View {
+        @Bindable var vm = vm
+        let user        = vm.auth.currentUser
+        let isPremium   = vm.entitlement.isPremium
+        let used        = vm.quota.generationsInWindow()
+        let total       = EntitlementStore.freeResumesPerWeek
+        let remaining   = vm.quota.remainingThisWeek()
+
+        section(title: "Identity") {
+            if let user {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: user.provider == .google
+                          ? "g.circle.fill" : "person.crop.circle")
+                        .font(.system(size: 22))
+                        .foregroundColor(.secondary)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(user.displayName)
+                            .font(.system(size: 12, weight: .semibold))
+                        if let email = user.email, !email.isEmpty {
+                            Text(email)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        Text(user.provider == .google
+                             ? "Signed in with Google"
+                             : "Guest session (no account)")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary.opacity(0.7))
+                    }
+                    Spacer()
+                    Button("Sign out", role: .destructive) { vm.signOut() }
+                        .controlSize(.small)
+                }
+            } else {
+                Text("Not signed in.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        section(title: "Plan",
+                subtitle: isPremium
+                    ? "You're on Premium — unlimited résumé generations."
+                    : "You're on the Free plan. Upgrade for unlimited résumé generations.") {
+            HStack(spacing: 10) {
+                Image(systemName: isPremium ? "sparkles" : "leaf")
+                    .font(.system(size: 18))
+                    .foregroundColor(isPremium ? .accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isPremium ? "Premium" : "Free")
+                        .font(.system(size: 13, weight: .semibold))
+                    if let exp = vm.entitlement.premiumExpiresAt, isPremium {
+                        Text("Renews \(exp.formatted(date: .abbreviated, time: .omitted))")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if isPremium {
+                    Button("Cancel Premium", role: .destructive) {
+                        vm.entitlement.downgradeToFree()
+                    }
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        vm.showPaywall = true
+                    } label: {
+                        Label("Upgrade", systemImage: "sparkles")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+        }
+
+        if !isPremium {
+            section(title: "Résumé usage",
+                    subtitle: "Free plan caps résumé generations at \(total) per rolling 7-day window.") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("This week")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(used) / \(total) used  ·  \(remaining) left")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(remaining == 0 ? .orange : .secondary)
+                    }
+                    ProgressView(value: min(1.0, Double(used) / Double(max(1, total))))
+                        .tint(remaining == 0 ? .orange : .accentColor)
+                    if let reset = vm.quota.nextResetDate() {
+                        Text("Next slot opens \(reset.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+    }
 
     @ViewBuilder
     private var generalTab: some View {

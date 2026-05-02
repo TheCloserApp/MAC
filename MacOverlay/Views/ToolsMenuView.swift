@@ -8,11 +8,19 @@ struct ToolsMenuView: View {
     @Binding var isShown: Bool
 
     private var primaryTools: [Tool] {
-        [
-            Tool(icon: "calendar",         title: "Calendar",
-                 active: vm.showCalendarPanel)    { vm.showCalendarPanel.toggle() },
-            Tool(icon: "globe",            title: "Browser",
-                 active: vm.hasBrowser)           { vm.toggleBrowser() },
+        // v1 set: Notes, Resume, Type, Capture. Calendar + Browser are
+        // gated by FeatureFlags so we can bring them back in v2 by flipping
+        // a single flag.
+        var tools: [Tool] = []
+        if FeatureFlags.calendarEnabled {
+            tools.append(Tool(icon: "calendar", title: "Calendar",
+                              active: vm.showCalendarPanel) { vm.showCalendarPanel.toggle() })
+        }
+        if FeatureFlags.browserEnabled {
+            tools.append(Tool(icon: "globe", title: "Browser",
+                              active: vm.hasBrowser) { vm.toggleBrowser() })
+        }
+        tools.append(contentsOf: [
             Tool(icon: "note.text",        title: "Notes",
                  active: vm.showNotesPanel)       { vm.showNotesPanel.toggle() },
             Tool(icon: "doc.badge.plus",   title: "Resume",
@@ -23,18 +31,25 @@ struct ToolsMenuView: View {
                  active: vm.pendingScreenshot != nil) {
                 NotificationCenter.default.post(name: .captureScreenshot, object: nil)
             },
-        ]
+        ])
+        return tools
     }
 
     private var libraryTools: [Tool] {
-        [
-            Tool(icon: "clock.arrow.circlepath", title: "History",
-                 active: vm.showHistoryPanel)     { vm.showHistoryPanel.toggle() },
+        // v1 set: Prompts + New session. History is gated — sessions are
+        // still recorded, just no dedicated panel for browsing them.
+        var tools: [Tool] = []
+        if FeatureFlags.sessionsHistoryEnabled {
+            tools.append(Tool(icon: "clock.arrow.circlepath", title: "History",
+                              active: vm.showHistoryPanel) { vm.showHistoryPanel.toggle() })
+        }
+        tools.append(contentsOf: [
             Tool(icon: "text.bubble",            title: "Prompts",
                  active: vm.showPromptLibraryPanel) { vm.showPromptLibraryPanel.toggle() },
             Tool(icon: "plus.bubble",            title: "New session",
                  active: false)                   { vm.startNewSession() },
-        ]
+        ])
+        return tools
     }
 
     var body: some View {
