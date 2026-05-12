@@ -39,7 +39,7 @@ struct QuickAskPillView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
+                .fill(Design.Surface.shellFill)
                 .opacity(vm.backgroundOpacity)
         }
         .overlay(

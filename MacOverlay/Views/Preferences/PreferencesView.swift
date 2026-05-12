@@ -9,8 +9,10 @@ struct PreferencesView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case account    = "Account"
         case general    = "General"
+        case panel      = "Panel"
         case profile    = "Profile"
         case ai         = "AI"
+        case prompts    = "Prompts"
         case memory     = "Memory"
         case workspaces = "Workspaces"
         case peer       = "Peer"
@@ -20,8 +22,10 @@ struct PreferencesView: View {
             switch self {
             case .account:    return "person.crop.circle.badge.checkmark"
             case .general:    return "slider.horizontal.3"
+            case .panel:      return "rectangle.bottomthird.inset.filled"
             case .profile:    return "person.crop.circle"
             case .ai:         return "sparkles"
+            case .prompts:    return "text.bubble"
             case .memory:     return "brain"
             case .workspaces: return "square.grid.2x2"
             case .peer:       return "person.2"
@@ -68,22 +72,32 @@ struct PreferencesView: View {
                 .fill(Color.white.opacity(0.06))
                 .frame(width: 0.5)
 
-            // Content.
-            ScrollView {
-                Group {
-                    switch tab {
-                    case .account:    accountTab
-                    case .general:    generalTab
-                    case .profile:    profileTab
-                    case .ai:         aiTab
-                    case .memory:     memoryTab
-                    case .workspaces: workspacesTab
-                    case .peer:       peerTab
-                    case .shortcuts:  shortcutsTab
+            // Content column. The scrolling body fills the column to the
+            // right of the rail. The previous top text-size toolbar was
+            // removed — font size lives in Panel → Bottom panel and the
+            // floating widget on top of every Settings tab was just
+            // visual noise.
+            VStack(spacing: 0) {
+                ScrollView {
+                    Group {
+                        switch tab {
+                        case .account:    accountTab
+                        case .general:    generalTab
+                        case .panel:      panelTab
+                        case .profile:    profileTab
+                        case .ai:         aiTab
+                        case .prompts:    promptsTab
+                        case .memory:     memoryTab
+                        case .workspaces: workspacesTab
+                        case .peer:       peerTab
+                        case .shortcuts:  shortcutsTab
+                        }
                     }
+                    // Prompt library has its own internal padding, so don't
+                    // double-pad it. Other tabs need the outer padding.
+                    .padding(tab == .prompts ? 0 : 18)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -93,7 +107,7 @@ struct PreferencesView: View {
         }
     }
 
-    private func tabRow(_ t: Tab) -> some View {
+private func tabRow(_ t: Tab) -> some View {
         let active = tab == t
         return Button {
             withAnimation(Design.Motion.fast) { tab = t }
@@ -229,6 +243,73 @@ struct PreferencesView: View {
         }
     }
 
+    /// Embeds the full PromptLibraryView inside Preferences so users can
+    /// manage their prompt presets without leaving Settings. Replaces the
+    /// hidden "Manage…" button that used to be tucked into the AI tab.
+    @ViewBuilder
+    private var promptsTab: some View {
+        PromptLibraryView()
+    }
+
+    /// Panel customisation. Currently scoped to the bottom input bar.
+    @ViewBuilder
+    private var panelTab: some View {
+        @Bindable var bar = vm.barCustomization
+
+        section(title: "Bottom panel",
+                icon: "rectangle.bottomthird.inset.filled",
+                subtitle: "The input bar at the bottom. Choose which controls appear. The brand logo is always shown.") {
+            Toggle(isOn: $bar.showTextField) {
+                labelTwoLine(title: "Text field",
+                             subtitle: "The “Ask anything” input. Hide it if you mostly drive the overlay by voice or shortcuts.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showNewSession) {
+                labelTwoLine(title: "New session (+)",
+                             subtitle: "Starts a fresh chat session.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showHistory) {
+                labelTwoLine(title: "History",
+                             subtitle: "Browse past sessions.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showMode) {
+                labelTwoLine(title: "Mode picker",
+                             subtitle: "Switch between General, Interview, Meeting, Call modes.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showResume) {
+                labelTwoLine(title: "Resumes",
+                             subtitle: "Open the resume tailoring panel.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showModel) {
+                labelTwoLine(title: "Model picker",
+                             subtitle: "Switch between Anthropic / OpenAI models.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showMic) {
+                labelTwoLine(title: "Microphone",
+                             subtitle: "Start / stop voice recording.")
+            }.toggleStyle(.switch)
+
+            Toggle(isOn: $bar.showSend) {
+                labelTwoLine(title: "Send button",
+                             subtitle: "Submit the typed prompt. (You can always press ⏎.)")
+            }.toggleStyle(.switch)
+        }
+
+        section(title: "") {
+            HStack {
+                Spacer()
+                Button("Reset to defaults") { bar.resetToDefaults() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+    }
+
     @ViewBuilder
     private var generalTab: some View {
         @Bindable var vm = vm
@@ -281,6 +362,11 @@ struct PreferencesView: View {
     private var aiTab: some View {
         @Bindable var vm = vm
         let store = vm.promptStore
+
+        section(title: "Model picker",
+                subtitle: "Choose which models appear in the bar's model picker. The full list is always usable from here — toggling just controls what shows up in the chip menu.") {
+            modelCatalog
+        }
 
         section(title: "API keys",
                 subtitle: "Stored locally. Never uploaded.") {
@@ -413,6 +499,81 @@ struct PreferencesView: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    /// Per-provider grid of model toggles, used by the AI tab. Reads
+    /// directly from `OverlayViewModel.availableModels` so adding a new
+    /// model to the catalogue auto-surfaces it here without a settings
+    /// migration. Each toggle flips its id in `ModelVisibility`.
+    @ViewBuilder
+    private var modelCatalog: some View {
+        let visibility = ModelVisibility.shared
+        let allIDs = OverlayViewModel.availableModels.map(\.id)
+        let providers = ["Anthropic", "OpenAI"]
+
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(providers, id: \.self) { provider in
+                let models = OverlayViewModel.availableModels
+                    .filter { $0.provider == provider }
+                if !models.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(provider)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary.opacity(0.85))
+                            .textCase(.uppercase)
+                            .kerning(0.4)
+                        VStack(spacing: 1) {
+                            ForEach(models, id: \.id) { m in
+                                modelToggleRow(id: m.id, name: m.name,
+                                               visibility: visibility,
+                                               allIDs: allIDs)
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Show all") { visibility.showAll() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(visibility.hidden.isEmpty)
+            }
+        }
+    }
+
+    private func modelToggleRow(id: String, name: String,
+                                visibility: ModelVisibility,
+                                allIDs: [String]) -> some View {
+        let on = visibility.isVisible(id)
+        // The picker has to render at least one option, so we can't let the
+        // user hide the last visible model. Disable the row instead of
+        // letting the click silently no-op.
+        let isLast = visibility.isOnlyVisible(id, allModelIDs: allIDs)
+        return Button {
+            visibility.toggle(id, allModelIDs: allIDs)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 13))
+                    .foregroundColor(on ? .accentColor : .secondary.opacity(0.5))
+                Text(name)
+                    .font(.system(size: 12))
+                    .foregroundColor(.primary)
+                Spacer()
+                Text(id)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.6))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+            .opacity(isLast ? 0.5 : 1.0)
+        }
+        .buttonStyle(.plain)
+        .disabled(isLast)
+        .help(isLast ? "At least one model must remain visible" : "")
     }
 
     @ViewBuilder
@@ -582,14 +743,23 @@ struct PreferencesView: View {
     // MARK: - Builders
 
     @ViewBuilder
-    private func section<Content: View>(title: String, subtitle: String? = nil,
+    private func section<Content: View>(title: String,
+                                        icon: String? = nil,
+                                        subtitle: String? = nil,
                                         @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                    .kerning(0.5)
+            }
             if let subtitle {
                 Text(subtitle)
                     .font(.system(size: 11))

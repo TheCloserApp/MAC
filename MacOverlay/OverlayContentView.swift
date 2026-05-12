@@ -1,103 +1,187 @@
 import SwiftUI
 
 /// Top-level overlay view. Two states:
-///   - collapsed: floating waveform pill + any active-task floating pills
-///                (quick-ask, resume). Click the pill → expand directly.
-///   - expanded : full glass shell (sidebar of cells + top strip + primary
-///                surface + input bar, each its own floating glass card).
-/// Onboarding renders inline when active (never via sheet — keeps it protected
-/// by the panel's `sharingType = .none`).
+///   - `.pill`     — collapsed brand pill, full ambient state shown via the
+///                   pill's color/animation only. Active background work
+///                   (resume scoring, quick-ask, etc.) auto-promotes the
+///                   shell to `.expanded` so the user always sees status
+///                   inside the panel rather than in floating peer pills.
+///   - `.expanded` — full glass shell. Layout adapts to `primarySurface`:
+///                     · `nil`  → just the input bar (compact composer).
+///                     · set    → top card (title + body) + input bar.
+/// Onboarding renders inline when active.
 struct OverlayView: View {
     @Environment(OverlayViewModel.self) private var vm
 
     var body: some View {
         @Bindable var vm = vm
-        AuthGateView {
-            authedShell
-        }
-        // When the user isn't signed in, AuthGateView force-expands the
-        // shell so the panel resizes to its full height — let SwiftUI use
-        // it. Otherwise (signed in), respect the user's expansion state.
-        .frame(maxWidth: .infinity,
-               maxHeight: (vm.isShellExpanded || !vm.auth.isSignedIn) ? .infinity : nil,
-               alignment: .topLeading)
-        .padding(Design.Space.sm)
-        .sheet(isPresented: $vm.showPaywall) {
-            PaywallSheet()
-        }
+        rootContent
+            .frame(maxWidth: .infinity,
+                   maxHeight: .infinity,
+                   alignment: .topLeading)
+            .padding(Design.Space.sm)
+            .sheet(isPresented: $vm.showPaywall) {
+                PaywallSheet()
+            }
+            .onChange(of: vm.showOnboarding) { wasShowing, isShowing in
+                if wasShowing && !isShowing {
+                    // Land the just-onboarded user on a bar-only expanded
+                    // shell — the chat surface is empty so opening the
+                    // body would feel hollow. Surface stays nil; user
+                    // promotes to a real surface by clicking a button.
+                    vm.shellStage = .expanded
+                    vm.primarySurface = nil
+                }
+            }
+            .onChange(of: vm.auth.isSignedIn) { wasSignedIn, isSignedIn in
+                if !wasSignedIn && isSignedIn {
+                    vm.shellStage = .expanded
+                    vm.primarySurface = nil
+                }
+            }
+            // Background work (resume scoring/generation, quick-ask) used
+            // to render as floating peer pills above the brand. They now
+            // live inside the expanded shell — so any of them firing while
+            // collapsed promotes the shell. The user never has to hunt for
+            // status in two places.
+            .onChange(of: hasAmbientWork) { _, busy in
+                if busy && vm.shellStage == .pill {
+                    withAnimation(Design.Motion.spring) {
+                        vm.shellStage = .expanded
+                    }
+                }
+            }
     }
 
-    /// The original overlay UI, only mounted once the user is signed in
-    /// (Apple or guest). Keeping onboarding inside the gate means the
-    /// welcome tour only fires after sign-in.
-    private var authedShell: some View {
+    /// Aggregate flag: any background activity that has its own status
+    /// surface inside the expanded shell. Used to auto-promote out of
+    /// pill state so the user sees what's happening.
+    private var hasAmbientWork: Bool {
+        vm.isScoringResume || vm.isGeneratingResume || vm.resumeScore != nil
+            || vm.resumeFileURL != nil || vm.isQuickAskSending
+            || !vm.quickAskResponse.isEmpty
+    }
+
+    private var isShowingOnboarding: Bool {
+        vm.showOnboarding || !vm.auth.isSignedIn
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
         @Bindable var vm = vm
-        return ZStack {
-            if vm.showOnboarding {
-                OnboardingView(isPresented: $vm.showOnboarding)
-                    .zIndex(1)
-            } else if vm.isShellExpanded {
-                expandedShell
-            } else {
-                collapsedHeader
-            }
-        }
-        .onAppear {
-            if !vm.hasCompletedOnboarding {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    vm.showOnboarding = true
-                }
-            }
-        }
-        .onChange(of: vm.showOnboarding) { wasShowing, isShowing in
-            if wasShowing && !isShowing {
-                vm.isShellExpanded = true
-                vm.primarySurface = .chat
-            }
+        if isShowingOnboarding {
+            OnboardingView(isPresented: $vm.showOnboarding)
+        } else {
+            stageStack
         }
     }
 
-    // MARK: - Expanded shell
+    // MARK: - Stage rendering
 
-    /// Floating-glass shell. Sidebar cells, top strip, primary surface, and
-    /// input bar are each independent glass cards with visible gaps between
-    /// them. The layout flips based on `pillAnchor` so the sidebar always
-    /// sits next to the pill's screen edge and panels flow away from it.
-    private var expandedShell: some View {
-        VStack(spacing: 0) {
-            // Top card swaps between the full chat surface and the slim
-            // mini lift-handle. The composer below stays the SAME view
-            // identity so it doesn't re-render or lose its state. The
-            // swap is instant — only the NSPanel resize animates — so
-            // SwiftUI's layout never lags the panel's frame change.
-            Group {
-                if vm.isShellMinimized {
-                    MiniBarView()
-                } else {
-                    fullTopCard
+    @ViewBuilder
+    private var stageStack: some View {
+        VStack(alignment: .center, spacing: 0) {
+            // Top card appears only when a primary surface is selected.
+            // No surface = "compact" expanded shell (just the bar). This
+            // replaces the old `.composer` / `.headed` distinction.
+            if vm.shellStage == .expanded && vm.primarySurface != nil {
+                HStack(spacing: 0) {
+                    Spacer(minLength: Self.topCardLeftInset)
+                    topCard
+                        .cardSurface(topRadius: 18, bottomRadius: 0)
+                        .frame(maxWidth: .infinity)
+                    Spacer(minLength: Self.topCardRightInset)
                 }
+                .frame(maxHeight: .infinity)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-            .cardSurface(topRadius: 18, bottomRadius: 0)
-            .padding(.horizontal, 20)
 
+            // Ambient status strip — quick-ask response + resume work.
+            // Only shown in `.expanded` and only when a surface ISN'T
+            // already open (so the surface body owns its own real estate).
+            if vm.shellStage == .expanded && vm.primarySurface == nil
+                && hasAmbientStatus {
+                ambientStatusStrip
+                    .padding(.bottom, 6)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            // The bar — same view in every stage; always full width.
             InputBarView()
-                .cardSurface(topRadius: 18, bottomRadius: 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .animation(Design.Motion.expand, value: vm.shellStage)
+        .animation(Design.Motion.expand, value: vm.primarySurface)
     }
 
-    private var fullTopCard: some View {
+    /// Asymmetric horizontal insets for the top card. The brand pill on
+    /// the bar's left edge eats ~52pt; symmetric padding makes the card
+    /// look offset. The extra leading inset pulls the card's visual
+    /// center to the post-brand area, where the user's eye expects it.
+    private static let topCardLeftInset: CGFloat = 60
+    private static let topCardRightInset: CGFloat = 24
+
+    /// Top card content — title + body. `.headed` (title-only) state is
+    /// gone; if the user opens a surface, they see its body.
+    @ViewBuilder
+    private var topCard: some View {
         VStack(spacing: 0) {
             TopStripView()
-
             Rectangle()
                 .fill(Color.white.opacity(0.06))
                 .frame(height: 0.5)
-
             primarySurface
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxHeight: .infinity)
+    }
+
+    // MARK: - Ambient status
+
+    private var hasAmbientStatus: Bool {
+        vm.isScoringResume || vm.resumeScore != nil
+            || vm.isGeneratingResume || vm.resumeFileURL != nil
+            || vm.isQuickAskSending || !vm.quickAskResponse.isEmpty
+    }
+
+    /// In-shell replacement for the floating quick-ask + resume indicator
+    /// pills that used to hover above the collapsed brand pill. Shown
+    /// directly above the input bar when the user has no surface open.
+    @ViewBuilder
+    private var ambientStatusStrip: some View {
+        @Bindable var vm = vm
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                if vm.isScoringResume {
+                    ResumeIndicatorPill(kind: .scoring)
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if let score = vm.resumeScore {
+                    ResumeIndicatorPill(kind: .score(score)) {
+                        vm.resumeScore = nil
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+
+                if vm.isGeneratingResume {
+                    ResumeIndicatorPill(kind: .generating(vm.resumeGenerationStatus))
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else if let url = vm.resumeFileURL {
+                    ResumeIndicatorPill(kind: .file(url)) {
+                        vm.resumeFileURL = nil
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                }
+            }
+            .animation(Design.Motion.standard, value: vm.isScoringResume)
+            .animation(Design.Motion.standard, value: vm.isGeneratingResume)
+            .animation(Design.Motion.standard, value: vm.resumeScore)
+            .animation(Design.Motion.standard, value: vm.resumeFileURL)
+
+            if vm.isQuickAskSending || !vm.quickAskResponse.isEmpty {
+                QuickAskPillView()
+            }
+        }
+        .padding(.horizontal, Self.topCardLeftInset)
     }
 
     // MARK: - Primary surface dispatch
@@ -126,49 +210,6 @@ struct OverlayView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(vm.primarySurface)
-    }
-
-    // MARK: - Collapsed state
-
-    @ViewBuilder
-    private var collapsedHeader: some View {
-        @Bindable var vm = vm
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 6) {
-                CollapsedPillView()
-
-                // Score pill — visible during scoring AND once a score lands.
-                if vm.isScoringResume {
-                    ResumeIndicatorPill(kind: .scoring)
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else if let score = vm.resumeScore {
-                    ResumeIndicatorPill(kind: .score(score)) {
-                        vm.resumeScore = nil
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                }
-
-                // File pill — visible during generation AND once a file lands.
-                // Renders independently so a score + file can show together.
-                if vm.isGeneratingResume {
-                    ResumeIndicatorPill(kind: .generating(vm.resumeGenerationStatus))
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else if let url = vm.resumeFileURL {
-                    ResumeIndicatorPill(kind: .file(url)) {
-                        vm.resumeFileURL = nil
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
-                }
-            }
-            .animation(Design.Motion.standard, value: vm.isScoringResume)
-            .animation(Design.Motion.standard, value: vm.isGeneratingResume)
-            .animation(Design.Motion.standard, value: vm.resumeScore)
-            .animation(Design.Motion.standard, value: vm.resumeFileURL)
-
-            if vm.isQuickAskSending || !vm.quickAskResponse.isEmpty {
-                QuickAskPillView()
-            }
-        }
     }
 }
 

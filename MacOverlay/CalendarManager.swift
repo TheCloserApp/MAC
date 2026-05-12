@@ -24,7 +24,7 @@ class CalendarManager: ObservableObject {
     func refresh() async {
         guard isAuthorized else { return }
         let now   = Date()
-        let end   = Calendar.current.date(byAdding: .hour, value: 24, to: now)!
+        guard let end = Calendar.current.date(byAdding: .hour, value: 24, to: now) else { return }
         let pred  = store.predicateForEvents(withStart: now, end: end, calendars: nil)
 
         let events = await Task.detached(priority: .userInitiated) { [store, pred] in

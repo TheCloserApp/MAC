@@ -8,6 +8,13 @@ struct ChatTurn: Identifiable, Codable, Hashable {
     /// Only populated on assistant turns that went through the streaming path.
     var inputTokens: Int?
     var outputTokens: Int?
+    /// Model id (e.g. `gpt-4o`, `claude-sonnet-4-6`) that produced this
+    /// assistant turn. Stamped at the moment the streaming turn is
+    /// created so the eyebrow label in the chat reflects the *actual*
+    /// model that answered, even if the user later switches the picker.
+    /// Nil for user turns and for legacy assistant turns persisted before
+    /// this field existed.
+    var model: String?
 
     enum Role: String, Codable, Hashable { case user, assistant, system }
 
@@ -16,13 +23,15 @@ struct ChatTurn: Identifiable, Codable, Hashable {
          content: String,
          timestamp: Date = Date(),
          inputTokens: Int? = nil,
-         outputTokens: Int? = nil) {
+         outputTokens: Int? = nil,
+         model: String? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.timestamp = timestamp
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
+        self.model = model
     }
 }
 

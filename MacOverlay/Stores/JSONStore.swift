@@ -12,6 +12,10 @@ enum JSONStore {
         return dir
     }()
 
+    /// Serial queue for all disk writes — encoding + atomic write happen off
+    /// the main thread so streaming-driven persists don't stall the UI.
+    private static let writeQueue = DispatchQueue(label: "JSONStore.write", qos: .utility)
+
     static func url(for filename: String) -> URL {
         appDirectory.appendingPathComponent(filename)
     }
@@ -25,12 +29,16 @@ enum JSONStore {
         return try? decoder.decode(T.self, from: data)
     }
 
+    /// Asynchronous save: encoding and atomic write happen on a background
+    /// queue. Pretty-printing is dropped (it doubled file size and slowed
+    /// encoding for no end-user benefit — the file is read by code, not humans).
     static func save<T: Encodable>(_ value: T, to filename: String) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(value) else { return }
         let url = url(for: filename)
-        try? data.write(to: url, options: .atomic)
+        writeQueue.async {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            guard let data = try? encoder.encode(value) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
     }
 }

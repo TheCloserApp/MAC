@@ -41,7 +41,7 @@ struct ResumeIndicatorPill: View {
         .frame(height: 44)
         .background(
             Capsule(style: .continuous)
-                .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
+                .fill(Design.Surface.shellFill)
         )
         .overlay(
             Capsule(style: .continuous)
@@ -94,9 +94,8 @@ struct ResumeIndicatorPill: View {
 
     private func open() {
         vm.primarySurface = .resumes
-        vm.isShellMinimized = false
         withAnimation(Design.Motion.spring) {
-            vm.isShellExpanded = true
+            vm.shellStage = .expanded
         }
     }
 

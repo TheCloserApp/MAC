@@ -1,10 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Slim header strip inside the unified chat panel. Shows the editable
-/// session title on the left, a session overflow menu, and a collapse
-/// chevron on the right (matches macOS / ChatGPT desktop conventions).
-/// Mode, model, and start/stop have moved into the composer below.
+/// Slim header strip inside the unified expanded panel. Always shows the
+/// editable session title on the left, a session overflow menu, and a
+/// chevron on the right that closes the body back to the bar-only layout.
 struct TopStripView: View {
     @Environment(OverlayViewModel.self) private var vm
     @State private var editingTitle = false
@@ -15,11 +14,10 @@ struct TopStripView: View {
             titleField
             Spacer()
             sessionMenu
-            capsuleCollapseButton
             minimizeButton
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.vertical, 6)
     }
 
     @ViewBuilder
@@ -36,7 +34,7 @@ struct TopStripView: View {
                 draftTitle = vm.sessionStore.activeSession.displayTitle
                 editingTitle = true
             } label: {
-                Text(vm.sessionStore.activeSession.displayTitle)
+                Text(headerTitle)
                     .font(.system(size: 14, weight: .semibold))
                     .tracking(-0.2)
                     .foregroundColor(.primary)
@@ -47,10 +45,26 @@ struct TopStripView: View {
         }
     }
 
+    /// Header label — names the active surface so the user always knows
+    /// what they're looking at.
+    private var headerTitle: String {
+        switch vm.primarySurface {
+        case .chat?:     return vm.sessionStore.activeSession.displayTitle
+        case .sessions?: return "History"
+        case .resumes?:  return "Resumes"
+        case .prompts?:  return "Prompts"
+        case .calendar?: return "Calendar"
+        case .browser?:  return "Browser"
+        case .settings?: return "Settings"
+        case .none:      return vm.sessionStore.activeSession.displayTitle
+        }
+    }
+
+    /// Close the body back to the bar-only (compact) expanded layout.
     private var minimizeButton: some View {
         Button {
             withAnimation(Design.Motion.spring) {
-                vm.isShellMinimized = true
+                vm.primarySurface = nil
             }
         } label: {
             Image(systemName: "chevron.down")
@@ -61,25 +75,7 @@ struct TopStripView: View {
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .help("Minimize")
-    }
-
-    private var capsuleCollapseButton: some View {
-        Button {
-            withAnimation(Design.Motion.spring) {
-                vm.isShellMinimized = false
-                vm.isShellExpanded = false
-            }
-        } label: {
-            Image(systemName: "circle")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.white.opacity(0.04)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .help("Collapse to capsule")
+        .help("Close panel")
     }
 
     private var sessionMenu: some View {

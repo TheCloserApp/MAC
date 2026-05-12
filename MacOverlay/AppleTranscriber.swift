@@ -1,5 +1,6 @@
 import Speech
 import AVFoundation
+import ScreenCaptureKit
 import Foundation
 
 /// Continuous on-device transcription via Apple SFSpeechRecognizer.
@@ -26,6 +27,9 @@ final class AppleTranscriber: NSObject {
     private var task:          SFSpeechRecognitionTask?
     private var recognizer:    SFSpeechRecognizer? = SFSpeechRecognizer(locale: Locale.current)
 
+    private var scStream:           SCStream?
+    private var systemAudioHandler: AppleSystemAudioHandler?
+
     private var currentText       = ""
     private var lastTextChangeAt  = Date()
     private var lastCommitAt      = Date()
@@ -36,10 +40,6 @@ final class AppleTranscriber: NSObject {
     // MARK: - Lifecycle
 
     func start(source: AudioSource) async throws {
-        // Only mic is supported (SFSpeechRecognizer cannot ingest system audio).
-        // Caller should surface this limitation in the UI.
-        _ = source
-
         guard !isRunning else { return }
         guard await requestPermission() else {
             throw TranscriptionError.permissionDenied(
@@ -49,10 +49,11 @@ final class AppleTranscriber: NSObject {
             throw TranscriptionError.unavailable
         }
 
-        // Microphone permission (SFSpeechRecognizer needs both)
-        guard await requestMicPermission() else {
-            throw TranscriptionError.permissionDenied(
-                "Microphone permission denied. Enable in System Settings → Privacy & Security.")
+        if source == .microphone || source == .both {
+            guard await requestMicPermission() else {
+                throw TranscriptionError.permissionDenied(
+                    "Microphone permission denied. Enable in System Settings → Privacy & Security.")
+            }
         }
 
         let req = SFSpeechAudioBufferRecognitionRequest()
@@ -60,14 +61,20 @@ final class AppleTranscriber: NSObject {
         req.requiresOnDeviceRecognition = false
         request = req
 
-        let node = audioEngine.inputNode
-        let format = node.outputFormat(forBus: 0)
-        node.removeTap(onBus: 0)
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-            self?.request?.append(buf)
+        if source == .microphone || source == .both {
+            let node = audioEngine.inputNode
+            let format = node.outputFormat(forBus: 0)
+            node.removeTap(onBus: 0)
+            node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
+                self?.request?.append(buf)
+            }
+            audioEngine.prepare()
+            try audioEngine.start()
         }
-        audioEngine.prepare()
-        try audioEngine.start()
+
+        if source == .systemAudio || source == .both {
+            try await setupSystemAudioCapture()
+        }
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
@@ -114,6 +121,13 @@ final class AppleTranscriber: NSObject {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
         }
+
+        Task { [scStream] in
+            try? await scStream?.stopCapture()
+        }
+        scStream           = nil
+        systemAudioHandler = nil
+
         currentText = ""
     }
 
@@ -167,5 +181,89 @@ final class AppleTranscriber: NSObject {
                 cont.resume(returning: granted)
             }
         }
+    }
+
+    // MARK: - System audio capture (ScreenCaptureKit → SFSpeechRecognizer)
+
+    private func setupSystemAudioCapture() async throws {
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.current
+        } catch {
+            throw TranscriptionError.permissionDenied(
+                "System audio error: \((error as NSError).localizedDescription). " +
+                "Open System Settings → Privacy & Security → Screen Recording → enable MacOverlay, " +
+                "then QUIT and relaunch the app."
+            )
+        }
+        guard let display = content.displays.first else { throw TranscriptionError.noDisplay }
+
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let config = SCStreamConfiguration()
+        config.capturesAudio        = true
+        config.sampleRate           = 16000
+        config.channelCount         = 1
+        config.minimumFrameInterval = CMTime(seconds: 1, preferredTimescale: 1)
+        config.width                = 2
+        config.height               = 2
+
+        let handler = AppleSystemAudioHandler { [weak self] buffer in
+            self?.request?.append(buffer)
+        }
+        systemAudioHandler = handler
+
+        scStream = SCStream(filter: filter, configuration: config, delegate: handler)
+        try scStream?.addStreamOutput(handler, type: .audio,
+                                      sampleHandlerQueue: DispatchQueue(label: "com.macoverlay.apple.sysaudio"))
+        try await scStream?.startCapture()
+    }
+}
+
+// MARK: - System audio → AVAudioPCMBuffer adapter for SFSpeechRecognizer
+
+final class AppleSystemAudioHandler: NSObject, SCStreamDelegate, SCStreamOutput {
+    private let onBuffer: (AVAudioPCMBuffer) -> Void
+    private let format: AVAudioFormat?
+
+    init(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
+        self.onBuffer = onBuffer
+        // ScreenCaptureKit delivers Float32 mono @ 16kHz when configured above.
+        self.format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                    sampleRate: 16000,
+                                    channels: 1,
+                                    interleaved: false)
+        super.init()
+    }
+
+    func stream(_ stream: SCStream,
+                didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+                of type: SCStreamOutputType) {
+        guard type == .audio,
+              let format,
+              let blockBuffer = sampleBuffer.dataBuffer else { return }
+
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        guard CMBlockBufferGetDataPointer(
+            blockBuffer, atOffset: 0,
+            lengthAtOffsetOut: nil, totalLengthOut: &totalLength,
+            dataPointerOut: &dataPointer
+        ) == kCMBlockBufferNoErr, let ptr = dataPointer else { return }
+
+        let frameCount = totalLength / MemoryLayout<Float32>.size
+        guard frameCount > 0,
+              let pcm = AVAudioPCMBuffer(pcmFormat: format,
+                                         frameCapacity: AVAudioFrameCount(frameCount)),
+              let dst = pcm.floatChannelData?[0] else { return }
+
+        ptr.withMemoryRebound(to: Float32.self, capacity: frameCount) { src in
+            dst.update(from: src, count: frameCount)
+        }
+        pcm.frameLength = AVAudioFrameCount(frameCount)
+        onBuffer(pcm)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        print("Apple system audio stream stopped: \(error.localizedDescription)")
     }
 }

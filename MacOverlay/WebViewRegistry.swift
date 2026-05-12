@@ -31,4 +31,14 @@ class WebViewRegistry {
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
     }
+
+    /// Force a full reload (ignoring cache) of every registered tab. Used
+    /// after changing the macOS default audio input device — webpages cache
+    /// their `getUserMedia` MediaStream against the device that was current
+    /// at capture time, so without a reload they keep using the old mic.
+    func reloadAll() {
+        for (_, webView) in registry {
+            webView.reloadFromOrigin()
+        }
+    }
 }

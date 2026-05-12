@@ -449,17 +449,15 @@ private struct TurnBubble: View {
 
     /// Assistant: no avatar, no bubble. An eyebrow label sits above the
     /// markdown text — looks like a doc/spec entry rather than a chat reply.
+    /// The label reflects the *actual* model that produced this turn (read
+    /// from `turn.model`) — switching the model picker won't retroactively
+    /// rewrite past replies.
     private var assistantContent: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 5, height: 5)
-                Text("Claude")
-                    .font(Design.Font.eyebrow)
-                    .tracking(0.4)
-                    .foregroundColor(.secondary.opacity(0.85))
-            }
+            Text(modelLabel)
+                .font(Design.Font.eyebrow)
+                .tracking(0.4)
+                .foregroundColor(.secondary.opacity(0.85))
 
             if turn.content.isEmpty {
                 TypingIndicatorView()
@@ -523,6 +521,19 @@ private struct TurnBubble: View {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
         return f.localizedString(for: turn.timestamp, relativeTo: Date())
+    }
+
+    /// Display name for the model that produced this turn. Resolves the
+    /// stamped `turn.model` id against `OverlayViewModel.availableModels`
+    /// so users see "GPT-4o" / "Sonnet 4.6" etc. — not a hardcoded
+    /// "Claude". Falls back to a generic "Assistant" for legacy turns
+    /// loaded from disk before this field was introduced.
+    private var modelLabel: String {
+        guard let id = turn.model else { return "Assistant" }
+        if let match = OverlayViewModel.availableModels.first(where: { $0.id == id }) {
+            return match.name
+        }
+        return id
     }
 
     private func copy() {

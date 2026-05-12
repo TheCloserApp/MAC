@@ -10,13 +10,31 @@ import UniformTypeIdentifiers
 final class OverlayViewModel {
 
     // MARK: - Model catalogue
+    /// Full catalogue of models the app can route requests to. The model
+    /// picker filters this list against `ModelVisibility.shared` so users
+    /// can hide models they don't use without losing them — flipping the
+    /// switch in Settings → AI brings any of them back instantly.
+    /// Routing: ids prefixed `gpt-` / `o1` / `o3` / `o4` go through the
+    /// OpenAI path (see `AIManager.isOpenAIModel`); everything else goes
+    /// to Anthropic.
     static let availableModels: [(id: String, name: String, provider: String)] = [
-        ("claude-opus-4-6",           "Opus 4.6",    "Anthropic"),
-        ("claude-sonnet-4-6",         "Sonnet 4.6",  "Anthropic"),
-        ("claude-haiku-4-5-20251001", "Haiku 4.5",   "Anthropic"),
-        ("gpt-4o",                    "GPT-4o",      "OpenAI"),
-        ("gpt-4o-mini",               "GPT-4o mini", "OpenAI"),
-        ("o3-mini",                   "o3-mini",     "OpenAI"),
+        // Anthropic
+        ("claude-opus-4-7",           "Opus 4.7",        "Anthropic"),
+        ("claude-opus-4-6",           "Opus 4.6",        "Anthropic"),
+        ("claude-sonnet-4-6",         "Sonnet 4.6",      "Anthropic"),
+        ("claude-sonnet-4-5",         "Sonnet 4.5",      "Anthropic"),
+        ("claude-haiku-4-5-20251001", "Haiku 4.5",       "Anthropic"),
+        // OpenAI — frontier
+        ("gpt-4o",                    "GPT-4o",          "OpenAI"),
+        ("gpt-4o-mini",               "GPT-4o mini",     "OpenAI"),
+        ("gpt-4.1",                   "GPT-4.1",         "OpenAI"),
+        ("gpt-4.1-mini",              "GPT-4.1 mini",    "OpenAI"),
+        ("gpt-4-turbo",               "GPT-4 Turbo",     "OpenAI"),
+        // OpenAI — reasoning
+        ("o3",                        "o3",              "OpenAI"),
+        ("o3-mini",                   "o3-mini",         "OpenAI"),
+        ("o1",                        "o1",              "OpenAI"),
+        ("o1-mini",                   "o1-mini",         "OpenAI"),
     ]
 
     // MARK: - Session
@@ -31,7 +49,16 @@ final class OverlayViewModel {
     }
 
     // MARK: - Audio / transcription
-    var audioSource: AudioSource = .microphone
+    var audioSource: AudioSource = .microphone {
+        didSet {
+            NSLog("[OverlayViewModel] audioSource changed: %@ -> %@",
+                  oldValue.label, audioSource.label)
+            applyBrowserAudioRouting()
+        }
+    }
+    /// Holds an error message when BlackHole routing failed (e.g. driver not
+    /// installed). The browser panel watches this to show a non-modal banner.
+    var browserAudioRouterError: String? = nil
     var isRecording  = false { didSet { scheduleBroadcast() } }
     var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
     var isInterviewSession = false
@@ -59,6 +86,16 @@ final class OverlayViewModel {
     var sessionNotes:  [NoteEntry] = []
     var showNotesPanel = false
 
+    // MARK: - Interview setup (pre-Start form on the Interview surface)
+    /// Optional resume the user uploaded for the upcoming interview. The file
+    /// is read once at Start time and prepended to the interview's context
+    /// payload; we hold the URL so the form can display the filename.
+    var interviewResumeFileURL: URL? = nil
+    /// Free-text context describing the role, company, JD, etc. Empty = none.
+    var interviewContext: String = ""
+    /// Which past session the user picked to resume. `nil` means "New session".
+    var interviewResumeSessionID: UUID? = nil
+
     // MARK: - Resume builder
     var showResumeBuilder  = false
     var resumeJD           = ""
@@ -79,6 +116,14 @@ final class OverlayViewModel {
     var browserTabs: [BrowserTab] = [] { didSet { scheduleBroadcast() } }
     var activeTabID: UUID? = nil { didSet { scheduleBroadcast() } }
     var splitCount: Int = 1
+    /// Mirrors `BrowserAudioRouter.shared.isRouting` so SwiftUI views can
+    /// reflect the routing state without observing CoreAudio directly.
+    var browserSystemAudioRouting: Bool = false
+    /// Whether the macOS default *output* device is configured so that
+    /// audio actually reaches BlackHole. The browser banner uses this to
+    /// warn the user when System mode is on but their output device won't
+    /// produce any signal for the website to read.
+    var browserSystemOutputState: BrowserAudioRouter.SystemOutputState = .notRouted
 
     var hasBrowser: Bool { !browserTabs.isEmpty }
 
@@ -86,13 +131,17 @@ final class OverlayViewModel {
         let tab = BrowserTab(url: url)
         browserTabs.append(tab)
         activeTabID = tab.id
+        applyBrowserAudioRouting()
     }
 
     func closeTab(id: UUID) {
         browserTabs.removeAll { $0.id == id }
         if activeTabID == id { activeTabID = browserTabs.last?.id }
-        if browserTabs.isEmpty { splitCount = 1 }
+        if browserTabs.isEmpty {
+            splitCount = 1
+        }
         WebViewRegistry.shared.evict(tabID: id)
+        applyBrowserAudioRouting()
     }
 
     func toggleBrowser() {
@@ -103,6 +152,70 @@ final class OverlayViewModel {
             splitCount = 1
         } else {
             addTab()
+        }
+        applyBrowserAudioRouting()
+    }
+
+    /// Called by the browser's audio-source picker. Mirrors `audioSource` for
+    /// transcription, and additionally — when the user picks `.systemAudio`
+    /// — redirects the macOS default *input* device to BlackHole so any
+    /// website inside the embedded browser receives system audio through its
+    /// `getUserMedia` mic stream. Reverts the device when switching back.
+    /// Returns nil on success, or an error description for the UI to show.
+    @discardableResult
+    func setBrowserAudioSource(_ src: AudioSource) -> String? {
+        // Setting audioSource triggers applyBrowserAudioRouting via didSet,
+        // which fills in browserAudioRouterError. Mirror it back so existing
+        // call sites that ignore the property still get a return value.
+        audioSource = src
+        return browserAudioRouterError
+    }
+
+    /// Reconciles the BlackHole router state with the current
+    /// `(audioSource, hasBrowser)` pair. Called from `audioSource.didSet`,
+    /// `toggleBrowser`, `closeTab`, and `addTab` so any change to either
+    /// input recomputes the right routing decision.
+    private func applyBrowserAudioRouting() {
+        let shouldRoute     = hasBrowser && audioSource == .systemAudio
+        let wasRouting      = browserSystemAudioRouting
+        NSLog("[OverlayViewModel] applyBrowserAudioRouting: hasBrowser=%@ audioSource=%@ -> shouldRoute=%@",
+              hasBrowser ? "true" : "false",
+              audioSource.label,
+              shouldRoute ? "true" : "false")
+
+        if shouldRoute {
+            do {
+                try BrowserAudioRouter.shared.enable()
+                browserSystemAudioRouting = true
+                browserAudioRouterError   = nil
+            } catch {
+                browserSystemAudioRouting = false
+                browserAudioRouterError   = error.localizedDescription
+                NSLog("[OverlayViewModel] BlackHole enable failed: %@",
+                      error.localizedDescription)
+            }
+        } else {
+            BrowserAudioRouter.shared.disable()
+            browserSystemAudioRouting = false
+            browserAudioRouterError   = nil
+        }
+
+        // Refresh the cached output state on any routing change. The
+        // CoreAudio listener handles user-driven changes (Output picker,
+        // Audio MIDI Setup) but firing here covers the case where the user
+        // just toggled the source and we want the banner up immediately.
+        browserSystemOutputState = BrowserAudioRouter.shared.currentSystemOutputState()
+
+        // Webpages cache `MediaStream` against the device that was current at
+        // capture time, so the only way to make a running tab pick up the
+        // new default input is a hard reload. We only reload when routing
+        // *changed* — switching off `.systemAudio` back to mic, or vice
+        // versa — so we don't churn pages on no-op reconciles.
+        if wasRouting != browserSystemAudioRouting && hasBrowser {
+            NSLog("[OverlayViewModel] routing changed (%@ -> %@); reloading browser tabs",
+                  wasRouting ? "on" : "off",
+                  browserSystemAudioRouting ? "on" : "off")
+            WebViewRegistry.shared.reloadAll()
         }
     }
 
@@ -300,6 +413,11 @@ final class OverlayViewModel {
     let entitlement = EntitlementStore.shared
     let quota       = ResumeQuotaTracker.shared
 
+    // MARK: - Panel customization
+    /// User-customisable visibility + sizing for the lower input bar.
+    /// Toggles persist to UserDefaults via the store itself.
+    let barCustomization = BarCustomization.shared
+
     /// True when a paywall sheet should be visible. Flipped by quota gates
     /// (e.g. ResumeController.generate() when the free user is at their cap).
     var showPaywall: Bool = false
@@ -311,6 +429,7 @@ final class OverlayViewModel {
     // MARK: - Shell layout (new UX)
     enum PrimarySurface: String, Hashable, CaseIterable, Codable {
         case chat       // live transcript + conversation bubbles (default)
+        case interview  // interview setup + live interview surface
         case sessions   // sessions history list
         case resumes    // resume builder + library
         case prompts    // prompt library
@@ -320,42 +439,53 @@ final class OverlayViewModel {
 
         var displayName: String {
             switch self {
-            case .chat:     return "Chat"
-            case .sessions: return "History"
-            case .resumes:  return "Resumes"
-            case .prompts:  return "Prompts"
-            case .calendar: return "Calendar"
-            case .browser:  return "Browser"
-            case .settings: return "Settings"
+            case .chat:      return "Chat"
+            case .interview: return "Interview"
+            case .sessions:  return "History"
+            case .resumes:   return "Resumes"
+            case .prompts:   return "Prompts"
+            case .calendar:  return "Calendar"
+            case .browser:   return "Browser"
+            case .settings:  return "Settings"
             }
         }
         var icon: String {
             switch self {
-            case .chat:     return "bubble.left.and.bubble.right"
-            case .sessions: return "clock.arrow.circlepath"
-            case .resumes:  return "doc.text"
-            case .prompts:  return "text.bubble"
-            case .calendar: return "calendar"
-            case .browser:  return "globe"
-            case .settings: return "gearshape"
+            case .chat:      return "bubble.left.and.bubble.right"
+            case .interview: return "person.fill.checkmark"
+            case .sessions:  return "clock.arrow.circlepath"
+            case .resumes:   return "doc.text"
+            case .prompts:   return "text.bubble"
+            case .calendar:  return "calendar"
+            case .browser:   return "globe"
+            case .settings:  return "gearshape"
             }
         }
         var activeIcon: String {
             switch self {
-            case .chat:     return "bubble.left.and.bubble.right.fill"
-            case .sessions: return "clock.arrow.circlepath"
-            case .resumes:  return "doc.text.fill"
-            case .prompts:  return "text.bubble.fill"
-            case .calendar: return "calendar"
-            case .browser:  return "globe"
-            case .settings: return "gearshape.fill"
+            case .chat:      return "bubble.left.and.bubble.right.fill"
+            case .interview: return "person.fill.checkmark"
+            case .sessions:  return "clock.arrow.circlepath"
+            case .resumes:   return "doc.text.fill"
+            case .prompts:   return "text.bubble.fill"
+            case .calendar:  return "calendar"
+            case .browser:   return "globe"
+            case .settings:  return "gearshape.fill"
             }
         }
     }
-    /// Which surface is showing in the right column. Nil means no panel is
-    /// open — only the sidebar is visible. Clicking a sidebar cell again
-    /// while it's active toggles the right column closed.
-    var primarySurface: PrimarySurface? = nil
+    /// Which surface is showing inside the expanded shell. `nil` means
+    /// the shell is in the bar-only (compact) layout — replaces the old
+    /// `.composer` shell stage. Clicking a surface button again while
+    /// it's active toggles back to nil.
+    var primarySurface: PrimarySurface? = nil {
+        didSet {
+            if oldValue != primarySurface {
+                onPrimarySurfaceChange?(primarySurface)
+            }
+        }
+    }
+    @ObservationIgnored var onPrimarySurfaceChange: ((PrimarySurface?) -> Void)?
     var sidebarCollapsed: Bool = false
 
     /// Which corner of the NSPanel the pill is anchored to, based on where
@@ -389,21 +519,34 @@ final class OverlayViewModel {
     }
     var pillAnchor: PillAnchor = .topLeading
 
-    /// True when the full glass shell is showing, false when only the pill
-    /// is visible. Lives on the VM so the AppDelegate can hook the NSPanel
-    /// frame transition at the exact moment the SwiftUI layout toggles.
-    var isShellExpanded: Bool = false {
-        didSet { onExpansionChange?(isShellExpanded) }
-    }
-    @ObservationIgnored var onExpansionChange: ((Bool) -> Void)?
+    /// Two-stage shell. Either the collapsed pill is on screen, or the
+    /// full overlay panel is. Within `.expanded` the layout adapts to
+    /// `primarySurface`:
+    ///   - `primarySurface == nil` → just the input bar (compact).
+    ///   - `primarySurface != nil` → top card (title + body) + input bar.
+    ///
+    /// User transitions:
+    ///   pill → expanded   (hover or click the brand logo)
+    ///   expanded → pill   (click the collapse button on the bar)
+    ///   any expanded ↔ expanded surface change (click sidebar buttons)
+    enum ShellStage: String, Equatable {
+        case pill, expanded
 
-    /// True when expanded but only the slim title bar should show (no
-    /// content, no composer). Useful as a "park it out of the way" state
-    /// without going all the way to the capsule.
-    var isShellMinimized: Bool = false {
-        didSet { onMinimizeChange?(isShellMinimized) }
+        var isOnScreen: Bool { self == .expanded }
     }
-    @ObservationIgnored var onMinimizeChange: ((Bool) -> Void)?
+
+    var shellStage: ShellStage = .pill {
+        didSet {
+            if oldValue != shellStage {
+                onShellStageChange?(shellStage)
+            }
+        }
+    }
+    @ObservationIgnored var onShellStageChange: ((ShellStage) -> Void)?
+
+    /// Backward-compat read-only shim. New code should test
+    /// `shellStage == .expanded` directly.
+    var isShellExpanded: Bool { shellStage == .expanded }
 
     // MARK: - Peer control
     @ObservationIgnored let peerServer = PeerControlServer.shared
@@ -588,6 +731,16 @@ final class OverlayViewModel {
         }
         transcriptionManager.onSilence = silenceHandler
         appleTranscriber.onSilence    = silenceHandler
+
+        // Track the system output device so the browser banner can warn
+        // the user when System mode is on but BlackHole isn't actually
+        // receiving any audio (e.g. output is set to plain speakers).
+        browserSystemOutputState = BrowserAudioRouter.shared.currentSystemOutputState()
+        BrowserAudioRouter.shared.onSystemOutputStateChange = { [weak self] state in
+            Task { @MainActor [weak self] in
+                self?.browserSystemOutputState = state
+            }
+        }
     }
 
     // MARK: - Auth lifecycle
@@ -708,6 +861,48 @@ final class OverlayViewModel {
         }
     }
 
+    /// Kick off an interview from the Interview surface's setup form. Picks
+    /// either a fresh session or the user-selected past one, seeds it with
+    /// the optional resume + context, sets the mode to .interview, and
+    /// starts the live recording.
+    func beginInterviewFromSetup() {
+        sessionMode = .interview
+
+        if let pickedID = interviewResumeSessionID,
+           sessionStore.sessions.contains(where: { $0.id == pickedID }) {
+            continueSession(id: pickedID)
+        } else {
+            startNewSession()
+        }
+
+        // Seed the session with the user's setup context so the AI knows what
+        // role/JD/resume backs this interview. Skipped silently when both are
+        // empty — no point adding a noise turn.
+        let resumeText = readInterviewResumeText()
+        let trimmedContext = interviewContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !resumeText.isEmpty || !trimmedContext.isEmpty {
+            var seed = "[Interview setup]\n"
+            if !trimmedContext.isEmpty {
+                seed += "\nContext:\n\(trimmedContext)\n"
+            }
+            if !resumeText.isEmpty {
+                let name = interviewResumeFileURL?.lastPathComponent ?? "resume"
+                seed += "\nAttached resume (\(name)):\n\(resumeText)\n"
+            }
+            manualInput = seed
+            showManualInput = true
+        }
+
+        startInterviewSession()
+    }
+
+    /// Reads the user-selected resume file as plain text using the existing
+    /// resume importer (covers pdf/docx/rtf/txt/md). Returns "" on failure.
+    private func readInterviewResumeText() -> String {
+        guard let url = interviewResumeFileURL else { return "" }
+        return (try? ResumeImporter.importFile(url: url)) ?? ""
+    }
+
     // MARK: - Quick actions
 
     func selectQuickAction(_ action: QuickAction) {
@@ -740,9 +935,21 @@ final class OverlayViewModel {
         let resolvedPrompt   = resolveActivePrompt()
         let historySnapshot  = sessionStore.replayContext()
 
+        // Sending a message implies the user wants to see the response.
+        // Promote the shell to the full expanded chat surface so the
+        // streaming assistant turn appears in the top panel — even if the
+        // user kicked the send off from the collapsed pill (voice
+        // transcription, quick-ask, or just the bar).
+        primarySurface = .chat
+        if shellStage != .expanded {
+            withAnimation(Design.Motion.spring) {
+                shellStage = .expanded
+            }
+        }
+
         let wasFirstExchange = sessionStore.activeSession.turns.isEmpty
         sessionStore.appendUser(textToSend)
-        let assistantID = sessionStore.beginStreamingAssistant()
+        let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
 
         if !showManualInput { transcription = "" }
 
@@ -835,11 +1042,12 @@ final class OverlayViewModel {
         // Stream into quickAskResponse and also into a session turn so it's
         // recorded in history.
         sessionStore.appendUser(text)
-        let assistantID = sessionStore.beginStreamingAssistant()
+        let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
             var accumulated = ""
+            var lastFlush = ContinuousClock.now
             do {
                 let stream = AIManager.shared.streamMessage(
                     text,
@@ -854,13 +1062,20 @@ final class OverlayViewModel {
                     switch event {
                     case .chunk(let chunk):
                         accumulated += chunk
-                        self.quickAskResponse = accumulated
                         self.sessionStore.appendChunk(chunk, to: assistantID)
+                        let now = ContinuousClock.now
+                        if now - lastFlush >= .milliseconds(33) {
+                            self.quickAskResponse = accumulated
+                            lastFlush = now
+                        }
                     case .usage(let inTok, let outTok):
                         self.sessionStore.finalizeAssistant(turnID: assistantID,
                                                             inputTokens: inTok,
                                                             outputTokens: outTok)
                     }
+                }
+                if self.quickAskResponse != accumulated {
+                    self.quickAskResponse = accumulated
                 }
                 if !accumulated.isEmpty {
                     self.notesManager.add(content: accumulated, source: .ai, mode: self.sessionMode)

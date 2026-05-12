@@ -23,7 +23,7 @@ enum FeatureFlags {
 
     /// Embedded WebKit browser tabs inside the overlay. Heavy + maintenance
     /// burden; users have a real browser. Plan: re-enable in v2.
-    static let browserEnabled = false
+    static let browserEnabled = true
 
     /// Peer Control Server — let a colleague view your overlay and send
     /// messages to the AI over LAN. Cool tech demo, near-zero real-world
@@ -43,8 +43,10 @@ enum FeatureFlags {
     /// correctly under the hood.
     static let workspacesEnabled = false
 
-    /// Sessions / chat history sidebar entry. The chat surface still works
-    /// (sessions are still recorded and the active session persists across
-    /// launches); we just hide the dedicated history-list panel for v1.
-    static let sessionsHistoryEnabled = false
+    /// Sessions / chat history sidebar entry. Re-enabled in the redesigned
+    /// UI — there's now a dedicated History button next to the New Session
+    /// "+" in the composer that brings up the headed surface for browsing
+    /// past sessions. The underlying flag still exists so we can take it
+    /// back out cleanly if needed.
+    static let sessionsHistoryEnabled = true
 }

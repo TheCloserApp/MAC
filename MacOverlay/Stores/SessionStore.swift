@@ -10,8 +10,9 @@ final class SessionStore {
     private static let filename = "sessions.json"
 
     var sessions: [ChatSession] {
-        didSet { persist() }
+        didSet { schedulePersist() }
     }
+    @ObservationIgnored private var persistTask: Task<Void, Never>?
     var activeSessionID: UUID {
         didSet {
             UserDefaults.standard.set(activeSessionID.uuidString, forKey: "activeSessionID")
@@ -125,9 +126,9 @@ final class SessionStore {
     /// path — the caller then pushes chunks and eventually usage tokens into
     /// it via `appendChunk` / `finalize`.
     @discardableResult
-    func beginStreamingAssistant() -> UUID {
+    func beginStreamingAssistant(model: String? = nil) -> UUID {
         var s = activeSession
-        let turn = ChatTurn(role: .assistant, content: "")
+        let turn = ChatTurn(role: .assistant, content: "", model: model)
         s.turns.append(turn)
         s.updatedAt = Date()
         activeSession = s
@@ -220,7 +221,7 @@ final class SessionStore {
             sessions[i].workspaceID = fallback
             changed = true
         }
-        if changed { persist() }
+        if changed { schedulePersist() }
     }
 
     func continueSession(id: UUID) {
@@ -317,7 +318,29 @@ final class SessionStore {
 
     // MARK: - Persistence
 
+    /// Coalesces rapid mutations (e.g. token-by-token streaming appends)
+    /// into a single disk write per ~400ms quiet window. Without this,
+    /// every chunk during a streaming response wrote the entire session
+    /// JSON to disk — visible UI stutter on long answers.
+    private func schedulePersist() {
+        persistTask?.cancel()
+        persistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.persist()
+        }
+    }
+
     private func persist() {
         JSONStore.save(sessions, to: Self.filename)
+    }
+
+    /// Flush any pending debounced write immediately. Called on app
+    /// terminate so we don't lose the last chunk of a stream that ended
+    /// inside the debounce window.
+    func flushPendingPersist() {
+        persistTask?.cancel()
+        persistTask = nil
+        persist()
     }
 }

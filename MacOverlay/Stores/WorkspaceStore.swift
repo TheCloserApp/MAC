@@ -60,7 +60,8 @@ final class WorkspaceStore {
     /// history is lost.
     func delete(id: UUID, reassignSessions: (UUID, UUID) -> Void) {
         guard let w = workspaces.first(where: { $0.id == id }), !w.isDefault else { return }
-        let defaultID = workspaces.first(where: { $0.isDefault })?.id ?? workspaces.first!.id
+        guard let defaultID = workspaces.first(where: { $0.isDefault })?.id
+                              ?? workspaces.first(where: { $0.id != id })?.id else { return }
         reassignSessions(id, defaultID)
         workspaces.removeAll { $0.id == id }
         if activeWorkspaceID == id { activeWorkspaceID = defaultID }

@@ -41,6 +41,16 @@ enum Design {
         static let eyebrow = SwiftUI.Font.system(size: 10, weight: .semibold)
     }
 
+    // MARK: - Surface fills (the dark "glass" base under every shell capsule
+    // and card). Defined here so a global tone tweak is a one-line change
+    // instead of a repo-wide search-and-replace.
+    enum Surface {
+        /// Base fill under shell capsules, cards, panels, and onboarding.
+        /// Slightly warmer than pure neutral grey so it reads as a tinted
+        /// dark surface rather than chrome.
+        static let shellFill = Color(red: 22/255, green: 22/255, blue: 24/255)
+    }
+
     // MARK: - macOS system accents (used by sidebar / top strip / chat rail)
     enum Accent {
         static let blue   = Color(red: 10/255,  green: 132/255, blue: 255/255)
@@ -62,6 +72,12 @@ enum Design {
         static let spring   = Animation.spring(response: 0.32, dampingFraction: 0.82)
         /// Punchier spring for accents
         static let pop      = Animation.spring(response: 0.28, dampingFraction: 0.75)
+        /// Smooth ease-out for large reveals (pill → composer expansion).
+        /// Matches the NSPanel's `CAMediaTimingFunction(name: .easeOut)`
+        /// at 0.32s so the SwiftUI content and the NSPanel edge move in
+        /// lockstep — a spring here desyncs from the panel and the bar
+        /// contents visibly lag the capsule edge.
+        static let expand   = Animation.easeOut(duration: 0.32)
     }
 
     // MARK: - Shadow
@@ -105,7 +121,7 @@ extension View {
         self
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(Color(red: 22/255, green: 22/255, blue: 24/255))
+                    .fill(Design.Surface.shellFill)
                     .opacity(opacity)
             }
             .overlay {
@@ -131,7 +147,7 @@ extension View {
             style: .continuous
         )
         return self
-            .background { shape.fill(Color(red: 22/255, green: 22/255, blue: 24/255)) }
+            .background { shape.fill(Design.Surface.shellFill) }
             .overlay { shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75) }
             .clipShape(shape)
             .designShadow(shadow)

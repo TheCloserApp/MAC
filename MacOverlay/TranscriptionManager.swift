@@ -102,9 +102,11 @@ class TranscriptionManager: NSObject {
         var request = URLRequest(url: url)
         request.setValue(elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
 
-        urlSession    = URLSession(configuration: .default)
-        webSocketTask = urlSession!.webSocketTask(with: request)
-        webSocketTask!.resume()
+        let session = URLSession(configuration: .default)
+        urlSession    = session
+        let task = session.webSocketTask(with: request)
+        webSocketTask = task
+        task.resume()
 
         receiveLoop()
     }

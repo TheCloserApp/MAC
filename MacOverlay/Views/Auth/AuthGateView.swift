@@ -37,7 +37,10 @@ private struct SignInScreen: View {
                 // The collapsed-pill panel size (96pt tall) is too small to
                 // show the sign-in screen. Force the panel to expand so
                 // there's room to render the form.
-                if !vm.isShellExpanded { vm.isShellExpanded = true }
+                // Sign-in screen needs the full panel real estate, so jump
+                // straight to the expanded stage if we're not already past
+                // the pill.
+                if !vm.isShellExpanded { vm.shellStage = .expanded }
             }
     }
 
@@ -121,7 +124,7 @@ private struct SignInScreen: View {
 /// See https://developers.google.com/identity/branding-guidelines for
 /// the official spec — important if you ever publish to a Google Workspace
 /// Marketplace listing or pass Google's brand review.
-private struct GoogleSignInButton: View {
+struct GoogleSignInButton: View {
     var action: () -> Void
     @State private var hovering = false
 
@@ -151,7 +154,7 @@ private struct GoogleSignInButton: View {
 /// The familiar 4-color "G" mark drawn in SwiftUI so we don't have to
 /// bundle a PNG. Not pixel-perfect against Google's SVG but close enough
 /// to read as the Google logo.
-private struct GoogleGLogo: View {
+struct GoogleGLogo: View {
     var body: some View {
         Canvas { ctx, size in
             let r = min(size.width, size.height) / 2

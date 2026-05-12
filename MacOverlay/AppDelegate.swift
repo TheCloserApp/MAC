@@ -21,12 +21,24 @@ final class OverlayHostingView: NSHostingView<AnyView> {
 // still accept keyboard input.
 class UnconstrainedPanel: NSPanel {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        guard let screen = screen ?? NSScreen.main else { return frameRect }
-        let sf = screen.frame          // full monitor — bottom reaches absolute edge
-        let vf = screen.visibleFrame   // excludes the menu bar
-        var f  = frameRect
-        f.origin.x = min(max(f.origin.x, sf.minX), sf.maxX - f.width)
-        f.origin.y = min(max(f.origin.y, sf.minY), vf.maxY - f.height)
+        var f = frameRect
+
+        // Enforce minSize ourselves. Borderless / nonactivating panels
+        // don't always get the standard AppKit min-size clamping during
+        // user-initiated drag-resize, which lets the user shrink the
+        // panel small enough to clip its contents. Re-enforce it here so
+        // every code path (programmatic AND drag) honors the minimum.
+        f.size.width  = max(f.size.width,  self.minSize.width)
+        f.size.height = max(f.size.height, self.minSize.height)
+
+        // Position constraint — keep the panel on a connected screen
+        // (full frame so the bottom can reach the absolute edge; the
+        // visibleFrame caps the top to leave room for the menu bar).
+        guard let screen = screen ?? NSScreen.main else { return f }
+        let sf = screen.frame
+        let vf = screen.visibleFrame
+        f.origin.x = min(max(f.origin.x, sf.minX), sf.maxX - f.size.width)
+        f.origin.y = min(max(f.origin.y, sf.minY), vf.maxY - f.size.height)
         return f
     }
     override var canBecomeKey: Bool { true }
@@ -62,19 +74,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         overlayPanel.alphaValue = vm.opacity
 
-        // Animate the NSPanel between its collapsed pill-size and the full
-        // shell size whenever the VM toggles expansion. The anchor corner
-        // (where the pill sits) stays put so expansion feels like it's
-        // emerging from the pill's exact position.
-        vm.onExpansionChange = { [weak self] expanded in
-            // Sync anchor once before the shell appears so the sidebar order is correct.
-            if expanded { self?.updatePillAnchor() }
-            self?.animateShellFrame(expanded: expanded)
+        // Animate the NSPanel between pill and expanded sizes whenever
+        // the VM transitions stage. The bottom edge stays pinned so the
+        // bar doesn't visibly jump as the panel grows / shrinks.
+        vm.onShellStageChange = { [weak self] stage in
+            if stage.isOnScreen { self?.updatePillAnchor() }
+            self?.animateShellFrame(stage: stage)
         }
 
-        vm.onMinimizeChange = { [weak self] _ in
-            // Re-evaluate panel size to swap between full and mini.
-            self?.animateShellFrame(expanded: self?.vm?.isShellExpanded ?? false)
+        // The expanded panel adapts to whether a surface is open
+        // (compact bar-only vs. full body). Surface changes need to
+        // re-fire the same resize so the panel matches.
+        vm.onPrimarySurfaceChange = { [weak self] _ in
+            guard let self, let stage = self.vm?.shellStage else { return }
+            self.animateShellFrame(stage: stage)
         }
 
         // Watch the panel's position so the shell can flip the sidebar to the
@@ -106,10 +119,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = try? await SCShareableContent.current
         }
 
-        // Request Accessibility permission once at launch (needed for Option dictation).
-        // Shows the system dialog only if not already granted.
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(opts)
+        // Accessibility permission is needed for Option-key dictation, which
+        // pastes into the active app. We DON'T prompt at launch — the system
+        // dialog stalls applicationDidFinishLaunching and most users never
+        // touch dictation. The prompt is shown lazily on first dictation
+        // attempt; see ensureAccessibilityPrompted().
 
         // Track which app was frontmost before any hotkey fires
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -129,24 +143,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Overlay Panel
 
-    /// Collapsed: small capsule that expands on hover into a horizontal
-    /// quick-access strip (~310pt wide). Panel is sized to fit the hover-
-    /// expanded width so the strip never clips.
-    static let collapsedSize = NSSize(width: 440, height: 96)
-    /// When expanded, the panel grows to fit the full chat shell.
-    static let expandedSize  = NSSize(width: 560, height: 500)
-    /// When the user "parks" the panel — only the composer + a lift handle
-    /// remains. Width matches the full panel so the composer keeps its
-    /// horizontal layout intact.
-    static let miniSize      = NSSize(width: 560, height: 132)
+    /// `.pill` — small capsule that just shows the brand logo.
+    static let collapsedSize = NSSize(width: 360, height: 80)
+    /// `.expanded` with no `primarySurface` — InputBar only, single row.
+    static let expandedCompactSize = NSSize(width: 620, height: 84)
+    /// `.expanded` with a `primarySurface` set — full shell: top header
+    /// + body + InputBar.
+    static let expandedSize  = NSSize(width: 620, height: 500)
 
     /// Last-known full-state size. Captured whenever the user transitions
     /// from full → mini so we can restore exactly what they had on expand,
     /// and so the mini state preserves the user's manual panel width.
     private var lastFullSize: NSSize = expandedSize
 
+    @MainActor
     func setupOverlayPanel() {
-        let w: CGFloat = Self.collapsedSize.width, h: CGFloat = Self.collapsedSize.height
+        // If the user lands on the welcome / sign-in flow at launch, the
+        // hero content needs the full panel — starting at the pill size
+        // (360×80) leaves the content clipped out the bottom of the
+        // window. Decide the initial stage + size BEFORE the panel goes
+        // on screen so there's no visible resize jump.
+        let needsHeroLayout = !vm.auth.isSignedIn || vm.showOnboarding
+        if needsHeroLayout {
+            vm.shellStage = .expanded
+        }
+        let initial = needsHeroLayout ? Self.expandedSize : Self.collapsedSize
+        let w: CGFloat = initial.width, h: CGFloat = initial.height
         guard let screen = NSScreen.main else { return }
         let sf = screen.visibleFrame
         let frame = NSRect(x: sf.midX - w / 2, y: sf.maxY - h - 20, width: w, height: h)
@@ -170,7 +192,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.isFloatingPanel            = true
         overlayPanel.becomesKeyOnlyIfNeeded     = true
         overlayPanel.sharingType                = .none
-        overlayPanel.minSize                    = NSSize(width: 70, height: 44)
+        // Initial minSize matches the launch stage; `animateShellFrame`
+        // updates it on every stage transition so the user can never
+        // shrink the panel below what's visible.
+        overlayPanel.minSize                    = needsHeroLayout ? Self.expandedMinSize : Self.pillMinSize
         overlayPanel.alphaValue                 = 1.0  // synced via opacityObserver after setup
 
         let hosting = OverlayHostingView(rootView: AnyView(OverlayView().environment(vm)))
@@ -345,6 +370,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // ── Option alone: push-to-talk dictation into active app ────
         if optDown && !dictationKeyDown {
             dictationKeyDown = true
+            ensureAccessibilityPrompted()
             let pid = lastFrontAppPID
             let mgr = DictationManager()
             dictationManager = mgr
@@ -557,50 +583,88 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vm.pillAnchor = newAnchor
     }
 
-    /// Resize the panel, anchoring its TOP so the pill stays put and content
-    /// grows/shrinks downward. `constrainFrameRect` handles screen clamping.
+    /// MINIMUM panel size — the user can manually resize, but never below
+    /// this. Two values: pill (just the brand) and expanded (wide enough
+    /// for every visible bar element).
+    static let pillMinSize             = NSSize(width: 240, height: 60)
+    static let expandedCompactMinSize  = NSSize(width: 600, height: 80)
+    static let expandedMinSize         = NSSize(width: 600, height: 340)
+
+    /// Resize the panel for the given shell stage. Within `.expanded`
+    /// the height also adapts to whether a `primarySurface` is open:
+    ///   - no surface  → bar-only height (compact)
+    ///   - surface set → full height (top card + body + bar)
+    /// Anchor: bottom is always pinned, so the bar stays put as the
+    /// panel grows or shrinks above it. The pill itself is the same
+    /// physical affordance — keeping the bottom edge fixed means the
+    /// brand icon doesn't visibly jump as the shell expands or collapses.
     @MainActor
-    func animateShellFrame(expanded: Bool) {
+    func animateShellFrame(stage: OverlayViewModel.ShellStage) {
         guard let panel = overlayPanel else { return }
         let cur = panel.frame
-        let goingToMini = expanded && (vm?.isShellMinimized ?? false)
 
-        // Capture the user's current full size before collapsing into mini,
-        // so expanding back restores exactly what they had — and the mini
-        // state inherits the user's manual width.
-        let curIsMini = abs(cur.size.height - Self.miniSize.height) < 1
-        if expanded && !curIsMini {
-            lastFullSize = cur.size
-        }
+        // Capture the user's manual size whenever the panel is currently
+        // wider than the pill width. Without this, any drag-resize would
+        // be lost on the first pill collapse — and re-expanding would
+        // snap back to the default width.
+        let curIsExpandedLayout = cur.size.width >= Self.expandedCompactMinSize.width
+        if curIsExpandedLayout { lastFullSize = cur.size }
 
-        let sz: NSSize
-        if expanded {
-            if goingToMini {
-                // Keep the user's width, drop down to mini's height.
-                sz = NSSize(width: cur.size.width, height: Self.miniSize.height)
-            } else {
-                // Restore the user's full size (defaults to expandedSize on first launch).
-                sz = lastFullSize
-            }
+        let preservedWidth: CGFloat
+        if stage == .pill {
+            preservedWidth = Self.collapsedSize.width
+        } else if curIsExpandedLayout {
+            preservedWidth = cur.size.width
         } else {
-            sz = Self.collapsedSize
+            preservedWidth = lastFullSize.width
         }
 
-        // Anchor logic:
-        //   • Full ↔ mini transitions keep the BOTTOM edge fixed so the
-        //     composer stays put under the user's cursor — the title bar /
-        //     content collapse downward into the composer.
-        //   • Capsule ↔ full transitions keep the TOP edge fixed so the pill
-        //     stays where the user dragged it.
-        let goingToFull  = expanded && !(vm?.isShellMinimized ?? false)
-        let anchorBottom = goingToMini || (goingToFull && curIsMini)
+        let surfaceOpen = vm.primarySurface != nil
+        let target: NSSize
+        switch stage {
+        case .pill:
+            target = Self.collapsedSize
+        case .expanded:
+            if surfaceOpen {
+                target = NSSize(
+                    width:  preservedWidth,
+                    height: max(lastFullSize.height, Self.expandedSize.height)
+                )
+            } else {
+                target = NSSize(width: preservedWidth, height: Self.expandedCompactSize.height)
+            }
+        }
 
+        let minForStage: NSSize
+        switch stage {
+        case .pill:     minForStage = Self.pillMinSize
+        case .expanded: minForStage = surfaceOpen ? Self.expandedMinSize : Self.expandedCompactMinSize
+        }
+        panel.minSize = minForStage
+
+        // Always bottom-anchor. The bar lives at the bottom of every
+        // non-pill stage, and the pill itself is the same physical
+        // affordance — so keeping the panel's bottom edge fixed means
+        // the brand icon stays in the same vertical spot whether you
+        // expand the shell or collapse it back down. The previous
+        // top-anchor for `.pill` made the icon visibly jump up to the
+        // top edge of where the expanded panel used to be.
         let newX = cur.origin.x
-        let newY: CGFloat = anchorBottom
-            ? cur.origin.y           // bottom edge fixed
-            : (cur.maxY - sz.height) // top edge fixed
-        panel.setFrame(NSRect(x: newX, y: newY, width: sz.width, height: sz.height),
-                       display: true, animate: true)
+        let newY: CGFloat = cur.origin.y
+
+        // Drive the panel resize through NSAnimationContext so the
+        // duration / curve match the SwiftUI spring inside the panel.
+        // `setFrame(animate: true)` uses NSWindow.animationResizeTime
+        // (proportional to delta) which runs slower on big size changes
+        // and visibly desyncs from SwiftUI — content jitters because the
+        // panel is still resizing while SwiftUI has already settled.
+        let target_ = NSRect(x: newX, y: newY, width: target.width, height: target.height)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.32
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            panel.animator().setFrame(target_, display: true)
+        }
     }
 
     // Screen share protection is handled by NSWindow.installScreenShareProtection()
@@ -620,6 +684,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quitApp() { NSApp.terminate(nil) }
+
+    /// Show the Accessibility permission dialog the first time the user
+    /// actually invokes dictation. Idempotent: subsequent invocations
+    /// short-circuit once the system reports trust.
+    private var didPromptForAccessibility = false
+    private func ensureAccessibilityPrompted() {
+        if AXIsProcessTrusted() { return }
+        if didPromptForAccessibility { return }
+        didPromptForAccessibility = true
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(opts)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // The session store debounces token-driven writes; flush whatever
+        // hasn't been written yet so a mid-stream quit doesn't lose
+        // the last few chunks.
+        SessionStore.shared.flushPendingPersist()
+    }
 
     deinit {
         if let m = localKeyMonitor   { NSEvent.removeMonitor(m) }

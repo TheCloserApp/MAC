@@ -22,6 +22,12 @@ final class AIController {
     @ObservationIgnored private weak var vm: OverlayViewModel?
     @ObservationIgnored private var streamingTask: Task<Void, Never>?
     @ObservationIgnored private(set) var lastRetry: PendingRetry?
+    /// Last time we mirrored the streaming buffer onto `vm.aiResponse`.
+    /// Used to throttle the assignment so SwiftUI doesn't invalidate every
+    /// observer of `vm` on every token (~30+/sec). The chat surface itself
+    /// reads from `session.turns` and still updates per-chunk — this only
+    /// rate-limits the secondary status views (top strip, response panel).
+    @ObservationIgnored private var lastResponseFlushAt: ContinuousClock.Instant = .now
 
     var canRetry: Bool { lastRetry != nil }
 
@@ -61,6 +67,7 @@ final class AIController {
         )
         vm.isSendingToAI = true
         vm.aiResponse    = ""
+        lastResponseFlushAt = .now
 
         streamingTask = Task { @MainActor [weak self, weak vm] in
             guard let self, let vm else { return }
@@ -80,13 +87,25 @@ final class AIController {
                     switch event {
                     case .chunk(let text):
                         accumulated += text
-                        vm.aiResponse = accumulated
+                        // Per-chunk: drive the chat surface (session.turns).
                         vm.sessionStore.appendChunk(text, to: assistantTurnID)
+                        // Throttled: secondary views observing vm.aiResponse
+                        // (status pill, response panel) only need ~30Hz.
+                        let now = ContinuousClock.now
+                        if now - self.lastResponseFlushAt >= .milliseconds(33) {
+                            vm.aiResponse = accumulated
+                            self.lastResponseFlushAt = now
+                        }
                     case .usage(let inTok, let outTok):
                         vm.sessionStore.finalizeAssistant(turnID: assistantTurnID,
                                                           inputTokens: inTok,
                                                           outputTokens: outTok)
                     }
+                }
+                // Final flush so the trailing tokens reach throttled observers
+                // even if they landed inside the last 33ms window.
+                if vm.aiResponse != accumulated {
+                    vm.aiResponse = accumulated
                 }
 
                 if wasFirstExchange {
