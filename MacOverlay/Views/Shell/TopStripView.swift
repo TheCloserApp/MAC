@@ -11,13 +11,14 @@ struct TopStripView: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            closeButton
             titleField
             Spacer()
+            composeButton
             sessionMenu
-            minimizeButton
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
     }
 
     @ViewBuilder
@@ -49,40 +50,102 @@ struct TopStripView: View {
     /// what they're looking at.
     private var headerTitle: String {
         switch vm.primarySurface {
-        case .chat?:     return vm.sessionStore.activeSession.displayTitle
-        case .sessions?: return "History"
-        case .resumes?:  return "Resumes"
-        case .prompts?:  return "Prompts"
-        case .calendar?: return "Calendar"
-        case .browser?:  return "Browser"
-        case .settings?: return "Settings"
-        case .none:      return vm.sessionStore.activeSession.displayTitle
+        case .chat?:      return vm.sessionStore.activeSession.displayTitle
+        case .interview?:
+            // Show the actual session title whenever a session is being
+            // hosted (live OR resumed-from-History); only fall back to
+            // the mode label when the setup form is on screen.
+            return vm.interviewSurfaceShowsChat
+                ? vm.sessionStore.activeSession.displayTitle
+                : vm.interviewSurfaceMode.displayName
+        case .sessions?:  return "History"
+        case .resumes?:   return "Resumes"
+        case .prompts?:   return "Prompts"
+        case .calendar?:  return "Calendar"
+        case .browser?:   return "Browser"
+        case .settings?:  return "Settings"
+        case .none:       return vm.sessionStore.activeSession.displayTitle
         }
     }
 
-    /// Close the body back to the bar-only (compact) expanded layout.
-    private var minimizeButton: some View {
+    /// Close the whole shell back to the collapsed brand pill — the
+    /// reference UI's top-left ✕. The brand pill stays available to
+    /// reopen, so this is a soft close, not a quit.
+    private var closeButton: some View {
         Button {
-            withAnimation(Design.Motion.spring) {
+            // Match the panel's easeOut resize curve — see surfaceButton
+            // in InputBarView for the rationale (spring overshoot vs the
+            // AppKit resize was visibly bouncing the bar).
+            withAnimation(Design.Motion.expand) {
                 vm.primarySurface = nil
+                vm.shellStage = .pill
             }
         } label: {
-            Image(systemName: "chevron.down")
+            Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundColor(.secondary)
                 .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.white.opacity(0.04)))
+                .background(Circle().fill(Color.white.opacity(0.06)))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .help("Close panel")
+        .help("Close")
+    }
+
+    /// Compose / new-chat button — the reference UI's top-right pencil.
+    /// Context-aware: on the Interview surface it returns to the setup
+    /// form; everywhere else it mints a fresh chat session.
+    private var composeButton: some View {
+        Button {
+            if vm.primarySurface == .interview {
+                vm.requestNewInterviewSession()
+            } else {
+                vm.startNewSession()
+                withAnimation(Design.Motion.spring) {
+                    vm.primarySurface = .chat
+                }
+            }
+        } label: {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("n", modifiers: .command)
+        .help(vm.primarySurface == .interview ? "New interview setup" : "New chat (⌘N)")
     }
 
     private var sessionMenu: some View {
         Menu {
-            Button { vm.startNewSession() } label: {
-                Label("New Session", systemImage: "plus")
+            Button {
+                // Context-aware new session: on the Interview surface,
+                // flip back to the setup form rather than minting a new
+                // chat session right away. Elsewhere, behaves like before.
+                if vm.primarySurface == .interview {
+                    vm.requestNewInterviewSession()
+                } else {
+                    vm.startNewSession()
+                    withAnimation(Design.Motion.spring) {
+                        vm.primarySurface = .chat
+                    }
+                }
+            } label: {
+                Label(vm.primarySurface == .interview
+                      ? "New interview setup"
+                      : "New Session",
+                      systemImage: "square.and.pencil")
             }.keyboardShortcut("n", modifiers: .command)
+
+            Button {
+                withAnimation(Design.Motion.spring) {
+                    vm.primarySurface = .sessions
+                }
+            } label: {
+                Label("History", systemImage: "clock.arrow.circlepath")
+            }
 
             Button {
                 draftTitle = vm.sessionStore.activeSession.displayTitle

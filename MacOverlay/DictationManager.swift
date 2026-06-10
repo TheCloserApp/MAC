@@ -37,7 +37,7 @@ class DictationManager {
             DispatchQueue.main.async {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
-                print("[Dictation] committed segment: \(trimmed) waitingForFinal=\(self.waitingForFinal)")
+                print("[Dictation] committed segment (\(trimmed.count) chars) waitingForFinal=\(self.waitingForFinal)")
 
                 // Append to accumulated text
                 self.accumulatedText += (self.accumulatedText.isEmpty ? "" : " ") + trimmed
@@ -77,7 +77,7 @@ class DictationManager {
             guard self.tm.isRunning else { return }  // already handled by onCommit
             self.tm.stop()
             let trimmed = snapshot.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("[Dictation] fallback paste: \(trimmed)")
+            print("[Dictation] fallback paste (\(trimmed.count) chars)")
             guard !trimmed.isEmpty else {
                 self.onStatus?("Nothing transcribed")
                 return
@@ -95,7 +95,7 @@ class DictationManager {
         }
 
         onStatus?("Pasting…")
-        print("[Dictation] pasting \"\(text)\" to pid=\(targetPID)")
+        print("[Dictation] pasting \(text.count) chars to pid=\(targetPID)")
 
         let saved = NSPasteboard.general.string(forType: .string)
         NSPasteboard.general.clearContents()

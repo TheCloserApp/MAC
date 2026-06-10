@@ -137,6 +137,7 @@ func testJSONStoreRoundTrip() throws {
     ]
     let filename = "test-\(UUID().uuidString).json"
     JSONStore.save(items, to: filename)
+    JSONStore.flush()   // save is async — wait for the write to land
     let loaded = JSONStore.load([PromptPreset].self, from: filename)
     try assertTrue(loaded != nil, "expected loaded non-nil")
     try assertEq(loaded?.count ?? 0, 2)
@@ -251,6 +252,73 @@ func testNoteEntryRoundTrip() throws {
     try assertTrue(decoded.mode == SessionMode.interview)
 }
 
+@MainActor
+func testTranscriptFilterMeaningful() throws {
+    // Real speech passes.
+    try assertTrue(TranscriptFilter.isMeaningful("What is your biggest weakness?"))
+    try assertTrue(TranscriptFilter.isMeaningful("ok tell me about react"))
+    // Filler-only, annotations, and noise are rejected.
+    try assertFalse(TranscriptFilter.isMeaningful(""))
+    try assertFalse(TranscriptFilter.isMeaningful("   "))
+    try assertFalse(TranscriptFilter.isMeaningful("um, uh… hmm."))
+    try assertFalse(TranscriptFilter.isMeaningful("[noise]"))
+    try assertFalse(TranscriptFilter.isMeaningful("(music) [BLANK_AUDIO]"))
+    try assertFalse(TranscriptFilter.isMeaningful("a"))
+    // Filler around real content still counts as content.
+    try assertTrue(TranscriptFilter.isMeaningful("um so why Swift?"))
+}
+
+@MainActor
+func testTranscriptFilterSeemsComplete() throws {
+    // Terminal punctuation → complete.
+    try assertTrue(TranscriptFilter.seemsComplete("Tell me about yourself."))
+    try assertTrue(TranscriptFilter.seemsComplete("What is a closure in Swift?"))
+    try assertTrue(TranscriptFilter.seemsComplete("That's impressive!"))
+    // Trailing off / mid-thought → incomplete.
+    try assertFalse(TranscriptFilter.seemsComplete(""))
+    try assertFalse(TranscriptFilter.seemsComplete("So tell me about…"))
+    try assertFalse(TranscriptFilter.seemsComplete("So, tell me about..."))
+    try assertFalse(TranscriptFilter.seemsComplete("Walk me through your experience with"))
+    try assertFalse(TranscriptFilter.seemsComplete("And then we need to,"))
+    try assertFalse(TranscriptFilter.seemsComplete("What do you think about the"))
+    try assertFalse(TranscriptFilter.seemsComplete("Can you explain how"))
+    // Unpunctuated but neutral ending → treated as complete so engines
+    // that don't punctuate don't stall every send.
+    try assertTrue(TranscriptFilter.seemsComplete("Tell me about your last project"))
+}
+
+@MainActor
+func testChatTurnReplayText() throws {
+    // No hidden context → replay is just the visible content.
+    let plain = ChatTurn(role: .user, content: "hello")
+    try assertEq(plain.replayText, "hello")
+
+    // Hidden context (attachment blocks) is prepended for replay.
+    let withCtx = ChatTurn(role: .user, content: "first question",
+                           attachments: ["resume.pdf"],
+                           hiddenContext: "[Attached resume.pdf]\n\nresume body")
+    try assertEq(withCtx.replayText, "[Attached resume.pdf]\n\nresume body\n\nfirst question")
+
+    // Attachment-only sends (empty visible text) replay the blocks alone.
+    let ctxOnly = ChatTurn(role: .user, content: "", hiddenContext: "blocks")
+    try assertEq(ctxOnly.replayText, "blocks")
+}
+
+@MainActor
+func testChatTurnHiddenContextCodable() throws {
+    let turn = ChatTurn(role: .user, content: "q",
+                        attachments: ["jd.pdf"], hiddenContext: "ctx")
+    let data = try JSONEncoder().encode(turn)
+    let decoded = try JSONDecoder().decode(ChatTurn.self, from: data)
+    try assertEq(decoded.hiddenContext ?? "", "ctx")
+
+    // Legacy turns (no hiddenContext key) still decode.
+    let legacy = #"{"id":"\#(UUID().uuidString)","role":"user","content":"old"}"#
+    let migrated = try JSONDecoder().decode(ChatTurn.self, from: Data(legacy.utf8))
+    try assertTrue(migrated.hiddenContext == nil)
+    try assertEq(migrated.replayText, "old")
+}
+
 // MARK: - Entry point
 
 @main
@@ -274,6 +342,10 @@ struct TestsMain {
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
+        TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)
+        TestRunner.run("TranscriptFilter question completeness", testTranscriptFilterSeemsComplete)
+        TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
+        TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
 
         print("\n──────────────────────────────")
         print("  Passed: \(TestRunner.passed)")
@@ -289,4 +361,3 @@ struct TestsMain {
         exit(0)
     }
 }
-h

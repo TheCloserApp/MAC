@@ -10,11 +10,30 @@ class TranscriptionManager: NSObject {
     var onPartial: ((String) -> Void)?   // partial only
     var onCommit:  ((String) -> Void)?   // committed only
     var onSilence: (() -> Void)?
+    /// Engine/connection failures. When unset, errors fall back to
+    /// `onUpdate` (legacy behaviour) — but consumers should set this so
+    /// error strings never masquerade as transcript text.
+    var onError:   ((String) -> Void)?
+    /// Connection lifecycle for the UI. WebSockets drop routinely (network
+    /// blips, server-side idle timeouts, laptop sleep) — the manager
+    /// reconnects automatically and only reports `.failed` after several
+    /// straight failures.
+    enum ConnectionEvent {
+        case reconnecting(attempt: Int)
+        case reconnected
+        case failed(String)
+    }
+    var onConnectionEvent: ((ConnectionEvent) -> Void)?
     var elevenLabsAPIKey: String = ""
 
     private(set) var isRunning = false
 
     // MARK: - Private state
+
+    /// Consecutive failed connection attempts since the last healthy
+    /// `session_started`. Only touched on the main queue.
+    private var reconnectAttempts = 0
+    private let maxReconnectAttempts = 5
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession:    URLSession?
@@ -38,6 +57,7 @@ class TranscriptionManager: NSObject {
             }
         }
 
+        reconnectAttempts = 0
         try openWebSocket()
         isRunning = true   // set before audio callbacks fire
 
@@ -88,12 +108,17 @@ class TranscriptionManager: NSObject {
             throw TranscriptionError.permissionDenied("ElevenLabs API key not set. Add it in Settings (gear icon).")
         }
 
-        // VAD commit strategy — server auto-commits utterances on silence
+        // VAD commit strategy — server auto-commits utterances on silence.
+        // The silence threshold is the dominant source of "delay before the
+        // AI replies": the server waits this long after the speaker stops
+        // before committing the segment that triggers `sendToAI`. 0.6s keeps
+        // mid-sentence pauses from committing prematurely while shaving ~400ms
+        // off every turn vs. the old 1.0s.
         let qs = "model_id=scribe_v2_realtime" +
                  "&audio_format=pcm_16000" +
                  "&commit_strategy=vad" +
                  "&language_code=en" +
-                 "&vad_silence_threshold_secs=1.0"
+                 "&vad_silence_threshold_secs=0.6"
 
         guard let url = URL(string: "wss://api.elevenlabs.io/v1/speech-to-text/realtime?\(qs)") else {
             throw TranscriptionError.unavailable
@@ -112,12 +137,17 @@ class TranscriptionManager: NSObject {
     }
 
     private func receiveLoop() {
-        webSocketTask?.receive { [weak self] result in
-            guard let self, self.webSocketTask != nil else { return }
+        guard let task = webSocketTask else { return }
+        task.receive { [weak self, weak task] result in
+            // Identity check: a straggler callback from a torn-down socket
+            // must not process messages for — or tear down — the socket
+            // that replaced it after a reconnect.
+            guard let self, let task, self.webSocketTask === task else { return }
             switch result {
             case .success(let message):
                 if case .string(let text) = message {
-                    print("[ElevenLabs] \(text.prefix(200))")
+                    // Don't log message bodies — they carry the user's
+                    // (and interviewer's) spoken words.
                     self.handleResponse(text)
                 }
                 self.receiveLoop()
@@ -125,9 +155,45 @@ class TranscriptionManager: NSObject {
             case .failure(let error):
                 print("[ElevenLabs] WebSocket error: \(error.localizedDescription)")
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isRunning else { return }
-                    self.onUpdate?("Connection error: \(error.localizedDescription)")
+                    self?.handleSocketFailure(error)
                 }
+            }
+        }
+    }
+
+    /// Reconnect with capped exponential backoff (0.5 → 1 → 2 → 4 → 4s).
+    /// Audio capture keeps running the whole time — only the WebSocket is
+    /// rebuilt — so at most the in-flight utterance is lost. The user sees
+    /// "Reconnecting…" via `onConnectionEvent`, and an error only when
+    /// `maxReconnectAttempts` straight attempts fail. Main queue only.
+    private func handleSocketFailure(_ error: Error) {
+        guard isRunning else { return }
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+
+        guard reconnectAttempts < maxReconnectAttempts else {
+            let msg = "Transcription connection lost: \(error.localizedDescription). Check your network and ElevenLabs key."
+            if let onConnectionEvent {
+                onConnectionEvent(.failed(msg))
+            } else {
+                (onError ?? onUpdate)?(msg)
+            }
+            return
+        }
+
+        reconnectAttempts += 1
+        let attempt = reconnectAttempts
+        let delay = min(0.5 * pow(2.0, Double(attempt - 1)), 4.0)
+        NSLog("[TranscriptionManager] socket failed (%@); reconnect attempt %d in %.1fs",
+              error.localizedDescription, attempt, delay)
+        onConnectionEvent?(.reconnecting(attempt: attempt))
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.isRunning, self.webSocketTask == nil else { return }
+            do {
+                try self.openWebSocket()
+            } catch {
+                self.handleSocketFailure(error)
             }
         }
     }
@@ -162,6 +228,13 @@ class TranscriptionManager: NSObject {
 
         case "session_started":
             print("[ElevenLabs] Session started")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.reconnectAttempts > 0 {
+                    self.onConnectionEvent?(.reconnected)
+                }
+                self.reconnectAttempts = 0
+            }
 
         default:
             // Catch all error types from ElevenLabs
@@ -169,7 +242,8 @@ class TranscriptionManager: NSObject {
                 let detail = msg.message ?? type
                 print("[ElevenLabs] Error: \(detail)")
                 DispatchQueue.main.async { [weak self] in
-                    self?.onUpdate?("ElevenLabs: \(detail)")
+                    guard let self else { return }
+                    (self.onError ?? self.onUpdate)?("ElevenLabs: \(detail)")
                 }
             }
         }
@@ -187,8 +261,21 @@ class TranscriptionManager: NSObject {
     // MARK: - Mic capture
 
     private func setupMicCapture() throws {
+        // Rebuild the engine on every start. The same `AVAudioEngine` can
+        // refuse to re-tap after the default input device changes (e.g.
+        // AirPods disconnect, or a previous start/stop cycle stranded the
+        // node) — `installTap` then silently produces no buffers and the
+        // mic appears dead. A fresh engine forces CoreAudio to re-resolve
+        // the current input. Mirrors the fix in `AppleTranscriber.start`.
+        audioEngine = AVAudioEngine()
         let inputNode   = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        NSLog("[TranscriptionManager] mic input format: %@ channels=%u sampleRate=%.0f",
+              inputFormat.description, inputFormat.channelCount, inputFormat.sampleRate)
+        guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
+            throw TranscriptionError.permissionDenied(
+                "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that MacOverlay has Microphone permission.")
+        }
 
         guard let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                       sampleRate: 16000,
@@ -200,12 +287,24 @@ class TranscriptionManager: NSObject {
         targetFormat = fmt
         converter    = conv
 
+        inputNode.removeTap(onBus: 0)
+        var bufferCount = 0
         // 800 frames = 50ms at 16kHz, matches ElevenLabs recommended chunk size
         inputNode.installTap(onBus: 0, bufferSize: 800, format: inputFormat) { [weak self] buf, _ in
             self?.convertAndSendMic(buf)
+            bufferCount += 1
+            if bufferCount == 1 || bufferCount % 200 == 0 {
+                NSLog("[TranscriptionManager] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+            }
         }
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+            NSLog("[TranscriptionManager] AVAudioEngine started")
+        } catch {
+            NSLog("[TranscriptionManager] AVAudioEngine.start failed: %@", error.localizedDescription)
+            throw error
+        }
     }
 
     private func convertAndSendMic(_ input: AVAudioPCMBuffer) {

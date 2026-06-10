@@ -32,26 +32,70 @@ class QuickRecorder {
 
     func start() throws {
         reset()
+        NSLog("[QuickRecorder] start")
+
+        guard let recognizer else {
+            NSLog("[QuickRecorder] SFSpeechRecognizer is nil for locale %@",
+                  Locale.current.identifier)
+            throw QuickRecorderError.recognizerUnavailable
+        }
+        guard recognizer.isAvailable else {
+            NSLog("[QuickRecorder] recognizer not available (network down?)")
+            throw QuickRecorderError.recognizerUnavailable
+        }
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults  = true
         req.requiresOnDeviceRecognition = false
         request = req
 
+        // Rebuild the engine on every start — see AppleTranscriber for the
+        // same fix. Re-tapping a stale engine after the default input
+        // device changes silently produces no audio buffers.
+        audioEngine = AVAudioEngine()
         let node = audioEngine.inputNode
-        node.installTap(onBus: 0, bufferSize: 1024, format: node.outputFormat(forBus: 0)) { [weak self] buf, _ in
+        let format = node.outputFormat(forBus: 0)
+        NSLog("[QuickRecorder] mic input format: channels=%u sampleRate=%.0f",
+              format.channelCount, format.sampleRate)
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            throw QuickRecorderError.noAudioInput
+        }
+        var bufferCount = 0
+        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             self?.request?.append(buf)
+            bufferCount += 1
+            if bufferCount == 1 || bufferCount % 200 == 0 {
+                NSLog("[QuickRecorder] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+            }
         }
         audioEngine.prepare()
         try audioEngine.start()
+        NSLog("[QuickRecorder] AVAudioEngine started")
 
-        task = recognizer?.recognitionTask(with: req) { [weak self] result, _ in
+        task = recognizer.recognitionTask(with: req) { [weak self] result, error in
+            if let error {
+                NSLog("[QuickRecorder] recognition error: %@", error.localizedDescription)
+            }
             guard let self, let result else { return }
             let text = result.bestTranscription.formattedString
             DispatchQueue.main.async {
                 self.latestText = text
                 self.onPartial?(text)
                 if result.isFinal { self.deliver() }
+            }
+        }
+        NSLog("[QuickRecorder] recognitionTask installed")
+    }
+
+    enum QuickRecorderError: LocalizedError {
+        case recognizerUnavailable
+        case noAudioInput
+        var errorDescription: String? {
+            switch self {
+            case .recognizerUnavailable:
+                return "Speech recognition is unavailable. Check your internet connection and that the system language is supported."
+            case .noAudioInput:
+                return "No audio input available. Check your default input device in System Settings → Sound → Input."
             }
         }
     }

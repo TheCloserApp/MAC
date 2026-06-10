@@ -21,15 +21,15 @@ struct PreferencesView: View {
         var icon: String {
             switch self {
             case .account:    return "person.crop.circle.badge.checkmark"
-            case .general:    return "slider.horizontal.3"
+            case .general:    return "gearshape.fill"
             case .panel:      return "rectangle.bottomthird.inset.filled"
-            case .profile:    return "person.crop.circle"
+            case .profile:    return "person.crop.circle.fill"
             case .ai:         return "sparkles"
-            case .prompts:    return "text.bubble"
-            case .memory:     return "brain"
-            case .workspaces: return "square.grid.2x2"
-            case .peer:       return "person.2"
-            case .shortcuts:  return "keyboard"
+            case .prompts:    return "text.bubble.fill"
+            case .memory:     return "brain.head.profile"
+            case .workspaces: return "square.grid.2x2.fill"
+            case .peer:       return "person.2.fill"
+            case .shortcuts:  return "keyboard.fill"
             }
         }
         /// Whether this tab should be visible in the rail. Gated tabs are
@@ -52,9 +52,9 @@ struct PreferencesView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .tracking(-0.2)
                     .foregroundColor(.primary)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 14)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
 
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(Tab.allCases.filter(\.isVisible)) { t in
@@ -65,8 +65,8 @@ struct PreferencesView: View {
 
                 Spacer()
             }
-            .frame(width: 156)
-            .background(Color.white.opacity(0.02))
+            .frame(width: 140)
+            .background(Color.white.opacity(0.03))
 
             Rectangle()
                 .fill(Color.white.opacity(0.06))
@@ -95,7 +95,8 @@ struct PreferencesView: View {
                     }
                     // Prompt library has its own internal padding, so don't
                     // double-pad it. Other tabs need the outer padding.
-                    .padding(tab == .prompts ? 0 : 18)
+                    .padding(tab == .prompts ? 0 : 14)
+                    .frame(maxWidth: 520, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
@@ -112,27 +113,24 @@ private func tabRow(_ t: Tab) -> some View {
         return Button {
             withAnimation(Design.Motion.fast) { tab = t }
         } label: {
-            HStack(spacing: 0) {
-                // Leading active rail.
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(active ? Color.accentColor : .clear)
-                    .frame(width: 2.5, height: 16)
-                    .padding(.trailing, 8)
-
+            HStack(spacing: 10) {
+                // Plain SF Symbol — same monochrome treatment as the bar
+                // icons. No colored tile, no dark background.
                 Image(systemName: t.icon)
-                    .font(.system(size: 12, weight: active ? .semibold : .regular))
-                    .foregroundColor(active ? .primary : .secondary.opacity(0.75))
-                    .frame(width: 18)
-                Text(t.rawValue)
-                    .font(.system(size: 12, weight: active ? .semibold : .regular))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(active ? .primary : .secondary)
+                    .frame(width: 20, height: 20)
+
+                Text(t.rawValue)
+                    .font(.system(size: 13, weight: active ? .semibold : .regular))
+                    .foregroundColor(active ? .primary : .primary.opacity(0.85))
                 Spacer()
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.md, style: .continuous)
-                    .fill(active ? Color.white.opacity(0.06) : .clear)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(active ? Color.accentColor.opacity(0.22) : .clear)
             )
             .contentShape(Rectangle())
         }
@@ -329,7 +327,8 @@ private func tabRow(_ t: Tab) -> some View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
                              subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
-                Spacer()
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 Picker("", selection: $vm.transcriptionPreference) {
                     ForEach(OverlayViewModel.TranscriptionPreference.allCases) { p in
                         Text(p.displayName).tag(p)
@@ -337,7 +336,7 @@ private func tabRow(_ t: Tab) -> some View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: 220)
+                .frame(maxWidth: 180)
             }
         }
 
@@ -380,7 +379,8 @@ private func tabRow(_ t: Tab) -> some View {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Generation model",
                              subtitle: "Used for the tailoring call(s). Scoring always runs on Haiku.")
-                Spacer()
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 Picker("", selection: $vm.resumeGenerationModel) {
                     ForEach(OverlayViewModel.ResumeGenerationModel.allCases) { m in
                         Text(m.displayName).tag(m)
@@ -388,12 +388,13 @@ private func tabRow(_ t: Tab) -> some View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: 280)
+                .frame(maxWidth: 200)
             }
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Generation mode",
                              subtitle: "Fast does one call. Quality runs an agent loop that verifies each edit but is ~15× more expensive.")
-                Spacer()
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
                 Picker("", selection: $vm.resumeMode) {
                     ForEach(OverlayViewModel.ResumeMode.allCases) { m in
                         Text(m.displayName).tag(m)
@@ -401,7 +402,7 @@ private func tabRow(_ t: Tab) -> some View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: 280)
+                .frame(maxWidth: 200)
             }
             Toggle(isOn: $vm.resumeSkipScoring) {
                 labelTwoLine(title: "Skip ATS scoring",
@@ -751,14 +752,12 @@ private func tabRow(_ t: Tab) -> some View {
             HStack(spacing: 6) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.secondary)
                 }
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .textCase(.uppercase)
-                    .kerning(0.5)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
             }
             if let subtitle {
                 Text(subtitle)
@@ -766,9 +765,16 @@ private func tabRow(_ t: Tab) -> some View {
                     .foregroundColor(.secondary.opacity(0.8))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            content()
+            VStack(alignment: .leading, spacing: 8) {
+                content()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
-        .padding(.bottom, 16)
+        .padding(.bottom, 14)
     }
 
     private func field(_ label: String, placeholder: String, text: Binding<String>) -> some View {

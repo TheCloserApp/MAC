@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 /// Default primary surface. Shows the active session as chat bubbles with
@@ -12,10 +13,6 @@ struct ChatSurfaceView: View {
     var body: some View {
         let session = vm.sessionStore.activeSession
         VStack(spacing: 0) {
-            if vm.sessionMode == .interview && (vm.isInterviewSession || vm.isRecording) {
-                InterviewHUD()
-                Divider().opacity(0.4)
-            }
             content(session: session)
         }
             .overlay {
@@ -91,14 +88,17 @@ struct ChatSurfaceView: View {
             return
         }
 
-        // Documents → extract text, append to input
+        // Documents → extract text, attach as a chip. The full extracted
+        // text rides along to the AI on send; only the file name shows in
+        // the chat bubble (and as a pending chip in the input bar).
         if ResumeImporter.supportedExtensions.contains(ext) {
             do {
                 let text = try ResumeImporter.importFile(url: url)
                 let name = url.lastPathComponent
-                let prefix = vm.manualInput.isEmpty ? "" : "\n\n"
                 vm.showManualInput = true
-                vm.manualInput += "\(prefix)[Attached \(name)]\n\n\(text)"
+                vm.pendingAttachments.append(
+                    OverlayViewModel.PendingAttachment(name: name, extractedText: text)
+                )
             } catch {
                 vm.statusMessage = "Error reading \(url.lastPathComponent): \(error.localizedDescription)"
             }
@@ -134,11 +134,35 @@ struct ChatSurfaceView: View {
             }
 
             if session.turns.isEmpty && !vm.isSendingToAI && vm.aiResponse.isEmpty {
-                emptyState
+                if showsContinueButton(session: session) {
+                    // Empty session that's still resumable (a previously-
+                    // started interview / call that never got a message).
+                    // Replace the starter cards with the continue
+                    // affordance — the cards don't apply once a session
+                    // has a kind tied to a live flow.
+                    resumableEmptyState(session: session)
+                } else {
+                    emptyState
+                }
             } else {
                 conversationView(session: session)
             }
         }
+    }
+
+    /// Hero header + Continue-session button for empty sessions tagged as
+    /// interview / regular-call. Lets the user immediately re-enter the
+    /// paused-live state without having to type anything first.
+    private func resumableEmptyState(session: ChatSession) -> some View {
+        VStack(spacing: Design.Space.lg) {
+            heroHeader
+            continueSessionRow(session: session)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, Design.Space.xl)
+        .padding(.vertical, Design.Space.lg)
     }
 
     // MARK: - Live transcript
@@ -153,6 +177,13 @@ struct ChatSurfaceView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
+                    // Inline timer sits flush against the transcription
+                    // text — same line as the words being captured —
+                    // instead of in its own row. Stays visible while
+                    // paused so the user sees the frozen duration.
+                    if vm.isInterviewSession {
+                        LiveSessionTimer()
+                    }
                     Text(placeholderOrTranscription)
                         .font(Design.Font.body)
                         .foregroundStyle(vm.transcription.isEmpty
@@ -170,7 +201,9 @@ struct ChatSurfaceView: View {
                     HStack(spacing: 4) {
                         Image(systemName: "mic.fill")
                             .font(.system(size: 8))
-                        Text("Mic still on — keep speaking and it'll transcribe in the background.")
+                        Text(vm.transcription.isEmpty
+                             ? "Mic still on — keep speaking and it'll transcribe in the background."
+                             : "Queued — sends automatically when this answer finishes.")
                             .font(Design.Font.micro)
                     }
                     .foregroundColor(.secondary)
@@ -361,7 +394,7 @@ struct ChatSurfaceView: View {
     private func conversationView(session: ChatSession) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Design.Space.md) {
+                LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(session.turns) { turn in
                         TurnBubble(turn: turn,
                                    canRetry: turn.id == session.turns.last?.id
@@ -369,23 +402,78 @@ struct ChatSurfaceView: View {
                                    onRetry: { vm.retryLastResponse() })
                             .id(turn.id)
                     }
+                    if showsContinueButton(session: session) {
+                        continueSessionRow(session: session)
+                    }
+                    // Sentinel pinned to the bottom of the stack. Streaming
+                    // scroll snaps to this fixed id once per turn instead of
+                    // chasing a moving id every chunk — which was the source
+                    // of the visible "breaking" jitter.
+                    Color.clear.frame(height: 1).id("bottom-anchor")
                 }
-                .padding(.horizontal, Design.Space.lg)
-                .padding(.vertical, Design.Space.lg)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
             }
             .onChange(of: session.turns.count) { _, _ in
-                if let last = session.turns.last?.id {
-                    withAnimation(Design.Motion.standard) {
-                        proxy.scrollTo(last, anchor: .bottom)
-                    }
-                }
+                proxy.scrollTo("bottom-anchor", anchor: .bottom)
             }
-            .onChange(of: session.turns.last?.content.count) { _, _ in
-                if let last = session.turns.last?.id {
-                    proxy.scrollTo(last, anchor: .bottom)
-                }
+            // Throttle streaming-scroll to once every ~120ms via a coarse
+            // length bucket. Per-character scrollTo runs faster than the
+            // layout settles, which is what made the text look like it was
+            // tearing during streaming.
+            .onChange(of: (session.turns.last?.content.count ?? 0) / 32) { _, _ in
+                proxy.scrollTo("bottom-anchor", anchor: .bottom)
             }
         }
+    }
+
+    /// Whether to render the inline "Continue session" affordance.
+    /// Shows when the session is a resumable kind (interview /
+    /// regular-call / legacy normal) and no live session is currently
+    /// running — applies to both empty sessions (resumable shell with
+    /// no turns yet) and sessions with prior messages.
+    private func showsContinueButton(session: ChatSession) -> Bool {
+        guard !vm.isInterviewSession else { return false }
+        switch session.kind {
+        case .interview, .regularCall, .normal: return true
+        case .quickAsk:                          return false
+        }
+    }
+
+    /// "Continue session" affordance pinned after the last assistant
+    /// turn. Clicking enters paused-live state — the bar's call
+    /// controls (text + model + play + stop) appear so the user can
+    /// resume the mic or pick up typing.
+    private func continueSessionRow(session: ChatSession) -> some View {
+        let label: String = {
+            switch session.kind {
+            case .interview:                 return "Continue interview"
+            case .regularCall, .normal:      return "Continue call"
+            case .quickAsk:                  return "Continue"
+            }
+        }()
+        return HStack {
+            Spacer()
+            Button {
+                vm.enterPausedLiveState()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(label)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Design.Accent.blue))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .help("Reopen the call controls in the bar — the mic stays off until you hit play.")
+            Spacer()
+        }
+        .padding(.top, 12)
     }
 }
 
@@ -395,145 +483,120 @@ private struct TurnBubble: View {
     let turn: ChatTurn
     var canRetry: Bool = false
     var onRetry: () -> Void = {}
-    @State private var hovering = false
     @State private var copied = false
+    @State private var isSpeaking = false
+    @State private var feedback: Feedback = .none
+
+    private enum Feedback { case none, up, down }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             if turn.role == .user {
-                Spacer(minLength: 48)
+                Spacer(minLength: 40)
                 userContent
             } else {
                 assistantContent
-                Spacer(minLength: 24)
+                Spacer(minLength: 0)
             }
         }
-        .onHover { hovering = $0 }
     }
 
-    /// User: compact pill-shaped bubble, accent-tinted, right-aligned.
+    /// User message: ChatGPT-style monochrome grey pill, right-aligned.
+    /// Attachments render as small file chips above the text. No metadata
+    /// row — the bubble stands on its own, matching the reference UI.
     private var userContent: some View {
-        VStack(alignment: .trailing, spacing: 3) {
-            Text(turn.content)
-                .font(Design.Font.body)
-                .foregroundColor(.primary)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color.accentColor.opacity(0.18))
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.accentColor.opacity(0.22), lineWidth: 0.5)
-                )
-
-            HStack(spacing: 4) {
-                if hovering {
-                    Button { copy() } label: {
-                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 9))
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Copy")
-                }
-                Text(relativeTime)
-                    .font(Design.Font.micro.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .trailing, spacing: 6) {
+            if let names = turn.attachments, !names.isEmpty {
+                FlowAttachmentRow(names: names, alignment: .trailing)
             }
-            .frame(height: 12)
+            if !turn.content.isEmpty {
+                Text(turn.content)
+                    .font(Design.Font.body)
+                    .foregroundColor(.primary)
+                    .textSelection(.enabled)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.white.opacity(0.07))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+                    )
+            }
         }
     }
 
-    /// Assistant: no avatar, no bubble. An eyebrow label sits above the
-    /// markdown text — looks like a doc/spec entry rather than a chat reply.
-    /// The label reflects the *actual* model that produced this turn (read
-    /// from `turn.model`) — switching the model picker won't retroactively
-    /// rewrite past replies.
+    /// Assistant: plain markdown text on the surface, with a ChatGPT-style
+    /// row of action icons underneath — copy, read-aloud, thumbs up/down,
+    /// regenerate. The row is always visible once the reply has content.
     private var assistantContent: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(modelLabel)
-                .font(Design.Font.eyebrow)
-                .tracking(0.4)
-                .foregroundColor(.secondary.opacity(0.85))
-
+        VStack(alignment: .leading, spacing: 8) {
             if turn.content.isEmpty {
                 TypingIndicatorView()
                     .padding(.vertical, 4)
             } else {
                 MarkdownResponseView(text: turn.content)
+                actionRow
             }
-
-            if !turn.content.isEmpty {
-                HStack(spacing: 6) {
-                    Text(relativeTime)
-                        .font(Design.Font.micro.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                    if hovering {
-                        Button { copy() } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                                    .font(.system(size: 9))
-                                Text(copied ? "Copied" : "Copy")
-                                    .font(Design.Font.micro)
-                            }
-                            .foregroundColor(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.opacity.combined(with: .offset(x: -4, y: 0)))
-                    }
-                    if canRetry {
-                        Button(action: onRetry) {
-                            HStack(spacing: 3) {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 9, weight: .semibold))
-                                Text("Retry")
-                                    .font(Design.Font.micro)
-                            }
-                            .foregroundColor(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.1))
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .frame(height: 14)
-                .animation(Design.Motion.fast, value: hovering)
-            }
-        }
-        .padding(.leading, 10)
-        .overlay(alignment: .leading) {
-            // Subtle vertical rail — lights up while streaming.
-            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                .fill(turn.content.isEmpty
-                      ? Color.accentColor.opacity(0.55)
-                      : Color.white.opacity(0.10))
-                .frame(width: 2)
-                .padding(.vertical, 2)
         }
     }
 
-    private var relativeTime: String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .abbreviated
-        return f.localizedString(for: turn.timestamp, relativeTo: Date())
+    private var actionRow: some View {
+        HStack(spacing: 6) {
+            actionButton(copied ? "checkmark" : "square.on.square",
+                         help: copied ? "Copied" : "Copy",
+                         active: copied) { copy() }
+            actionButton(isSpeaking ? "speaker.wave.2.fill" : "speaker.wave.2",
+                         help: "Read aloud",
+                         active: isSpeaking) { toggleSpeak() }
+            actionButton(feedback == .up ? "hand.thumbsup.fill" : "hand.thumbsup",
+                         help: "Good response",
+                         active: feedback == .up) {
+                feedback = feedback == .up ? .none : .up
+            }
+            actionButton(feedback == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown",
+                         help: "Bad response",
+                         active: feedback == .down) {
+                feedback = feedback == .down ? .none : .down
+            }
+            actionButton("arrow.clockwise", help: "Regenerate") { onRetry() }
+        }
+        .animation(Design.Motion.fast, value: copied)
+        .animation(Design.Motion.fast, value: isSpeaking)
+        .animation(Design.Motion.fast, value: feedback)
     }
 
-    /// Display name for the model that produced this turn. Resolves the
-    /// stamped `turn.model` id against `OverlayViewModel.availableModels`
-    /// so users see "GPT-4o" / "Sonnet 4.6" etc. — not a hardcoded
-    /// "Claude". Falls back to a generic "Assistant" for legacy turns
-    /// loaded from disk before this field was introduced.
-    private var modelLabel: String {
-        guard let id = turn.model else { return "Assistant" }
-        if let match = OverlayViewModel.availableModels.first(where: { $0.id == id }) {
-            return match.name
+    /// One icon in the assistant action row. Hover brightens; `active`
+    /// paints it in the primary tint (e.g. while reading aloud).
+    private func actionButton(_ icon: String,
+                              help: String,
+                              active: Bool = false,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundColor(active ? .primary : .secondary)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
         }
-        return id
+        .buttonStyle(.plain)
+        .hoverHighlight(Color.white.opacity(0.06))
+        .help(help)
+    }
+
+    private func toggleSpeak() {
+        if isSpeaking {
+            SpeechReader.shared.stop()
+            isSpeaking = false
+        } else {
+            isSpeaking = true
+            SpeechReader.shared.speak(turn.content) {
+                isSpeaking = false
+            }
+        }
     }
 
     private func copy() {
@@ -543,6 +606,143 @@ private struct TurnBubble: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             withAnimation(Design.Motion.fast) { copied = false }
         }
+    }
+}
+
+// MARK: - Read-aloud
+
+/// Thin wrapper around `AVSpeechSynthesizer` so any assistant bubble can
+/// speak its text. Single shared instance — starting a new utterance stops
+/// whatever was playing. The `onFinish` callback lets the calling bubble
+/// reset its speaker icon when playback ends or is cancelled.
+final class SpeechReader: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    static let shared = SpeechReader()
+
+    // Synth + callback are only ever touched from the main thread (button
+    // taps + AVSpeechSynthesizer's main-queue delegate callbacks), so the
+    // non-Sendable synth is safe behind @unchecked Sendable.
+    private let synth = AVSpeechSynthesizer()
+    private var onFinish: (() -> Void)?
+
+    override init() {
+        super.init()
+        synth.delegate = self
+    }
+
+    func speak(_ text: String, onFinish: @escaping () -> Void) {
+        // Clear the previous callback before cancelling so the incoming
+        // utterance's didCancel doesn't fire the new bubble's reset.
+        self.onFinish = nil
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        self.onFinish = onFinish
+        let utterance = AVSpeechUtterance(string: text)
+        synth.speak(utterance)
+    }
+
+    func stop() {
+        onFinish = nil
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                           didFinish utterance: AVSpeechUtterance) {
+        let cb = onFinish
+        onFinish = nil
+        cb?()
+    }
+}
+
+// MARK: - Attachment chip row
+
+/// Compact row of file chips shown above a user message. Each chip just
+/// shows the file icon + name — the actual extracted text was sent to the
+/// AI as part of the prompt but is intentionally NOT rendered here.
+struct FlowAttachmentRow: View {
+    let names: [String]
+    let alignment: HorizontalAlignment
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if alignment == .trailing { Spacer(minLength: 0) }
+            ForEach(names, id: \.self) { name in
+                HStack(spacing: 5) {
+                    Image(systemName: iconFor(name))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                )
+            }
+            if alignment == .leading { Spacer(minLength: 0) }
+        }
+    }
+
+    private func iconFor(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf":          return "doc.richtext.fill"
+        case "docx", "doc":  return "doc.text.fill"
+        case "rtf":          return "doc.text.fill"
+        case "md", "txt":    return "doc.plaintext.fill"
+        default:             return "doc.fill"
+        }
+    }
+}
+
+// MARK: - Live session timer (inline)
+
+/// Tiny mm:ss / h:mm:ss counter shown on the live transcript strip while
+/// an interview / call session is active. Reads `interviewElapsedSeconds`
+/// + the current running phase off the view model so pause/resume keeps
+/// the value frozen at its current state instead of restarting from 0.
+private struct LiveSessionTimer: View {
+    @Environment(OverlayViewModel.self) private var vm
+    @State private var tick = Date()
+    private let ticker = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let paused = vm.isInterviewPaused
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(paused ? Color.secondary : Color.red)
+                .frame(width: 5, height: 5)
+                .opacity(0.9)
+            Text(formatted)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background((paused ? Color.secondary : Color.red).opacity(0.10))
+        .clipShape(Capsule())
+        .onReceive(ticker) { d in tick = d }
+    }
+
+    private var formatted: String {
+        let liveSlice: TimeInterval
+        if let started = vm.interviewRunningSince {
+            liveSlice = tick.timeIntervalSince(started)
+        } else {
+            liveSlice = 0
+        }
+        let secs = Int(vm.interviewElapsedSeconds + liveSlice)
+        let h = secs / 3600, m = (secs % 3600) / 60, s = secs % 60
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%02d:%02d", m, s)
     }
 }
 

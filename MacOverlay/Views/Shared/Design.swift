@@ -73,11 +73,14 @@ enum Design {
         /// Punchier spring for accents
         static let pop      = Animation.spring(response: 0.28, dampingFraction: 0.75)
         /// Smooth ease-out for large reveals (pill → composer expansion).
-        /// Matches the NSPanel's `CAMediaTimingFunction(name: .easeOut)`
-        /// at 0.32s so the SwiftUI content and the NSPanel edge move in
-        /// lockstep — a spring here desyncs from the panel and the bar
-        /// contents visibly lag the capsule edge.
-        static let expand   = Animation.easeOut(duration: 0.32)
+        /// MUST use the exact same bezier as the NSPanel's
+        /// `CAMediaTimingFunction(name: .easeOut)` — which is the Apple
+        /// curve `(0.0, 0.0, 0.58, 1.0)` — otherwise the SwiftUI content
+        /// and the AppKit panel edge animate at slightly different rates
+        /// and the bar contents visibly drift / "jump" mid-resize.
+        /// `Animation.easeOut` does NOT necessarily use that curve, so
+        /// the explicit `timingCurve` form is what guarantees lockstep.
+        static let expand   = Animation.timingCurve(0.0, 0.0, 0.58, 1.0, duration: 0.32)
     }
 
     // MARK: - Shadow
@@ -138,6 +141,7 @@ extension View {
     /// `glassCard()`.
     func cardSurface(topRadius: CGFloat,
                      bottomRadius: CGFloat,
+                     opacity: Double = 1.0,
                      shadow: Design.ShadowStyle = Design.Shadow.raised) -> some View {
         let shape = UnevenRoundedRectangle(
             topLeadingRadius: topRadius,
@@ -147,7 +151,7 @@ extension View {
             style: .continuous
         )
         return self
-            .background { shape.fill(Design.Surface.shellFill) }
+            .background { shape.fill(Design.Surface.shellFill).opacity(opacity) }
             .overlay { shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75) }
             .clipShape(shape)
             .designShadow(shadow)

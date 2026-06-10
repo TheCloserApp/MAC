@@ -87,12 +87,15 @@ final class AIController {
                     switch event {
                     case .chunk(let text):
                         accumulated += text
-                        // Per-chunk: drive the chat surface (session.turns).
-                        vm.sessionStore.appendChunk(text, to: assistantTurnID)
-                        // Throttled: secondary views observing vm.aiResponse
-                        // (status pill, response panel) only need ~30Hz.
+                        // Batched at ~30Hz: each store write copies the
+                        // session value, invalidates every observer, and
+                        // re-parses the turn's markdown. Per-token writes
+                        // made long answers feel slower the longer they
+                        // got (O(n²) total parse work).
                         let now = ContinuousClock.now
                         if now - self.lastResponseFlushAt >= .milliseconds(33) {
+                            vm.sessionStore.setStreamingContent(accumulated,
+                                                                turnID: assistantTurnID)
                             vm.aiResponse = accumulated
                             self.lastResponseFlushAt = now
                         }
@@ -102,8 +105,9 @@ final class AIController {
                                                           outputTokens: outTok)
                     }
                 }
-                // Final flush so the trailing tokens reach throttled observers
-                // even if they landed inside the last 33ms window.
+                // Final flush so the trailing tokens land even if they
+                // arrived inside the last 33ms window.
+                vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
                 if vm.aiResponse != accumulated {
                     vm.aiResponse = accumulated
                 }
@@ -123,12 +127,19 @@ final class AIController {
                 let errMsg = "Error: \(error.localizedDescription)"
                 let display = accumulated.isEmpty ? errMsg : accumulated + "\n\n" + errMsg
                 vm.aiResponse = display
-                vm.sessionStore.appendChunk(accumulated.isEmpty ? errMsg : "\n\n" + errMsg,
-                                            to: assistantTurnID)
+                // Replace (not append): the throttled store may not have
+                // the full accumulated text yet.
+                vm.sessionStore.setStreamingContent(display, turnID: assistantTurnID)
             }
             vm.isSendingToAI = false
             self.streamingTask = nil
-            if !streamFailed { self.lastRetry = nil }
+            if !streamFailed {
+                self.lastRetry = nil
+                // Anything the interviewer said while we were streaming is
+                // queued in the live transcript — send it now instead of
+                // waiting for a silence boundary that may never come.
+                vm.flushPendingLiveTranscript()
+            }
         }
     }
 

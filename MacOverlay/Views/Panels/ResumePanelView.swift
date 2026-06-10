@@ -11,6 +11,13 @@ struct ResumePanelView: View {
     @State private var isDropTargeted = false
     @State private var tab: Tab = .build
     @State private var viewingGenerationID: UUID? = nil
+    /// Hides the extracted résumé text body by default so the panel
+    /// reads as a tight summary card; the user opts in to view / edit
+    /// the raw text via a "Show extracted text" toggle.
+    @State private var showsResumeText = false
+    /// Same idea for the freshly-generated résumé output — the text
+    /// dump stays collapsed unless the user explicitly asks to see it.
+    @State private var showsGeneratedText = false
 
     enum Tab: Hashable { case build, history }
 
@@ -119,112 +126,6 @@ struct ResumePanelView: View {
         } catch {
             importError = error.localizedDescription
         }
-    }
-
-    @ViewBuilder
-    private var resumePicker: some View {
-        let store = vm.resumeStore
-        HStack(spacing: 8) {
-            Image(systemName: "doc.text")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-
-            if store.presets.isEmpty {
-                Text("No saved resumes yet")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            } else {
-                Menu {
-                    ForEach(store.presets) { p in
-                        Button {
-                            store.activePresetID = p.id
-                        } label: {
-                            HStack {
-                                Text(p.name)
-                                if p.id == store.activePresetID {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(store.activePreset?.name ?? "Select resume")
-                            .font(.system(size: 11, weight: .medium))
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 8))
-                    }
-                    .foregroundColor(.primary)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-            }
-
-            Spacer()
-
-            Button { openUploadPanel() } label: {
-                Image(systemName: "arrow.up.doc")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Upload PDF / DOCX / RTF / TXT")
-
-            Button {
-                showResumeLibrary.toggle()
-            } label: {
-                Image(systemName: showResumeLibrary ? "list.bullet.circle.fill" : "list.bullet.circle")
-                    .font(.system(size: 12))
-                    .foregroundColor(showResumeLibrary ? .accentColor : .secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Manage resumes")
-        }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 6)
-    }
-
-    @ViewBuilder
-    private var resumeLibrarySection: some View {
-        let store = vm.resumeStore
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Resumes")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(.secondary)
-                Spacer()
-                Button { openUploadPanel() } label: {
-                    Label("Upload", systemImage: "arrow.up.doc")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.accentColor)
-                .help("Import PDF, DOCX, RTF, TXT or MD")
-
-                Button {
-                    let fresh = store.add(name: "Untitled Resume", content: "")
-                    editingResumeID = fresh.id
-                    draftResumeName = fresh.name
-                    store.activePresetID = fresh.id
-                } label: {
-                    Label("Add", systemImage: "plus")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(.accentColor)
-            }
-            .padding(.horizontal, 12)
-
-            VStack(spacing: 3) {
-                ForEach(store.presets) { p in
-                    resumeLibraryRow(p)
-                }
-            }
-            .padding(.horizontal, 10)
-        }
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.03))
     }
 
     @ViewBuilder
@@ -348,17 +249,400 @@ struct ResumePanelView: View {
 
     @ViewBuilder
     private var buildTabContent: some View {
-        resumePicker
-        if showResumeLibrary {
-            resumeLibrarySection
-        } else {
-            resumeBaseSection
+        VStack(alignment: .leading, spacing: 18) {
+            if let err = importError { importErrorBanner(err) }
+            resumeCard
+            jdCard
+            generateRow
+            scoreSection
+            outputSection
         }
-        if let err = importError { importErrorBanner(err) }
-        jdSection
-        generateButton
-        scoreSection
-        outputSection
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+    }
+
+    // MARK: - Card-style sections (Build tab)
+
+    /// Résumé card — picker chip, preview/upload/manage actions, and either
+    /// the editable text body for the active preset or the inline library
+    /// list. Matches the Interview surface's "section card" pattern so the
+    /// two flows visually rhyme.
+    @ViewBuilder
+    private var resumeCard: some View {
+        sectionCard(title: "Résumé", systemImage: "doc.richtext") {
+            VStack(alignment: .leading, spacing: 10) {
+                resumeCardToolbar
+                if showResumeLibrary {
+                    resumeLibraryCardBody
+                } else {
+                    resumeBaseCardBody
+                }
+            }
+        }
+    }
+
+    /// Top row of the résumé card — the picker chip + the action buttons.
+    private var resumeCardToolbar: some View {
+        let store = vm.resumeStore
+        return HStack(spacing: 6) {
+            Menu {
+                if store.presets.isEmpty {
+                    Text("No saved resumes yet").font(.caption)
+                } else {
+                    ForEach(store.presets) { p in
+                        Button {
+                            store.activePresetID = p.id
+                        } label: {
+                            HStack {
+                                Text(p.name)
+                                if p.id == store.activePresetID {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(store.activePreset?.name ?? "Select résumé")
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(Color.white.opacity(0.04)))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(store.presets.isEmpty)
+
+            cardChipButton(systemImage: "eye", label: "Preview",
+                           disabled: !canPreviewActiveResume,
+                           action: previewActiveResume)
+                .help("Preview the active résumé (original file)")
+            cardChipButton(systemImage: "arrow.up.doc", label: "Upload",
+                           action: openUploadPanel)
+                .help("Upload PDF / DOCX / RTF / TXT")
+            cardChipButton(
+                systemImage: showResumeLibrary ? "list.bullet.circle.fill" : "list.bullet.circle",
+                label: showResumeLibrary ? "Hide list" : "Manage",
+                highlighted: showResumeLibrary,
+                action: { showResumeLibrary.toggle() }
+            )
+            .help("Manage saved résumés")
+
+            Spacer()
+        }
+    }
+
+    /// Standard chip button used in the card toolbars — keeps every action
+    /// chip visually identical regardless of which icon/label it carries.
+    private func cardChipButton(systemImage: String,
+                                label: String,
+                                disabled: Bool = false,
+                                highlighted: Bool = false,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11, weight: .medium))
+                Text(label)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .foregroundColor(disabled ? .secondary.opacity(0.5)
+                             : (highlighted ? .white : .primary))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(
+                highlighted ? Design.Accent.blue : Color.white.opacity(0.04)
+            ))
+            .overlay(Capsule().strokeBorder(
+                highlighted ? Design.Accent.blue.opacity(0.40) : Color.white.opacity(0.10),
+                lineWidth: 0.5
+            ))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+
+    /// The active résumé's editable text body. Hidden by default once
+    /// the preset has content — long résumés flood the panel with
+    /// monospaced text the user already imported on purpose. The
+    /// `showsResumeText` toggle reveals the full editor on demand.
+    /// Empty presets always show the editor so the user has somewhere
+    /// to paste.
+    @ViewBuilder
+    private var resumeBaseCardBody: some View {
+        let store = vm.resumeStore
+        if let preset = store.activePreset {
+            if preset.content.isEmpty || showsResumeText {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !preset.content.isEmpty {
+                        showTextToggle(open: true,
+                                       count: preset.content.count,
+                                       label: "extracted text")
+                    }
+                    cardTextEditor(
+                        placeholder: "Paste your résumé here — it will be saved to \"\(preset.name)\"",
+                        text: Binding(
+                            get: { store.activePreset?.content ?? "" },
+                            set: { newValue in
+                                var updated = preset
+                                updated.content = newValue
+                                store.update(updated)
+                            }
+                        ),
+                        minHeight: preset.content.isEmpty ? 80 : 60,
+                        maxHeight: 160
+                    )
+                }
+            } else {
+                resumeCollapsedSummary(preset: preset)
+            }
+        } else {
+            Button {
+                let fresh = store.add(name: "My Résumé", content: "")
+                store.activePresetID = fresh.id
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Create your first résumé")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Design.Accent.blue))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// Compact summary card shown in place of the raw resume text. Gives
+    /// the user enough signal that the resume is loaded (filename, size)
+    /// without flooding the panel; one tap on "Show extracted text"
+    /// reveals the full editor.
+    private func resumeCollapsedSummary(preset: ResumePreset) -> some View {
+        let chars = preset.content.count
+        let words = preset.content
+            .split(whereSeparator: { $0.isWhitespace })
+            .count
+        return HStack(spacing: 10) {
+            Image(systemName: "doc.text.fill")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(preset.originalFilename ?? preset.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Text("\(words) words · \(chars) chars — text hidden by default")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            showTextToggle(open: false,
+                           count: preset.content.count,
+                           label: "extracted text")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+
+    /// "Show extracted text" / "Hide extracted text" pill button.
+    private func showTextToggle(open: Bool, count: Int, label: String) -> some View {
+        Button {
+            showsResumeText.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: open ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(open ? "Hide \(label)" : "Show \(label)")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Inline résumé library — rendered inside the card when the user
+    /// taps "Manage" so they don't have to leave the Build tab.
+    @ViewBuilder
+    private var resumeLibraryCardBody: some View {
+        let store = vm.resumeStore
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Saved résumés")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button {
+                    let fresh = store.add(name: "Untitled Résumé", content: "")
+                    editingResumeID = fresh.id
+                    draftResumeName = fresh.name
+                    store.activePresetID = fresh.id
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
+                        Text("Add").font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 2)
+
+            VStack(spacing: 3) {
+                if store.presets.isEmpty {
+                    Text("No saved résumés yet — drop a file on this panel or hit Upload.")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 6)
+                } else {
+                    ForEach(store.presets) { p in
+                        resumeLibraryRow(p)
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
+
+    /// Job-description card — single multi-line text area + the
+    /// Ctrl+Opt+R hint.
+    @ViewBuilder
+    private var jdCard: some View {
+        @Bindable var vm = vm
+        sectionCard(title: "Job Description", systemImage: "text.alignleft") {
+            VStack(alignment: .leading, spacing: 6) {
+                cardTextEditor(
+                    placeholder: "Paste the job description here, or copy it and press Ctrl+Opt+R from anywhere.",
+                    text: $vm.resumeJD,
+                    minHeight: 100,
+                    maxHeight: 180
+                )
+                Text("Tip: Ctrl+Opt+R pastes the clipboard JD and generates in one shot.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+        }
+    }
+
+    /// Big primary button at the bottom of the card stack — drives
+    /// `vm.generateResume()` and shows the progress state inline.
+    private var generateRow: some View {
+        let disabled = vm.resumeJD.isEmpty || vm.currentResumeText.isEmpty
+            || vm.isGeneratingResume || vm.apiKey.isEmpty
+        return HStack {
+            Spacer()
+            Button { vm.generateResume() } label: {
+                HStack(spacing: 6) {
+                    if vm.isGeneratingResume {
+                        ProgressView().scaleEffect(0.6)
+                    } else {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 11, weight: .bold))
+                    }
+                    Text(vm.isGeneratingResume ? "Generating…" : "Generate résumé")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(disabled ? Color.secondary : Design.Accent.blue))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .disabled(disabled)
+        }
+    }
+
+    // MARK: - Reusable card scaffolding (mirrors InterviewSetupForm)
+
+    @ViewBuilder
+    private func sectionCard<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+            }
+            content()
+        }
+    }
+
+    private func cardTextEditor(placeholder: String,
+                                text: Binding<String>,
+                                minHeight: CGFloat,
+                                maxHeight: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.04))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            TextEditor(text: text)
+                .scrollContentBackground(.hidden)
+                .font(.system(size: 12))
+                .padding(8)
+                .frame(minHeight: minHeight, maxHeight: maxHeight)
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary.opacity(0.5))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 14)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    // MARK: - Preview the active résumé
+
+    /// Can we Quick Look the active résumé? True if there's an active preset
+    /// with either the original DOCX bytes attached or non-empty text we can
+    /// dump to a .txt fallback.
+    private var canPreviewActiveResume: Bool {
+        guard let p = vm.resumeStore.activePreset else { return false }
+        if p.originalDOCX != nil { return true }
+        return !p.content.isEmpty
+    }
+
+    /// Spin up a Quick Look preview for the active résumé. Prefers the
+    /// original DOCX bytes (so formatting renders correctly); falls back
+    /// to a plain-text dump for résumés imported from PDF/RTF/TXT where
+    /// we didn't retain the source.
+    private func previewActiveResume() {
+        guard let p = vm.resumeStore.activePreset else { return }
+        if let docx = p.originalDOCX {
+            let filename = p.originalFilename ?? "\(p.name).docx"
+            ResumePreviewHelper.shared.showDOCX(docx, suggestedFilename: filename)
+        } else if !p.content.isEmpty {
+            ResumePreviewHelper.shared.showPlainText(p.content, suggestedName: p.name)
+        }
     }
 
     @ViewBuilder
@@ -378,134 +662,54 @@ struct ResumePanelView: View {
 
     @ViewBuilder
     private var generationsList: some View {
-        if vm.resumeStore.generations.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 22, weight: .light))
-                    .foregroundStyle(.tertiary)
-                Text("No generations yet")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
-                Text("Generate a tailored resume from the Build tab and it'll show up here with a before/after score.")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 24)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 28)
-        } else {
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(vm.resumeStore.generations) { g in
-                        GenerationRow(
-                            generation: g,
-                            onOpen: { viewingGenerationID = g.id },
-                            onDelete: { vm.resumeStore.deleteGeneration(id: g.id) }
-                        )
-                    }
+        VStack(alignment: .leading, spacing: 18) {
+            sectionCard(title: "Past generations", systemImage: "clock.arrow.circlepath") {
+                if vm.resumeStore.generations.isEmpty {
+                    generationsEmptyCardBody
+                } else {
+                    generationsListCardBody
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
             }
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
     }
 
     @ViewBuilder
-    private var resumeBaseSection: some View {
-        let store = vm.resumeStore
-        let activeName = store.activePreset?.name ?? "Resume"
-        let activeContent = store.activePreset?.content ?? ""
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(activeName)
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                if !activeContent.isEmpty {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundColor(.green)
-                }
-                Spacer()
-                Text("Edits auto-save to this preset")
-                    .font(.caption2)
-                    .foregroundColor(.secondary.opacity(0.7))
-            }
-            .padding(.horizontal, 12)
+    private var generationsEmptyCardBody: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("No generations yet")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.primary)
+            Text("Generate a tailored résumé from the Build tab — every run lands here with a before/after score.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 22)
+        .padding(.horizontal, 14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03)))
+        .overlay(RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+    }
 
-            if let preset = store.activePreset {
-                ResumeInputSection(
-                    placeholder: "Paste your resume here — it will be saved to \"\(preset.name)\"",
-                    text: Binding(
-                        get: { store.activePreset?.content ?? "" },
-                        set: { newValue in
-                            var updated = preset
-                            updated.content = newValue
-                            store.update(updated)
-                        }
-                    ),
-                    height: preset.content.isEmpty ? 80 : 44
+    @ViewBuilder
+    private var generationsListCardBody: some View {
+        VStack(spacing: 6) {
+            ForEach(vm.resumeStore.generations) { g in
+                GenerationRow(
+                    generation: g,
+                    onOpen: { viewingGenerationID = g.id },
+                    onDelete: { vm.resumeStore.deleteGeneration(id: g.id) }
                 )
-            } else {
-                Button("Create your first resume") {
-                    let fresh = store.add(name: "My Resume", content: "")
-                    store.activePresetID = fresh.id
-                }
-                .font(.caption)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
             }
         }
-    }
-
-    @ViewBuilder
-    private var jdSection: some View {
-        @Bindable var vm = vm
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text("Job Description")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("Ctrl+Opt+R — paste clipboard JD & generate")
-                    .font(.caption2)
-                    .foregroundColor(.secondary.opacity(0.6))
-            }
-            .padding(.horizontal, 12)
-            ResumeInputSection(
-                placeholder: "Paste job description here, or copy it and press Ctrl+Opt+R from anywhere",
-                text: $vm.resumeJD,
-                height: 80
-            )
-        }
-        .padding(.top, 4)
-    }
-
-    private var generateButton: some View {
-        let disabled = vm.resumeJD.isEmpty || vm.currentResumeText.isEmpty
-            || vm.isGeneratingResume || vm.apiKey.isEmpty
-        return HStack {
-            Spacer()
-            Button { vm.generateResume() } label: {
-                HStack(spacing: 6) {
-                    if vm.isGeneratingResume { ProgressView().scaleEffect(0.65) }
-                    Text(vm.isGeneratingResume ? "Generating…" : "Generate Resume")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(disabled ? Color.secondary : Color.accentColor)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .buttonStyle(.plain)
-            .disabled(disabled)
-            Spacer()
-        }
-        .padding(.vertical, 8)
     }
 
     @ViewBuilder
@@ -562,14 +766,42 @@ struct ResumePanelView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                 } else {
-                    ScrollView {
-                        Text(vm.resumeOutput)
-                            .font(.system(size: 11, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
-                            .padding(10)
+                    // Generated résumé body stays collapsed by default —
+                    // most users just preview / drag the DOCX without
+                    // ever needing to read the raw text. Toggle reveals
+                    // the monospaced dump for verification.
+                    HStack {
+                        Button {
+                            showsGeneratedText.toggle()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: showsGeneratedText ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
+                                Text(showsGeneratedText ? "Hide generated text" : "Show generated text")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.04)))
+                            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
                     }
-                    .frame(minHeight: 100, maxHeight: 200)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+
+                    if showsGeneratedText {
+                        ScrollView {
+                            Text(vm.resumeOutput)
+                                .font(.system(size: 11, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .padding(10)
+                        }
+                        .frame(minHeight: 100, maxHeight: 200)
+                    }
 
                     if let url = vm.resumeFileURL {
                         ResumeDragBadge(url: url)
@@ -597,32 +829,6 @@ struct ResumePanelView: View {
 }
 
 // MARK: - Subviews
-
-private struct ResumeInputSection: View {
-    let placeholder: String
-    @Binding var text: String
-    let height: CGFloat
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            if text.isEmpty {
-                Text(placeholder)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary.opacity(0.5))
-                    .padding(8)
-                    .allowsHitTesting(false)
-            }
-            TextEditor(text: $text)
-                .font(.system(size: 11))
-                .frame(height: height)
-                .scrollContentBackground(.hidden)
-        }
-        .padding(4)
-        .background(Color.secondary.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(.horizontal, 10)
-    }
-}
 
 struct ResumeScoreRow: View {
     let score: ResumeScore
@@ -844,47 +1050,59 @@ private struct GenerationRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text(generation.displayTitle)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                     Spacer()
                     Text(generation.createdAt, style: .relative)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     scoreBadge(label: "Before", value: generation.beforeScore?.score)
                     Image(systemName: "arrow.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    scoreBadge(label: "After",  value: generation.afterScore?.score)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.secondary.opacity(0.5))
+                    scoreBadge(label: "After", value: generation.afterScore?.score)
                     if let delta = generation.scoreDelta {
                         Text(delta >= 0 ? "+\(delta)" : "\(delta)")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
                             .foregroundColor(delta > 0 ? .green : (delta < 0 ? .red : .secondary))
-                            .padding(.horizontal, 6)
+                            .padding(.horizontal, 7)
                             .padding(.vertical, 2)
-                            .background((delta > 0 ? Color.green : (delta < 0 ? Color.red : Color.secondary)).opacity(0.1))
+                            .background((delta > 0 ? Color.green : (delta < 0 ? Color.red : Color.secondary)).opacity(0.14))
                             .clipShape(Capsule())
                     }
+                    Spacer()
                 }
             }
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary.opacity(0.6))
-                    .frame(width: 22, height: 22)
+            VStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary.opacity(hovering ? 0.9 : 0.5))
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.6))
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .opacity(hovering ? 1 : 0.4)
             }
-            .buttonStyle(.plain)
-            .opacity(hovering ? 1 : 0.5)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(hovering ? Color.primary.opacity(0.05) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(hovering ? 0.07 : 0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(hovering ? 0.18 : 0.10), lineWidth: 0.5)
+        )
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpen)
         .onHover { hovering = $0 }
@@ -925,70 +1143,123 @@ private struct GenerationDetailView: View {
     enum DiffLayout: Hashable { case inline, sideBySide }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
             toolbar
-            scoreStrip
-            Divider().opacity(0.4)
-            compareSelector
-            Divider().opacity(0.4)
-            body(for: compareTab)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            scoreCard
+            compareCard
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
     }
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            Button {
-                onBack()
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
-                    Text("All generations").font(.system(size: 11, weight: .medium))
+            Button(action: onBack) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("All generations")
+                        .font(.system(size: 12, weight: .medium))
                 }
-                .foregroundColor(.accentColor)
+                .foregroundColor(.primary)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(Color.white.opacity(0.04)))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
             }
             .buttonStyle(.plain)
 
             Spacer()
 
             if let url = generation.fileURL {
-                Button {
+                detailChip(icon: "eye", label: "Preview") {
                     ResumePreviewHelper.shared.show(url: url)
-                } label: {
-                    Label("Preview", systemImage: "eye").font(.caption)
                 }
-                .buttonStyle(.borderless)
-
-                Button {
+                detailChip(icon: "folder", label: "Show DOCX") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
-                } label: {
-                    Label("Show DOCX", systemImage: "folder").font(.caption)
                 }
-                .buttonStyle(.borderless)
             }
 
             Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash").font(.system(size: 11)).foregroundColor(.secondary)
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .padding(8)
+                    .background(Circle().fill(Color.white.opacity(0.04)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
             }
             .buttonStyle(.plain)
+            .help("Delete this generation")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
-    private var scoreStrip: some View {
-        HStack(spacing: 12) {
-            scoreColumn(title: "BEFORE", score: generation.beforeScore)
-            Image(systemName: "arrow.right")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(.secondary)
-            scoreColumn(title: "AFTER", score: generation.afterScore)
-            Spacer()
-            deltaChip
+    private func detailChip(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 11, weight: .medium))
+                Text(label).font(.system(size: 12, weight: .medium))
+            }
+            .foregroundColor(.primary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(Color.white.opacity(0.04)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.03))
+        .buttonStyle(.plain)
+    }
+
+    /// Score summary card — before/after gauges + delta. Mirrors the
+    /// section-card pattern from Interview / Build so the detail view
+    /// reads as a stack of cards rather than a flat strip.
+    private var scoreCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "speedometer")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text("Scores")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            HStack(spacing: 14) {
+                scoreColumn(title: "BEFORE", score: generation.beforeScore)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.secondary)
+                scoreColumn(title: "AFTER", score: generation.afterScore)
+                Spacer()
+                deltaChip
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+    }
+
+    /// Comparison card — wraps the tab selector + the chosen body
+    /// (diff / before / after) in a single bordered surface.
+    private var compareCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text("Compare")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            VStack(spacing: 0) {
+                compareSelector
+                Divider().opacity(0.4)
+                body(for: compareTab)
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .topLeading)
+            }
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
     }
 
     @ViewBuilder
