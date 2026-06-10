@@ -22,7 +22,27 @@ struct ResumeIndicatorPill: View {
         HStack(spacing: 0) {
             mainArea
 
-            if hovering, let onDismiss {
+            // For `.file`, surface a dedicated Preview button so the user
+            // doesn't have to open the Resume panel just to look at the
+            // generated document. Always visible — used to be hover-only,
+            // but a button you can't see is a button you don't click.
+            if case .file(let url) = kind {
+                Button {
+                    ResumePreviewHelper.shared.show(url: url)
+                } label: {
+                    Image(systemName: "eye")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.08)))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 6)
+                .help("Preview the generated résumé")
+            }
+
+            if let onDismiss {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -34,7 +54,6 @@ struct ResumeIndicatorPill: View {
                 .buttonStyle(.plain)
                 .padding(.leading, 6)
                 .padding(.trailing, 8)
-                .transition(.opacity)
                 .help("Dismiss")
             }
         }
@@ -62,19 +81,19 @@ struct ResumeIndicatorPill: View {
     /// that opens the resume surface.
     @ViewBuilder
     private var mainArea: some View {
+        // Status text (filename / score blurb) is always visible — used
+        // to be hover-only, but the user shouldn't have to fish for the
+        // information already on screen. Truncated middle so long resume
+        // filenames remain readable on both ends.
         let visual = HStack(spacing: 6) {
             iconView
-
-            if hovering {
-                Text(statusText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.leading, 2)
-                    .transition(.opacity.combined(with: .move(edge: .leading)))
-            }
+            Text(statusText)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 220, alignment: .leading)
+                .padding(.trailing, 4)
         }
         .contentShape(Rectangle())
 

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import EventKit
 import Observation
@@ -19,20 +20,30 @@ final class OverlayViewModel {
     /// to Anthropic.
     static let availableModels: [(id: String, name: String, provider: String)] = [
         // Anthropic
+        ("claude-fable-5",            "Fable 5",         "Anthropic"),
+        ("claude-opus-4-8",           "Opus 4.8",        "Anthropic"),
         ("claude-opus-4-7",           "Opus 4.7",        "Anthropic"),
         ("claude-opus-4-6",           "Opus 4.6",        "Anthropic"),
         ("claude-sonnet-4-6",         "Sonnet 4.6",      "Anthropic"),
         ("claude-sonnet-4-5",         "Sonnet 4.5",      "Anthropic"),
         ("claude-haiku-4-5-20251001", "Haiku 4.5",       "Anthropic"),
         // OpenAI — frontier
-        ("gpt-4o",                    "GPT-4o",          "OpenAI"),
-        ("gpt-4o-mini",               "GPT-4o mini",     "OpenAI"),
+        ("gpt-5",                     "GPT-5",           "OpenAI"),
+        ("gpt-5-mini",                "GPT-5 mini",      "OpenAI"),
+        ("gpt-5-nano",                "GPT-5 nano",      "OpenAI"),
+        ("gpt-4.5-preview",           "GPT-4.5",         "OpenAI"),
         ("gpt-4.1",                   "GPT-4.1",         "OpenAI"),
         ("gpt-4.1-mini",              "GPT-4.1 mini",    "OpenAI"),
+        ("gpt-4.1-nano",              "GPT-4.1 nano",    "OpenAI"),
+        ("gpt-4o",                    "GPT-4o",          "OpenAI"),
+        ("gpt-4o-mini",               "GPT-4o mini",     "OpenAI"),
         ("gpt-4-turbo",               "GPT-4 Turbo",     "OpenAI"),
         // OpenAI — reasoning
+        ("o3-pro",                    "o3-pro",          "OpenAI"),
         ("o3",                        "o3",              "OpenAI"),
         ("o3-mini",                   "o3-mini",         "OpenAI"),
+        ("o4-mini",                   "o4-mini",         "OpenAI"),
+        ("o1-pro",                    "o1-pro",          "OpenAI"),
         ("o1",                        "o1",              "OpenAI"),
         ("o1-mini",                   "o1-mini",         "OpenAI"),
     ]
@@ -51,9 +62,13 @@ final class OverlayViewModel {
     // MARK: - Audio / transcription
     var audioSource: AudioSource = .microphone {
         didSet {
+            guard oldValue != audioSource else { return }
             NSLog("[OverlayViewModel] audioSource changed: %@ -> %@",
                   oldValue.label, audioSource.label)
             applyBrowserAudioRouting()
+            // Mid-session switch: restart the engine on the new source so
+            // the picker takes effect immediately instead of on next start.
+            if isRecording { restartCaptureForNewSource() }
         }
     }
     /// Holds an error message when BlackHole routing failed (e.g. driver not
@@ -62,7 +77,42 @@ final class OverlayViewModel {
     var isRecording  = false { didSet { scheduleBroadcast() } }
     var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
     var isInterviewSession = false
-    var transcription   = "" { didSet { scheduleBroadcast() } }
+    /// Interview is active but recording is paused. The transcriber is
+    /// stopped so audio stops flowing, but the session, transcript, and
+    /// context all stay intact so resuming picks up cleanly.
+    var isInterviewPaused  = false
+    /// True when the live session is text-only (Regular call → Chat mode).
+    /// The bar swaps the pause button for a send button and never starts
+    /// the mic; everything else (Stop, model picker) behaves the same.
+    var isInterviewTextOnly = false
+    /// When the current running phase of the interview started. Nil
+    /// while paused. The on-screen timer reads
+    /// `interviewElapsedSeconds + (now - this)` so it survives
+    /// pause/resume cycles instead of resetting to 0 every time.
+    var interviewRunningSince: Date? = nil
+    /// Total seconds accumulated across previous running phases of this
+    /// interview. Pausing flushes the current phase into this number;
+    /// resuming starts a new phase.
+    var interviewElapsedSeconds: TimeInterval = 0
+    var transcription   = "" {
+        didSet {
+            // Any flow that clears the strip (send, new session, filter
+            // drop) intends a fresh start — drop queued committed segments
+            // with it so they can't resurface in the next compose.
+            if transcription.isEmpty { committedBacklog = "" }
+            scheduleBroadcast()
+        }
+    }
+    /// Committed-but-unsent ElevenLabs segments. Scribe partials describe
+    /// only the *current* utterance, so without this backlog every new
+    /// sentence would erase the previous one from the strip — and any
+    /// question asked while the AI was still streaming was silently lost.
+    /// Apple doesn't need it (its recognition text accumulates per task).
+    @ObservationIgnored private var committedBacklog = ""
+    /// Pending debounced auto-send (see scheduleAutoSend). Cancelled the
+    /// moment new speech arrives so a mid-question VAD commit never fires
+    /// the AI on half a question.
+    @ObservationIgnored private var pendingAutoSendTask: Task<Void, Never>?
     var manualInput     = ""
     var showManualInput = false
     var statusMessage   = "" { didSet { scheduleBroadcast() } }
@@ -72,6 +122,17 @@ final class OverlayViewModel {
     var isSendingToAI  = false { didSet { scheduleBroadcast() } }
     var pendingQuickAction: QuickAction? = nil
     var pendingScreenshot: NSImage? = nil
+    /// File attachments queued for the next outgoing message. The full
+    /// extracted text is sent to the AI as part of the prompt, but only
+    /// the file names are stored on the user's `ChatTurn` — keeps the
+    /// chat from being flooded with imported document text.
+    var pendingAttachments: [PendingAttachment] = []
+
+    struct PendingAttachment: Identifiable, Equatable {
+        let id = UUID()
+        let name: String
+        let extractedText: String
+    }
 
     // MARK: - Quick ask (Ctrl+Opt+Q)
     var isQuickAsking     = false
@@ -95,6 +156,63 @@ final class OverlayViewModel {
     var interviewContext: String = ""
     /// Which past session the user picked to resume. `nil` means "New session".
     var interviewResumeSessionID: UUID? = nil
+    /// Extra context files (JD PDF, notes, briefing docs, etc.). Their text
+    /// is extracted once at the form and rides as a pending attachment on
+    /// the interview's first user turn — same treatment as the resume.
+    var interviewContextFiles: [InterviewContextFile] = []
+    /// When ON, the AI auto-streams suggested responses as the interview
+    /// transcript updates. When OFF, the user hits Send manually. Only
+    /// shown / honored in `.interview` setup; Regular call has no such
+    /// toggle today.
+    var interviewAutoGenerate: Bool = true
+
+    /// Two modes the Interview surface can host: a full interview (resume
+    /// + JD + transcription) or a lighter Regular call (just system
+    /// prompt + context, with a Call/Chat sub-toggle).
+    enum InterviewSurfaceMode: String, Equatable, CaseIterable {
+        case interview, regularCall
+
+        var displayName: String {
+            switch self {
+            case .interview:   return "Interview"
+            case .regularCall: return "Regular call"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .interview:   return "person.fill.checkmark"
+            case .regularCall: return "phone.bubble.fill"
+            }
+        }
+        var sessionKind: ChatSession.Kind {
+            switch self {
+            case .interview:   return .interview
+            case .regularCall: return .regularCall
+            }
+        }
+    }
+
+    /// Which mode tab is selected on the Interview surface. Drives both
+    /// the setup form on display and which "most recent session" to
+    /// auto-resume when the user clicks the surface icon.
+    var interviewSurfaceMode: InterviewSurfaceMode = .interview
+    /// Set true when the user clicks the `+ new session` button while on
+    /// the Interview surface — forces the setup form to render even when
+    /// a recent session of the active mode exists. Cleared when Start is
+    /// hit (a real session begins) or when the surface is dismissed.
+    var forceInterviewSetup: Bool = false
+
+    /// Whether a Regular call setup should kick off a live (mic) session
+    /// or just a text-only chat session. Mirrors the user's last choice
+    /// across launches.
+    var regularCallAsCall: Bool = true
+
+    struct InterviewContextFile: Identifiable, Equatable {
+        let id = UUID()
+        let url: URL
+        let name: String
+        let extractedText: String
+    }
 
     // MARK: - Resume builder
     var showResumeBuilder  = false
@@ -544,6 +662,18 @@ final class OverlayViewModel {
     }
     @ObservationIgnored var onShellStageChange: ((ShellStage) -> Void)?
 
+    /// True when shellStage is `.pill` AND a result/status popup wants to
+    /// render above the brand pill (resume score, generated resume,
+    /// quick-ask response). AppDelegate listens via `onPillPopupChange`
+    /// to grow the host panel just enough to fit the popup.
+    var hasPillPopup: Bool {
+        guard shellStage == .pill else { return false }
+        return isScoringResume || isGeneratingResume || resumeScore != nil
+            || resumeFileURL != nil || isQuickAskSending
+            || !quickAskResponse.isEmpty
+    }
+    @ObservationIgnored var onPillPopupChange: ((Bool) -> Void)?
+
     /// Backward-compat read-only shim. New code should test
     /// `shellStage == .expanded` directly.
     var isShellExpanded: Bool { shellStage == .expanded }
@@ -687,11 +817,74 @@ final class OverlayViewModel {
 
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
 
-        let updateHandler: (String) -> Void = { [weak self] text in
-            Task { @MainActor [weak self] in self?.transcription = text }
+        // Apple delivers one growing string per recognition task, so the
+        // raw update can replace the live transcript wholesale. New text =
+        // the speaker is still going — cancel any pending auto-send so we
+        // never answer half a question.
+        appleTranscriber.onUpdate = { [weak self] text in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pendingAutoSendTask?.cancel()
+                self.transcription = text
+            }
         }
-        transcriptionManager.onUpdate = updateHandler
-        appleTranscriber.onUpdate    = updateHandler
+
+        // ElevenLabs is per-utterance: partials describe only the current
+        // utterance and would erase earlier sentences. Accumulate committed
+        // segments in `committedBacklog` and compose the display — same
+        // pattern DictationManager uses for hold-to-dictate. A fresh
+        // partial means the speaker resumed → cancel any pending auto-send;
+        // the next commit reschedules it with the fuller transcript.
+        transcriptionManager.onPartial = { [weak self] text in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pendingAutoSendTask?.cancel()
+                self.transcription = self.committedBacklog.isEmpty
+                    ? text
+                    : self.committedBacklog + " " + text
+            }
+        }
+        transcriptionManager.onCommit = { [weak self] text in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    self.committedBacklog = self.committedBacklog.isEmpty
+                        ? trimmed
+                        : self.committedBacklog + " " + trimmed
+                }
+                if !self.committedBacklog.isEmpty {
+                    self.transcription = self.committedBacklog
+                }
+            }
+        }
+
+        // Engine/connection failures land in the status line, not the
+        // transcript — an error string in the strip used to get auto-sent
+        // to the AI as if the interviewer had said it.
+        let errorHandler: (String) -> Void = { [weak self] message in
+            Task { @MainActor [weak self] in self?.statusMessage = message }
+        }
+        transcriptionManager.onError = errorHandler
+        appleTranscriber.onError     = errorHandler
+
+        // Transient connection drops self-heal (the manager reconnects with
+        // backoff); the user just sees a status line flip while it happens.
+        transcriptionManager.onConnectionEvent = { [weak self] event in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch event {
+                case .reconnecting:
+                    self.statusMessage = "Reconnecting transcription…"
+                case .reconnected:
+                    if self.statusMessage == "Reconnecting transcription…" {
+                        self.statusMessage = ""
+                    }
+                case .failed(let message):
+                    self.statusMessage = "Error: \(message)"
+                }
+            }
+        }
 
         let silenceHandler: () -> Void = { [weak self] in
             Task { @MainActor [weak self] in
@@ -703,27 +896,34 @@ final class OverlayViewModel {
                 guard self.isRecording else { return }
 
                 if self.isInterviewSession {
-                    // Continuous mode: stop engine, send segment, clear, restart
-                    guard !self.isSendingToAI else { return }
-                    self.stopTranscriber()
-                    self.isRecording = false
-                    self.statusMessage = ""
-
-                    self.sendToAI()          // captures transcription before we clear
-                    self.transcription = ""
-
-                    // Restart after a short pause (lets mic settle)
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    guard self.isInterviewSession else { return }
-                    do {
-                        try await self.startTranscriber(source: self.audioSource)
-                        self.isRecording = true
-                        self.statusMessage = "Recording"
-                    } catch {
-                        self.statusMessage = "Error: \(error.localizedDescription)"
-                        self.isInterviewSession = false
+                    // Continuous mode: send the committed segment and keep
+                    // listening. Honors the "Auto-generate responses" toggle
+                    // on the Interview setup — when OFF, the transcript
+                    // stays accumulating until the user hits Send manually.
+                    guard self.interviewAutoGenerate else { return }
+                    // Don't fire the AI on noise / filler-only commits
+                    // ("um", coughs, [noise] the engine hallucinated). Drop
+                    // the segment so it doesn't linger in the transcript and
+                    // keep listening.
+                    guard TranscriptFilter.isMeaningful(self.transcription) else {
+                        self.transcription = ""
+                        return
                     }
+                    // A response is still streaming — leave the segment
+                    // queued in the transcript. AIController flushes it
+                    // when the stream finishes (flushPendingLiveTranscript),
+                    // so questions asked while the AI is answering are no
+                    // longer dropped.
+                    guard !self.isSendingToAI else { return }
+                    // Debounced: a VAD commit isn't proof the question is
+                    // over. scheduleAutoSend waits a short grace window
+                    // (longer when the text trails off mid-thought) and
+                    // is cancelled by any new speech.
+                    self.scheduleAutoSend()
                 } else if self.vadEnabled {
+                    // Skip noise / filler-only segments so VAD auto-send
+                    // doesn't ship junk to the AI; keep listening.
+                    guard TranscriptFilter.isMeaningful(self.transcription) else { return }
                     self.toggleRecording()
                     self.sendToAI()
                 }
@@ -780,26 +980,80 @@ final class OverlayViewModel {
         }
     }
 
+    // MARK: - Capture lifecycle (epoch-protected)
+
+    /// Monotonic token for the audio-capture lifecycle. Every transition
+    /// (start, stop, pause, resume, source switch) bumps it; async
+    /// continuations capture the value when they begin and abort if it
+    /// no longer matches. Without this, a pause issued while a start was
+    /// still in flight let the stale start finish and turn the mic back
+    /// on — recording silently continued under a "Paused" UI.
+    @ObservationIgnored private var captureEpoch = 0
+
+    private enum CaptureStartResult { case started, superseded, failed }
+
+    /// Start capture on the current `audioSource`. Always tears down any
+    /// running engine first so two engines can never overlap. If another
+    /// transition happens while the engine is starting, this start loses:
+    /// the engine is shut straight back down and `.superseded` is returned
+    /// so callers don't mutate session state that the newer transition owns.
+    @discardableResult
+    private func beginCapture(statusWhileStarting: String = "Starting…") async -> CaptureStartResult {
+        captureEpoch += 1
+        let epoch = captureEpoch
+        stopTranscriber()
+        isRecording   = false
+        statusMessage = statusWhileStarting
+        do {
+            try await startTranscriber(source: audioSource)
+            guard epoch == captureEpoch else {
+                stopTranscriber()
+                return .superseded
+            }
+            isRecording   = true
+            statusMessage = ""
+            return .started
+        } catch {
+            guard epoch == captureEpoch else { return .superseded }
+            NSLog("[Capture] start failed: %@", error.localizedDescription)
+            statusMessage = "Error: \(error.localizedDescription)"
+            isRecording   = false
+            return .failed
+        }
+    }
+
+    /// Stop capture and invalidate every in-flight start, restart, and
+    /// pending auto-send.
+    private func endCapture(status: String = "") {
+        captureEpoch += 1
+        pendingAutoSendTask?.cancel()
+        stopTranscriber()
+        isRecording   = false
+        statusMessage = status
+    }
+
+    /// Live audio-source switch: restart the engine on the new source
+    /// without touching session state. Before this, the picker only took
+    /// effect on the NEXT start — switching mic ↔ system mid-interview
+    /// silently kept capturing the old source.
+    private func restartCaptureForNewSource() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.beginCapture(
+                statusWhileStarting: "Switching to \(self.audioSource.label)…")
+        }
+    }
+
     // MARK: - Recording
 
     func toggleRecording() {
         if isRecording {
-            stopTranscriber()
-            isRecording   = false
-            statusMessage = ""
+            endCapture()
         } else {
             transcription = ""
             aiResponse    = ""
-            statusMessage = "Starting…"
-            Task {
-                do {
-                    try await startTranscriber(source: audioSource)
-                    isRecording   = true
-                    statusMessage = ""
-                } catch {
-                    statusMessage = "Error: \(error.localizedDescription)"
-                    isRecording   = false
-                }
+            Task { @MainActor [weak self] in
+                _ = await self?.beginCapture()
             }
         }
     }
@@ -809,23 +1063,13 @@ final class OverlayViewModel {
     func hotkeyToggleRecord() {
         if isInterviewSession { stopInterviewSession(); return }
         if isRecording {
-            stopTranscriber()
-            isRecording   = false
-            statusMessage = ""
+            endCapture()
             if !transcription.isEmpty { sendToAI() }
         } else {
             transcription = ""
             aiResponse    = ""
-            statusMessage = "Starting…"
-            Task {
-                do {
-                    try await startTranscriber(source: audioSource)
-                    isRecording   = true
-                    statusMessage = ""
-                } catch {
-                    statusMessage = "Error: \(error.localizedDescription)"
-                    isRecording   = false
-                }
+            Task { @MainActor [weak self] in
+                _ = await self?.beginCapture()
             }
         }
     }
@@ -833,31 +1077,89 @@ final class OverlayViewModel {
     // MARK: - Interview session
 
     func startInterviewSession() {
-        guard !isInterviewSession else { return }
+        NSLog("[Interview] startInterviewSession: audioSource=%@ backend=%@",
+              audioSource.label, transcriptionBackend.rawValue)
+        guard !isInterviewSession else {
+            NSLog("[Interview] guarded — already in session")
+            return
+        }
         isInterviewSession = true
+        isInterviewPaused  = false
         transcription = ""
         aiResponse    = ""
-        guard !isRecording else { return }
-        statusMessage = "Starting…"
-        Task {
-            do {
-                try await startTranscriber(source: audioSource)
-                isRecording   = true
-                statusMessage = ""
-            } catch {
-                statusMessage = "Error: \(error.localizedDescription)"
-                isInterviewSession = false
-                isRecording = false
+        // Fresh start — reset the elapsed counter and begin a new
+        // running phase so the on-screen timer ticks from 00:00.
+        interviewElapsedSeconds = 0
+        interviewRunningSince   = Date()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.beginCapture()
+            if case .failed = result {
+                // Mic never came up — don't leave a zombie "live" session.
+                self.isInterviewSession   = false
+                self.interviewRunningSince = nil
             }
         }
     }
 
     func stopInterviewSession() {
-        isInterviewSession = false
-        if isRecording {
-            stopTranscriber()
-            isRecording   = false
-            statusMessage = ""
+        isInterviewSession  = false
+        isInterviewPaused   = false
+        isInterviewTextOnly = false
+        interviewRunningSince   = nil
+        interviewElapsedSeconds = 0
+        endCapture()
+    }
+
+    /// Pause an active interview: stop audio capture but keep the session
+    /// alive so the user can resume without losing transcript / context.
+    /// Folds the current running phase into `interviewElapsedSeconds` so
+    /// the timer holds at its current value instead of resetting on the
+    /// next resume.
+    func pauseInterviewSession() {
+        guard isInterviewSession, !isInterviewPaused else { return }
+        if let started = interviewRunningSince {
+            interviewElapsedSeconds += Date().timeIntervalSince(started)
+        }
+        interviewRunningSince = nil
+        isInterviewPaused     = true
+
+        // Stop audio capture first so nothing is transcribed while paused.
+        // endCapture bumps the epoch, so a start that's still in flight
+        // (rapid play→pause) can't bring the mic back up underneath us.
+        endCapture(status: "Paused")
+
+        // Treat the pause like a silence boundary: commit whatever transcript
+        // has accumulated and turn it into one AI response. Unlike the
+        // auto-generate silence handler we do NOT restart afterwards — we stay
+        // paused. Skip if the user has a manual draft in the bar (don't hijack
+        // their typed text) or a request is already in flight.
+        let pending = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !pending.isEmpty, TranscriptFilter.isMeaningful(pending),
+           !isSendingToAI, !showManualInput {
+            sendToAI()            // captures `transcription`, then clears it
+        }
+
+        statusMessage = "Paused"
+    }
+
+    /// Resume a paused interview by restarting the transcriber and
+    /// opening a new running phase — the existing elapsed time is kept
+    /// so the timer continues from where it paused.
+    func resumeInterviewSession() {
+        guard isInterviewSession, isInterviewPaused else { return }
+        // Text-only sessions have no microphone to resume — flipping the
+        // paused flag is all "play" means there.
+        guard !isInterviewTextOnly else { return }
+        isInterviewPaused = false
+        interviewRunningSince = Date()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await self.beginCapture(statusWhileStarting: "Resuming…")
+            if case .failed = result {
+                self.isInterviewPaused = true
+                self.interviewRunningSince = nil
+            }
         }
     }
 
@@ -867,31 +1169,46 @@ final class OverlayViewModel {
     /// starts the live recording.
     func beginInterviewFromSetup() {
         sessionMode = .interview
+        forceInterviewSetup = false
 
         if let pickedID = interviewResumeSessionID,
            sessionStore.sessions.contains(where: { $0.id == pickedID }) {
-            continueSession(id: pickedID)
+            continueSession(id: pickedID, stayInPrimarySurface: true)
         } else {
-            startNewSession()
+            startNewSession(kind: .interview, stayInPrimarySurface: true)
         }
 
-        // Seed the session with the user's setup context so the AI knows what
-        // role/JD/resume backs this interview. Skipped silently when both are
-        // empty — no point adding a noise turn.
-        let resumeText = readInterviewResumeText()
+        // Seed the next outgoing message with the user's setup context so
+        // the AI knows what role/JD/resume backs this interview. Context,
+        // resume, and extra files all ride as pending attachments on the
+        // first send — the AI receives the full text as labelled blocks
+        // while the chat bubble only shows chips. Staging the context in
+        // the manual-input draft (the old approach) made the first silence
+        // boundary send the context INSTEAD of the interviewer's opening
+        // question, which was then dropped.
+        let resumeText     = readInterviewResumeText()
         let trimmedContext = interviewContext.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !resumeText.isEmpty || !trimmedContext.isEmpty {
-            var seed = "[Interview setup]\n"
-            if !trimmedContext.isEmpty {
-                seed += "\nContext:\n\(trimmedContext)\n"
-            }
-            if !resumeText.isEmpty {
-                let name = interviewResumeFileURL?.lastPathComponent ?? "resume"
-                seed += "\nAttached resume (\(name)):\n\(resumeText)\n"
-            }
-            manualInput = seed
-            showManualInput = true
+
+        if !trimmedContext.isEmpty {
+            pendingAttachments.append(
+                PendingAttachment(name: "Interview context", extractedText: trimmedContext)
+            )
         }
+
+        if !resumeText.isEmpty {
+            let name = interviewResumeFileURL?.lastPathComponent ?? "resume"
+            pendingAttachments.append(
+                PendingAttachment(name: name, extractedText: resumeText)
+            )
+        }
+
+        for ctx in interviewContextFiles where !ctx.extractedText.isEmpty {
+            pendingAttachments.append(
+                PendingAttachment(name: ctx.name, extractedText: ctx.extractedText)
+            )
+        }
+        // Consumed — clear so the next interview setup starts clean.
+        interviewContextFiles = []
 
         startInterviewSession()
     }
@@ -922,11 +1239,18 @@ final class OverlayViewModel {
     }
 
     func sendToAI() {
+        // Any explicit send supersedes a pending debounced auto-send —
+        // without this a manual Send followed by the grace-window firing
+        // would double-send the same transcript.
+        pendingAutoSendTask?.cancel()
         let baseText   = showManualInput && !manualInput.isEmpty ? manualInput : transcription
         let prefix     = pendingQuickAction.map { $0.promptPrefix } ?? ""
-        let textToSend = prefix + baseText
+        let userText   = prefix + baseText
 
-        guard !textToSend.isEmpty || pendingScreenshot != nil else { return }
+        let attachments    = pendingAttachments
+        let hasAttachments = !attachments.isEmpty
+
+        guard !userText.isEmpty || pendingScreenshot != nil || hasAttachments else { return }
 
         let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
         if  isOpenAI && openAIApiKey.isEmpty { return }
@@ -935,11 +1259,24 @@ final class OverlayViewModel {
         let resolvedPrompt   = resolveActivePrompt()
         let historySnapshot  = sessionStore.replayContext()
 
+        // What the AI receives: file contents prepended as labelled blocks
+        // so the model knows what each chunk is, followed by the user's
+        // typed text. What the chat UI displays: only the user's text
+        // alongside chips for each attachment — no flood of document body.
+        // The blocks are also stored on the turn as `hiddenContext` so
+        // later requests replay them — the AI keeps the resume/JD in
+        // scope for the whole session, not just the first exchange.
+        let attachmentBlocks: String? = hasAttachments
+            ? attachments
+                .map { "[Attached \($0.name)]\n\n\($0.extractedText)" }
+                .joined(separator: "\n\n")
+            : nil
+        let prompt: String = {
+            guard let blocks = attachmentBlocks else { return userText }
+            return userText.isEmpty ? blocks : "\(blocks)\n\n\(userText)"
+        }()
+
         // Sending a message implies the user wants to see the response.
-        // Promote the shell to the full expanded chat surface so the
-        // streaming assistant turn appears in the top panel — even if the
-        // user kicked the send off from the collapsed pill (voice
-        // transcription, quick-ask, or just the bar).
         primarySurface = .chat
         if shellStage != .expanded {
             withAnimation(Design.Motion.spring) {
@@ -948,7 +1285,9 @@ final class OverlayViewModel {
         }
 
         let wasFirstExchange = sessionStore.activeSession.turns.isEmpty
-        sessionStore.appendUser(textToSend)
+        sessionStore.appendUser(userText,
+                                attachments: attachments.map(\.name),
+                                hiddenContext: attachmentBlocks)
         let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
 
         if !showManualInput { transcription = "" }
@@ -957,13 +1296,117 @@ final class OverlayViewModel {
         pendingQuickAction = nil
         if showManualInput { manualInput = "" }
         pendingScreenshot = nil
+        pendingAttachments = []
 
-        ai.runStream(userText: textToSend,
+        ai.runStream(userText: prompt,
                      screenshot: snapshot,
                      systemPrompt: resolvedPrompt,
                      history: historySnapshot,
                      assistantTurnID: assistantID,
                      wasFirstExchange: wasFirstExchange)
+    }
+
+    /// Manually push the current live transcription to the AI — used by the
+    /// live-interview "send now" button so the user doesn't have to wait for
+    /// a silence boundary or the auto-generate toggle. If the user has typed
+    /// a draft in the bar, that takes priority; otherwise the accumulated
+    /// transcription is sent. The mic keeps running and the transcript is
+    /// cleared so the next utterance starts fresh.
+    func sendTranscriptManually() {
+        guard !isSendingToAI else { return }
+        let typed = manualInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !typed.isEmpty {
+            showManualInput = true          // sendToAI sends + clears manualInput
+            sendToAI()
+            return
+        }
+        guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        showManualInput = false             // sendToAI sends + clears transcription
+        sendToAI()
+    }
+
+    /// Auto-send the live transcript during an interview and prep the
+    /// transcriber for the next utterance. ElevenLabs keeps the WebSocket
+    /// and capture running — its server-side VAD already segments
+    /// utterances, and tearing the engine down used to go deaf for ~0.8s
+    /// (teardown + 300ms settle + reconnect) right when the interviewer
+    /// might start the next sentence. Apple accumulates recognition text
+    /// within a task, so the only way to start a clean segment there is
+    /// the stop/restart cycle.
+    private func autoSendLiveTranscript() async {
+        // Never hijack a typed draft — force the transcript path through
+        // sendToAI, then restore the draft flag.
+        let hadDraft = showManualInput && !manualInput.isEmpty
+        showManualInput = false
+
+        if transcriptionManager.isRunning {
+            sendToAI()                     // captures + clears transcription
+            if hadDraft { showManualInput = true }
+            return
+        }
+
+        captureEpoch += 1
+        let epoch = captureEpoch
+        stopTranscriber()
+        isRecording   = false
+        statusMessage = ""
+        sendToAI()                         // captures + clears transcription
+        if hadDraft { showManualInput = true }
+
+        // Restart after a short pause (lets mic settle). Bail if the user
+        // paused, stopped, or switched source in the meantime — the epoch
+        // check makes those transitions win over this stale restart.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard epoch == captureEpoch, isInterviewSession, !isInterviewPaused else { return }
+        let result = await beginCapture(statusWhileStarting: "")
+        if case .failed = result {
+            isInterviewSession = false
+        }
+    }
+
+    /// Debounced auto-send for interview mode. A VAD commit doesn't
+    /// necessarily mean the question is over — interviewers pause
+    /// mid-sentence to think. Wait a grace window before sending: short
+    /// when the transcript reads like a finished thought (terminal
+    /// punctuation), long when it trails off mid-sentence. Any new speech
+    /// cancels the pending send (see the onPartial/onUpdate handlers);
+    /// the next commit reschedules with the fuller transcript, so a split
+    /// question is sent whole instead of answered in halves.
+    private func scheduleAutoSend() {
+        pendingAutoSendTask?.cancel()
+        let grace: Duration = TranscriptFilter.seemsComplete(transcription)
+            ? .milliseconds(250)
+            : .milliseconds(1400)
+        pendingAutoSendTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: grace)
+            guard let self, !Task.isCancelled else { return }
+            guard self.isInterviewSession, self.interviewAutoGenerate,
+                  !self.isInterviewPaused, self.isRecording,
+                  !self.isSendingToAI else { return }
+            guard TranscriptFilter.isMeaningful(self.transcription) else { return }
+            // Detach before sending — sendToAI cancels pendingAutoSendTask
+            // (to supersede stale sends), and that must not self-cancel
+            // this task mid-flight or the Apple restart sleep gets skipped.
+            self.pendingAutoSendTask = nil
+            await self.autoSendLiveTranscript()
+        }
+    }
+
+    /// Called by AIController when a stream finishes. If the interviewer
+    /// kept talking while the AI was answering, the committed transcript
+    /// is waiting here — the silence boundary that should have sent it
+    /// already fired and was consumed while `isSendingToAI` was true, so
+    /// without this flush the queued question would sit unsent until the
+    /// speaker happened to talk again.
+    func flushPendingLiveTranscript() {
+        guard isInterviewSession, interviewAutoGenerate, !isInterviewPaused,
+              isRecording, !isSendingToAI else { return }
+        let pending = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pending.isEmpty, TranscriptFilter.isMeaningful(pending) else { return }
+        // Goes through the same debounce as live commits — if the speaker
+        // is mid-sentence right now, the next partial cancels it and the
+        // next commit re-schedules with the full question.
+        scheduleAutoSend()
     }
 
     /// Retry the most recent failed request.
@@ -1007,12 +1450,29 @@ final class OverlayViewModel {
             isQuickAsking    = true
             statusMessage    = "Listening…"
             Task {
-                _ = await quickRecorder.requestPermission()
+                let speechGranted = await quickRecorder.requestPermission()
+                if !speechGranted {
+                    NSLog("[QuickAsk] speech recognition permission denied")
+                    statusMessage    = ""
+                    quickAskResponse = "Speech recognition permission denied. Enable it in System Settings → Privacy & Security → Speech Recognition."
+                    isQuickAsking    = false
+                    return
+                }
+                let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
+                if !micGranted {
+                    NSLog("[QuickAsk] microphone permission denied")
+                    statusMessage    = ""
+                    quickAskResponse = "Microphone permission denied. Enable it in System Settings → Privacy & Security → Microphone."
+                    isQuickAsking    = false
+                    return
+                }
                 do {
                     try quickRecorder.start()
                 } catch {
-                    statusMessage = "Error: \(error.localizedDescription)"
-                    isQuickAsking = false
+                    NSLog("[QuickAsk] quickRecorder.start failed: %@", error.localizedDescription)
+                    statusMessage    = ""
+                    quickAskResponse = "Error: \(error.localizedDescription)"
+                    isQuickAsking    = false
                 }
             }
         }
@@ -1036,13 +1496,19 @@ final class OverlayViewModel {
         isQuickAskSending = true
         quickAskResponse  = ""
 
-        let resolvedPrompt  = resolveActivePrompt()
-        let historySnapshot = sessionStore.replayContext()
+        let resolvedPrompt = resolveActivePrompt()
 
-        // Stream into quickAskResponse and also into a session turn so it's
-        // recorded in history.
-        sessionStore.appendUser(text)
-        let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
+        // Quick asks live in their own session (kind = .quickAsk) so they
+        // don't bleed into whatever chat/interview the user is in the
+        // middle of. We write turns by ID into the new session and leave
+        // `activeSessionID` untouched so the current surface stays put.
+        let quickSessionID = sessionStore.createQuickAskSession(
+            workspaceID: workspaceStore.activeWorkspaceID
+        )
+        sessionStore.appendUser(to: quickSessionID, text)
+        let assistantID = sessionStore.beginStreamingAssistant(
+            in: quickSessionID, model: selectedModel
+        )
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1056,24 +1522,33 @@ final class OverlayViewModel {
                     model:        self.selectedModel,
                     screenshot:   nil,
                     systemPrompt: resolvedPrompt,
-                    history:      historySnapshot
+                    history:      []
                 )
                 for try await event in stream {
                     switch event {
                     case .chunk(let chunk):
                         accumulated += chunk
-                        self.sessionStore.appendChunk(chunk, to: assistantID)
+                        // Batched at ~30Hz — same rationale as AIController.
                         let now = ContinuousClock.now
                         if now - lastFlush >= .milliseconds(33) {
+                            self.sessionStore.setStreamingContent(accumulated,
+                                                                  turnID: assistantID,
+                                                                  in: quickSessionID)
                             self.quickAskResponse = accumulated
                             lastFlush = now
                         }
                     case .usage(let inTok, let outTok):
-                        self.sessionStore.finalizeAssistant(turnID: assistantID,
-                                                            inputTokens: inTok,
-                                                            outputTokens: outTok)
+                        self.sessionStore.finalizeAssistant(
+                            turnID: assistantID,
+                            in: quickSessionID,
+                            inputTokens: inTok,
+                            outputTokens: outTok
+                        )
                     }
                 }
+                self.sessionStore.setStreamingContent(accumulated,
+                                                      turnID: assistantID,
+                                                      in: quickSessionID)
                 if self.quickAskResponse != accumulated {
                     self.quickAskResponse = accumulated
                 }
@@ -1135,26 +1610,148 @@ final class OverlayViewModel {
         }
     }
 
-    func continueSession(id: UUID) {
+    func continueSession(id: UUID, stayInPrimarySurface: Bool = false) {
         sessionStore.continueSession(id: id)
         // Restore the mode for the reopened session so the right prompt kicks in.
         if let s = sessionStore.sessions.first(where: { $0.id == id }) {
             sessionMode = s.mode
             promptStore.activePresetID = s.promptPresetID
         }
-        // Jump the UI back to the chat view so the reopened session is visible.
-        primarySurface = .chat
+        // Default: jump back to the chat surface so the reopened session is
+        // visible. When the caller is already managing the surface (e.g.
+        // resuming inside the Interview surface), leave primarySurface alone.
+        if !stayInPrimarySurface {
+            primarySurface = .chat
+        }
     }
 
-    func startNewSession() {
+    func startNewSession(kind: ChatSession.Kind = .normal,
+                         stayInPrimarySurface: Bool = false) {
         // Before closing the current session, ask the AI to give it a nicer title.
         let closingID = sessionStore.activeSessionID
         let closing = sessionStore.activeSession
         sessionStore.startNewSession(mode: sessionMode,
                                      promptPresetID: promptStore.activePresetID,
-                                     workspaceID: workspaceStore.activeWorkspaceID)
+                                     workspaceID: workspaceStore.activeWorkspaceID,
+                                     kind: kind)
         regenerateTitle(for: closing, sessionID: closingID)
-        primarySurface = .chat
+        if !stayInPrimarySurface {
+            primarySurface = .chat
+        }
+    }
+
+    /// True when the Interview surface should render the live chat view
+    /// instead of the setup form. Centralizing this here keeps the
+    /// header title (TopStripView) and the surface body in lockstep so
+    /// they never disagree about whether the user is in setup or in a
+    /// session.
+    var interviewSurfaceShowsChat: Bool {
+        if isInterviewSession { return true }
+        if forceInterviewSetup { return false }
+        // Show the chat only when the user is parked on a session whose
+        // kind matches the active mode tab (resumed from History or the
+        // setup form's session picker). Never show some *other* session's
+        // transcript just because one exists — that read as the app
+        // resuming things on its own.
+        let active = sessionStore.activeSession
+        switch interviewSurfaceMode {
+        case .interview:   return active.kind == .interview
+        // Treat legacy .normal sessions as regular calls so old data
+        // resumes on the Regular call tab rather than dumping the
+        // user back into setup.
+        case .regularCall: return active.kind == .regularCall || active.kind == .normal
+        }
+    }
+
+    /// Called when the user clicks the Interview surface icon in the bar.
+    /// When a live session is running it returns to it; otherwise it lands
+    /// on the setup form — starting fresh is the dominant intent for this
+    /// button, and silently dropping the user into an old session's
+    /// transcript read as "the app resumed something I didn't ask for".
+    /// Resuming stays one tap away: the setup form's session picker, or
+    /// History → Continue.
+    func openInterviewSurface() {
+        if !isInterviewSession {
+            forceInterviewSetup = true
+        }
+        primarySurface = .interview
+    }
+
+    /// Mark the active session as a paused live session. The bar will
+    /// render the live controls (text input, model picker, pause/play,
+    /// stop) but no transcriber starts until the user explicitly hits
+    /// play — same shape as pausing a running interview, just without
+    /// the prior recording.
+    func enterPausedLiveState() {
+        isInterviewSession  = true
+        isInterviewPaused   = true
+        isInterviewTextOnly = false
+        // Re-entering live mode after a stop / from history — restart
+        // the elapsed counter so the timer begins at 00:00 when the
+        // user hits play, but stays at 00:00 while paused.
+        interviewElapsedSeconds = 0
+        interviewRunningSince   = nil
+        endCapture(status: "Paused")
+    }
+
+    /// Switch the mode tab on the Interview surface. Just swaps which
+    /// setup form is showing — switching tabs never silently jumps into
+    /// an old session; resuming is always an explicit action (session
+    /// picker or History).
+    func switchInterviewSurfaceMode(_ mode: InterviewSurfaceMode) {
+        guard mode != interviewSurfaceMode else { return }
+        interviewSurfaceMode = mode
+    }
+
+    /// "+ new session" handler when the user is on the Interview surface.
+    /// Tears down any paused-live state so the setup form actually
+    /// renders (otherwise `interviewSurfaceShowsChat` keeps returning
+    /// true). Doesn't create a session yet — the real session is created
+    /// when the user hits Start in the form.
+    func requestNewInterviewSession() {
+        if isInterviewSession { stopInterviewSession() }
+        forceInterviewSetup = true
+    }
+
+    /// Kick off a Regular call from the setup form. Mirrors
+    /// `beginInterviewFromSetup` but skips the resume/JD plumbing — Regular
+    /// call only carries system prompt + free-text context. If
+    /// `regularCallAsCall` is true, also fires up the live transcriber so
+    /// the user can talk through the panel; otherwise the session enters
+    /// a text-only live state — the bar shows a text input + send button
+    /// and the mic never starts.
+    func beginRegularCallFromSetup() {
+        sessionMode = regularCallAsCall ? .call : .general
+        forceInterviewSetup = false
+
+        startNewSession(kind: .regularCall, stayInPrimarySurface: true)
+
+        // Same attachment treatment as the interview setup — see
+        // beginInterviewFromSetup for why this doesn't go through
+        // manualInput.
+        let trimmedContext = interviewContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedContext.isEmpty {
+            pendingAttachments.append(
+                PendingAttachment(name: "Call context", extractedText: trimmedContext)
+            )
+        }
+        for ctx in interviewContextFiles where !ctx.extractedText.isEmpty {
+            pendingAttachments.append(
+                PendingAttachment(name: ctx.name, extractedText: ctx.extractedText)
+            )
+        }
+        interviewContextFiles = []
+
+        if regularCallAsCall {
+            startInterviewSession()
+        } else {
+            // Text-only chat: keep `isInterviewSession` true so the bar
+            // renders the text input + send + stop set, but no mic.
+            isInterviewSession  = true
+            isInterviewPaused   = true
+            isInterviewTextOnly = true
+            statusMessage       = ""
+        }
     }
 
     // MARK: - Workspaces
@@ -1231,7 +1828,8 @@ final class OverlayViewModel {
         let hasText = showManualInput ? !manualInput.isEmpty : !transcription.isEmpty
         let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
         let hasKey   = isOpenAI ? !openAIApiKey.isEmpty : !apiKey.isEmpty
-        return (hasText || pendingScreenshot != nil) && !isSendingToAI && hasKey
+        let hasContent = hasText || pendingScreenshot != nil || !pendingAttachments.isEmpty
+        return hasContent && !isSendingToAI && hasKey
     }
 
     var needsKeyForCurrentModel: Bool {

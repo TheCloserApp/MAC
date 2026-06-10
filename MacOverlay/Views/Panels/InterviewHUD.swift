@@ -1,69 +1,23 @@
 import SwiftUI
 
-/// Heads-up display that appears above the chat surface during Interview
-/// mode. Shows a live recording timer + a row of quick-action chips so the
-/// user can prompt the AI in one click while the interviewer's words are
-/// still being transcribed.
+/// Slim quick-action row that appears above the chat surface during
+/// Interview mode. The old "Interview in progress" + duration header was
+/// removed because it ate vertical space without adding much; the live
+/// timer now lives inline on the transcript strip (see `ChatSurfaceView
+/// .liveTranscriptStrip`), and this view just hosts one-tap prompts.
 struct InterviewHUD: View {
     @Environment(OverlayViewModel.self) private var vm
-    @State private var now = Date()
-    @State private var startedAt = Date()
-
-    private let ticker = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        HStack(alignment: .center, spacing: Design.Space.md) {
-            ZStack {
-                Circle()
-                    .fill(Color.red.opacity(0.18))
-                    .frame(width: 26, height: 26)
-                Image(systemName: "waveform")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.red)
-                    .symbolEffect(.variableColor.iterative, options: .repeating)
-            }
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Interview in progress")
-                    .font(Design.Font.small.weight(.semibold))
-                    .foregroundColor(.primary)
-                Text(formattedDuration)
-                    .font(Design.Font.micro.monospacedDigit())
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer(minLength: 8)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(quickActions, id: \.label) { action in
-                        quickChip(action: action)
-                    }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(quickActions, id: \.label) { action in
+                    quickChip(action: action)
                 }
-                .padding(.trailing, 4)
             }
+            .padding(.horizontal, Design.Space.lg)
         }
-        .padding(.horizontal, Design.Space.lg)
-        .padding(.vertical, Design.Space.sm)
-        .background(
-            LinearGradient(
-                colors: [Color.red.opacity(0.05), Color.clear],
-                startPoint: .leading, endPoint: .trailing
-            )
-        )
-        .onAppear { startedAt = Date() }
-        .onReceive(ticker) { d in now = d }
-    }
-
-    private var formattedDuration: String {
-        let secs = Int(now.timeIntervalSince(startedAt))
-        let h = secs / 3600
-        let m = (secs % 3600) / 60
-        let s = secs % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
-        }
-        return String(format: "%02d:%02d", m, s)
+        .padding(.vertical, 6)
     }
 
     // MARK: - Quick actions

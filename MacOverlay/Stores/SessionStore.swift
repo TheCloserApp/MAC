@@ -102,14 +102,25 @@ final class SessionStore {
     }
 
     /// Append only a user turn — used by the chat surface so the message
-    /// appears immediately, before the AI has responded.
-    func appendUser(_ content: String) {
+    /// appears immediately, before the AI has responded. `hiddenContext`
+    /// carries the full attachment text that was sent to the AI but kept
+    /// out of the visible bubble, so later requests can replay it.
+    func appendUser(_ content: String,
+                    attachments: [String] = [],
+                    hiddenContext: String? = nil) {
         var s = activeSession
-        s.turns.append(ChatTurn(role: .user, content: content))
+        s.turns.append(ChatTurn(role: .user,
+                                content: content,
+                                attachments: attachments.isEmpty ? nil : attachments,
+                                hiddenContext: hiddenContext))
         s.updatedAt = Date()
         if s.title.isEmpty {
             let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            s.title = String(trimmed.prefix(48))
+            if !trimmed.isEmpty {
+                s.title = String(trimmed.prefix(48))
+            } else if let first = attachments.first {
+                s.title = first
+            }
         }
         activeSession = s
     }
@@ -144,6 +155,31 @@ final class SessionStore {
         activeSession = s
     }
 
+    /// Replace a streaming assistant turn's content wholesale. The
+    /// streaming path batches chunks and flushes at ~30Hz through this —
+    /// every mutation here copies the session value and invalidates every
+    /// observer (plus re-parses the markdown for the growing turn), so
+    /// per-token appends made long answers render visibly slower the
+    /// longer they got.
+    func setStreamingContent(_ content: String, turnID: UUID) {
+        var s = activeSession
+        guard let idx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
+        s.turns[idx].content = content
+        s.updatedAt = Date()
+        activeSession = s
+    }
+
+    /// Replace streaming content for a turn in a specific session
+    /// (Quick Ask path).
+    func setStreamingContent(_ content: String, turnID: UUID, in sessionID: UUID) {
+        guard let sIdx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        var s = sessions[sIdx]
+        guard let tIdx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
+        s.turns[tIdx].content = content
+        s.updatedAt = Date()
+        sessions[sIdx] = s
+    }
+
     /// Attach token usage to an assistant turn.
     func finalizeAssistant(turnID: UUID, inputTokens: Int, outputTokens: Int) {
         var s = activeSession
@@ -160,7 +196,17 @@ final class SessionStore {
     func replayContext() -> [(user: String, assistant: String)] {
         guard memorySyncEnabled else { return [] }
         let currentPairs = pairs(from: activeSession)
-        let sliced = memoryIncludeAll ? currentPairs : Array(currentPairs.suffix(memoryWindow))
+        var sliced = memoryIncludeAll ? currentPairs : Array(currentPairs.suffix(memoryWindow))
+
+        // Anchor the session's opening exchange: it carries the setup
+        // context (resume, JD, interview brief) that the whole session
+        // leans on. Without this, a long interview silently loses its
+        // grounding once the first pair slides out of the window.
+        if !memoryIncludeAll,
+           let first = currentPairs.first,
+           currentPairs.count > memoryWindow {
+            sliced = [first] + sliced
+        }
 
         guard crossSessionMemoryEnabled else { return sliced }
 
@@ -178,7 +224,13 @@ final class SessionStore {
         let turns = session.turns
         while i < turns.count - 1 {
             if turns[i].role == .user, turns[i + 1].role == .assistant {
-                out.append((turns[i].content, turns[i + 1].content))
+                let user      = turns[i].replayText
+                let assistant = turns[i + 1].content
+                // Skip pairs with an empty side — a cancelled stream leaves
+                // an empty assistant turn, and the API rejects empty content.
+                if !user.isEmpty && !assistant.isEmpty {
+                    out.append((user, assistant))
+                }
                 i += 2
             } else {
                 i += 1
@@ -191,12 +243,77 @@ final class SessionStore {
 
     func startNewSession(mode: SessionMode = .general,
                          promptPresetID: UUID? = nil,
-                         workspaceID: UUID? = nil) {
-        let fresh = ChatSession(mode: mode,
+                         workspaceID: UUID? = nil,
+                         kind: ChatSession.Kind = .normal) {
+        let fresh = ChatSession(kind: kind,
+                                mode: mode,
                                 promptPresetID: promptPresetID,
                                 workspaceID: workspaceID)
         sessions.append(fresh)
         activeSessionID = fresh.id
+    }
+
+    /// Creates a quick-ask session without taking over the user's active
+    /// session pointer. Quick asks need their own history entry but the
+    /// user is usually in the middle of another chat/interview — switching
+    /// active would disrupt that surface, so the caller (Quick Ask flow)
+    /// drives this directly and writes turns by ID.
+    @discardableResult
+    func createQuickAskSession(workspaceID: UUID?) -> UUID {
+        let fresh = ChatSession(kind: .quickAsk,
+                                mode: .general,
+                                workspaceID: workspaceID)
+        sessions.append(fresh)
+        return fresh.id
+    }
+
+    /// Append a user turn to a specific session by ID (used by Quick Ask so
+    /// it doesn't mutate the user's currently-active session).
+    func appendUser(to sessionID: UUID, _ content: String) {
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        var s = sessions[idx]
+        s.turns.append(ChatTurn(role: .user, content: content))
+        s.updatedAt = Date()
+        if s.title.isEmpty {
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { s.title = String(trimmed.prefix(48)) }
+        }
+        sessions[idx] = s
+    }
+
+    /// Begin an assistant streaming turn against a specific session.
+    @discardableResult
+    func beginStreamingAssistant(in sessionID: UUID, model: String? = nil) -> UUID {
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return UUID() }
+        var s = sessions[idx]
+        let turn = ChatTurn(role: .assistant, content: "", model: model)
+        s.turns.append(turn)
+        s.updatedAt = Date()
+        sessions[idx] = s
+        return turn.id
+    }
+
+    /// Append streaming text to a specific assistant turn within a specific
+    /// session (Quick Ask path).
+    func appendChunk(_ chunk: String, to turnID: UUID, in sessionID: UUID) {
+        guard let sIdx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        var s = sessions[sIdx]
+        guard let tIdx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
+        s.turns[tIdx].content += chunk
+        s.updatedAt = Date()
+        sessions[sIdx] = s
+    }
+
+    /// Finalize an assistant turn's token counts within a specific session.
+    func finalizeAssistant(turnID: UUID, in sessionID: UUID,
+                            inputTokens: Int, outputTokens: Int) {
+        guard let sIdx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+        var s = sessions[sIdx]
+        guard let tIdx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
+        s.turns[tIdx].inputTokens  = inputTokens
+        s.turns[tIdx].outputTokens = outputTokens
+        s.updatedAt = Date()
+        sessions[sIdx] = s
     }
 
     /// Sessions scoped to a given workspace, most-recent first.
@@ -337,10 +454,13 @@ final class SessionStore {
 
     /// Flush any pending debounced write immediately. Called on app
     /// terminate so we don't lose the last chunk of a stream that ended
-    /// inside the debounce window.
+    /// inside the debounce window. The barrier matters: `persist()` only
+    /// *enqueues* an async write, and the process exiting first would
+    /// silently drop it.
     func flushPendingPersist() {
         persistTask?.cancel()
         persistTask = nil
         persist()
+        JSONStore.flush()
     }
 }

@@ -41,4 +41,11 @@ enum JSONStore {
             try? data.write(to: url, options: .atomic)
         }
     }
+
+    /// Block until every queued write has hit the disk. Call on app
+    /// terminate (and in tests) — `save` is asynchronous, so without a
+    /// flush the process can exit with the last write still in flight.
+    static func flush() {
+        writeQueue.sync {}
+    }
 }

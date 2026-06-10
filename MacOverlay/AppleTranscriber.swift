@@ -17,6 +17,10 @@ final class AppleTranscriber: NSObject {
     var onPartial: ((String) -> Void)?
     var onCommit:  ((String) -> Void)?
     var onSilence: (() -> Void)?
+    /// Engine failures. When unset, errors fall back to `onUpdate`
+    /// (legacy behaviour) — but consumers should set this so error
+    /// strings never masquerade as transcript text.
+    var onError:   ((String) -> Void)?
 
     private(set) var isRunning = false
 
@@ -33,24 +37,36 @@ final class AppleTranscriber: NSObject {
     private var currentText       = ""
     private var lastTextChangeAt  = Date()
     private var lastCommitAt      = Date()
-    /// Fires onSilence after this much quiet time post-speech.
-    private let silenceThreshold: TimeInterval = 1.4
+    /// Fires onSilence after this much quiet time post-speech. This is the
+    /// dominant source of "delay before the AI replies" on the Apple
+    /// backend — 1.2s keeps mid-sentence pauses from committing
+    /// prematurely while staying responsive (ElevenLabs runs at 0.6s).
+    private let silenceThreshold: TimeInterval = 1.2
     private var silenceTimer:     DispatchSourceTimer?
 
     // MARK: - Lifecycle
 
     func start(source: AudioSource) async throws {
         guard !isRunning else { return }
+        NSLog("[AppleTranscriber] start(source: %@)", String(describing: source))
         guard await requestPermission() else {
+            NSLog("[AppleTranscriber] speech recognition permission denied")
             throw TranscriptionError.permissionDenied(
                 "Speech recognition permission denied. Enable in System Settings → Privacy & Security → Speech Recognition.")
         }
-        guard let recognizer, recognizer.isAvailable else {
+        guard let recognizer else {
+            NSLog("[AppleTranscriber] SFSpeechRecognizer is nil for locale %@",
+                  Locale.current.identifier)
+            throw TranscriptionError.unavailable
+        }
+        guard recognizer.isAvailable else {
+            NSLog("[AppleTranscriber] recognizer not available (network down? language pack missing?)")
             throw TranscriptionError.unavailable
         }
 
         if source == .microphone || source == .both {
             guard await requestMicPermission() else {
+                NSLog("[AppleTranscriber] microphone permission denied")
                 throw TranscriptionError.permissionDenied(
                     "Microphone permission denied. Enable in System Settings → Privacy & Security.")
             }
@@ -59,17 +75,44 @@ final class AppleTranscriber: NSObject {
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults  = true
         req.requiresOnDeviceRecognition = false
+        // Punctuated transcripts read better AND power the question-
+        // completeness heuristic that keeps auto-mode from answering
+        // mid-sentence (TranscriptFilter.seemsComplete).
+        req.addsPunctuation             = true
         request = req
 
         if source == .microphone || source == .both {
+            // Rebuild the engine on every start. The same `AVAudioEngine`
+            // can refuse to re-tap after the default input device changes
+            // (e.g. AirPods disconnect) — the node's reported format goes
+            // stale and `installTap` silently produces no buffers. A fresh
+            // engine forces CoreAudio to re-resolve the current input.
+            audioEngine = AVAudioEngine()
             let node = audioEngine.inputNode
             let format = node.outputFormat(forBus: 0)
+            NSLog("[AppleTranscriber] mic input format: %@ channels=%u sampleRate=%.0f",
+                  format.description, format.channelCount, format.sampleRate)
+            guard format.channelCount > 0, format.sampleRate > 0 else {
+                throw TranscriptionError.permissionDenied(
+                    "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that MacOverlay has Microphone permission.")
+            }
             node.removeTap(onBus: 0)
+            var bufferCount = 0
             node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
                 self?.request?.append(buf)
+                bufferCount += 1
+                if bufferCount == 1 || bufferCount % 200 == 0 {
+                    NSLog("[AppleTranscriber] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+                }
             }
             audioEngine.prepare()
-            try audioEngine.start()
+            do {
+                try audioEngine.start()
+                NSLog("[AppleTranscriber] AVAudioEngine started")
+            } catch {
+                NSLog("[AppleTranscriber] AVAudioEngine.start failed: %@", error.localizedDescription)
+                throw error
+            }
         }
 
         if source == .systemAudio || source == .both {
@@ -79,9 +122,10 @@ final class AppleTranscriber: NSObject {
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
             if let error {
+                NSLog("[AppleTranscriber] recognition error: %@", error.localizedDescription)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning else { return }
-                    self.onUpdate?("Error: \(error.localizedDescription)")
+                    (self.onError ?? self.onUpdate)?("Error: \(error.localizedDescription)")
                 }
                 return
             }
@@ -100,6 +144,7 @@ final class AppleTranscriber: NSObject {
                 }
             }
         }
+        NSLog("[AppleTranscriber] recognitionTask installed")
 
         isRunning = true
         currentText = ""
@@ -143,7 +188,9 @@ final class AppleTranscriber: NSObject {
     private func startSilenceWatcher() {
         silenceTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + 0.4, repeating: 0.4)
+        // 0.25s granularity keeps the worst-case commit latency near the
+        // threshold instead of threshold + a coarse timer tick.
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
         timer.setEventHandler { [weak self] in
             guard let self, self.isRunning else { return }
             guard !self.currentText.isEmpty else { return }

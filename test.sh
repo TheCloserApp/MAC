@@ -17,6 +17,7 @@ mkdir -p "$BUILD_DIR"
 SOURCES=(
     "$SRC_DIR/SessionMode.swift"
     "$SRC_DIR/AudioSource.swift"
+    "$SRC_DIR/TranscriptFilter.swift"
     "$SRC_DIR/UserProfile.swift"
     "$SRC_DIR/NotesManager.swift"
     "$SRC_DIR/AIManager.swift"

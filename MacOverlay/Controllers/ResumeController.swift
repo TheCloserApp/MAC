@@ -155,8 +155,27 @@ private struct BulletRewriteDTO: Decodable {
 private struct IndexedGapAnalysis: Decodable {
     let gap_summary: String?
     let missing_keywords: [String]?
+    /// Surgical in-paragraph swaps — Swift finds `old` inside an existing
+    /// `<w:t>` and replaces only those characters, leaving every other run
+    /// (bold sub-phrases, hyperlinks, fonts) byte-for-byte intact.
+    let surgical_replacements: [IndexedSurgicalDTO]?
+    /// Whole-paragraph rewrites. `new_text` may carry `[B]…[/B]`,
+    /// `[I]…[/I]`, `[U]…[/U]` markers; we split them into runs so inline
+    /// emphasis survives the rewrite.
     let rewrites: [IndexedRewriteDTO]?
     let additions: [IndexedAdditionDTO]?
+    /// Table-row insertions. Each entry clones the row that contains
+    /// paragraph `after_paragraph_index` and injects a new row after it,
+    /// filling cells left-to-right from `cells`. Cell formatting is
+    /// inherited from the cloned row, so e.g. a bold left column stays
+    /// bold without the model having to mark it.
+    let row_additions: [IndexedRowAdditionDTO]?
+}
+
+private struct IndexedSurgicalDTO: Decodable {
+    let index: Int
+    let old: String
+    let new: String
 }
 
 private struct IndexedRewriteDTO: Decodable {
@@ -167,6 +186,11 @@ private struct IndexedRewriteDTO: Decodable {
 private struct IndexedAdditionDTO: Decodable {
     let after_index: Int
     let new_text: String
+}
+
+private struct IndexedRowAdditionDTO: Decodable {
+    let after_paragraph_index: Int
+    let cells: [String]
 }
 
 /// Owns resume generation + ATS scoring + DOCX export. The VM still holds the
@@ -338,12 +362,19 @@ final class ResumeController {
 
             // 1. Pre-score — optional. Skipped when the user has enabled
             //    scoring-skip (saves one Haiku call, ~25% of per-run cost).
+            //    Kept around as `capturedPreScore` so we can substitute it
+            //    for the post-score whenever fast mode passes the original
+            //    DOCX through unchanged (no edits / parse failure) — in
+            //    those cases scoring the placeholder preview text gives a
+            //    misleading "improvement" number.
+            var capturedPreScore: ResumeScore? = nil
             if !skipScoring {
                 status("Scoring your current résumé…")
                 let preScore = await self.scoreResume(base, jd: jd,
                                                       apiKey: apiKeyCopy,
                                                       openAIKey: openAIKeyCopy,
                                                       systemPrompt: scoringSystemPrompt)
+                capturedPreScore = preScore
                 vm?.resumeScore = preScore
                 if var g = vm?.resumeStore.generations.first(where: { $0.id == generationID }) {
                     g.beforeScore = preScore
@@ -362,22 +393,35 @@ final class ResumeController {
                 let result: String
                 let changelog: String
                 let url: URL
+                // Fast mode pre-computes its own post-score because the
+                // refinement loop has to score after every pass to decide
+                // whether to keep going. Everyone else uses the post-score
+                // block below.
+                var fastModePostScore: ResumeScore? = nil
+                var fastModeScoredAlready = false
                 if let originalBytes = preset.originalDOCX,
                    !base.isEmpty {
                     switch mode {
                     case .fast:
-                        let (r, c, u) = try await self.generateViaFastMode(
+                        let outcome = try await self.runFastModeWithRefinement(
                             originalBytes: originalBytes,
                             outputFilename: preset.originalFilename,
-                            resumeText: base,
+                            baseText: base,
                             jd: jd,
                             model: generationModel,
                             apiKey: apiKeyCopy,
                             openAIKey: openAIKeyCopy,
-                            systemPrompt: generationSystemPrompt,
+                            generationSystemPrompt: generationSystemPrompt,
+                            scoringSystemPrompt: scoringSystemPrompt,
+                            preScore: capturedPreScore,
+                            skipScoring: skipScoring,
                             onStatus: status
                         )
-                        result = r; changelog = c; url = u
+                        result = outcome.result
+                        changelog = outcome.changelog
+                        url = outcome.url
+                        fastModePostScore = outcome.postScore
+                        fastModeScoredAlready = !skipScoring
                     case .hybrid:
                         guard let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
                               !xml.isEmpty else {
@@ -439,13 +483,25 @@ final class ResumeController {
                     vm.quota.recordGeneration(isPremium: vm.entitlement.isPremium)
                 }
 
-                // 3. Post-score — optional.
-                let postScore: ResumeScore? = skipScoring
-                    ? nil
-                    : await self.scoreResume(result, jd: jd,
-                                             apiKey: apiKeyCopy,
-                                             openAIKey: openAIKeyCopy,
-                                             systemPrompt: scoringSystemPrompt)
+                // 3. Post-score — optional. Fast mode scores inside its
+                //    refinement loop so we just reuse what came back from
+                //    there. Other modes score here against the final text;
+                //    the passthrough guard keeps us from scoring the
+                //    "No changes suggested." placeholder instead of the
+                //    actual unchanged résumé.
+                let postScore: ResumeScore?
+                if skipScoring {
+                    postScore = nil
+                } else if fastModeScoredAlready {
+                    postScore = fastModePostScore
+                } else if Self.isUnchangedPassthrough(result) {
+                    postScore = capturedPreScore
+                } else {
+                    postScore = await self.scoreResume(result, jd: jd,
+                                                       apiKey: apiKeyCopy,
+                                                       openAIKey: openAIKeyCopy,
+                                                       systemPrompt: scoringSystemPrompt)
+                }
                 if !skipScoring { vm?.resumeScore = postScore }
 
                 // 5. Finalise the generation row.
@@ -490,6 +546,66 @@ final class ResumeController {
         }
     }
 
+    /// Extra preamble glued onto the fast-mode user message for refinement
+    /// passes. Carries the previous attempt's score and the floor we need
+    /// to clear so Claude knows the bar is higher than the default prompt
+    /// suggests.
+    private static func fastModePromptWithRefinement(base: String,
+                                                     priorScore: Int?,
+                                                     targetScore: Int?,
+                                                     attempt: Int) -> String {
+        guard attempt > 1 else { return base }
+        var header = "REFINEMENT PASS \(attempt). "
+        if let prior = priorScore, let target = targetScore {
+            header += "The previous pass scored \(prior)/100 against this JD. "
+            header += "You MUST push the next version to \(target)+ — rewrite more bullets, "
+            header += "weave in more JD vocabulary, and replace generic phrasing with "
+            header += "JD-aligned specifics. Empty edit arrays are unacceptable on this pass."
+        } else {
+            header += "The previous pass returned no edits. This time you MUST produce "
+            header += "the full 6–12 rewrites and 2–5 additions the schema asks for. "
+            header += "Empty arrays are not acceptable."
+        }
+        return header + "\n\n" + base
+    }
+
+    /// System-prompt appendix injected on refinement passes (attempt ≥ 2).
+    /// Reinforces the "make MORE edits" rule beyond the default appendix
+    /// because Haiku tends to regress to conservatism on follow-up passes
+    /// even after the user message asks for more.
+    private static let fastModeRefinementAppendix = """
+    REFINEMENT MODE: this is a follow-up pass. The previous attempt did \
+    not push the score high enough. You must:
+
+    - Produce strictly MORE edits than a normal pass, not fewer. Target the \
+      top of the 6–12 rewrite range and the top of the 2–5 addition range. \
+      Single-digit rewrites are a failure on a refinement pass.
+    - Aggressively swap generic verbs ("worked on", "helped with", "managed") \
+      for outcome-led JD-aligned verbs. Every rewritten bullet should read \
+      like it was authored for this specific JD.
+    - Front-load each rewritten bullet with a JD keyword or quantified \
+      outcome. The first six words of every bullet matter most for ATS.
+    - Returning the previous edits unchanged, or fewer edits than last pass, \
+      is unacceptable. Make the résumé visibly stronger.
+    """
+
+    /// True when `result` is one of the human-readable placeholder strings
+    /// fast mode returns in lieu of a tailored résumé (Claude returned zero
+    /// edits, DOCX paragraph extraction failed, or the JSON didn't decode).
+    /// In all three cases the saved DOCX is the original passed through
+    /// unchanged, so the post-score should mirror the pre-score rather than
+    /// score the placeholder text itself.
+    private static func isUnchangedPassthrough(_ result: String) -> Bool {
+        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return true }
+        let markers = [
+            "No changes suggested.",
+            "Couldn't parse the DOCX",
+            "The AI didn't return valid JSON",
+        ]
+        return markers.contains { trimmed.hasPrefix($0) }
+    }
+
     private static func scoringPrompt(jd: String, resume: String) -> String {
         """
         Job Description:
@@ -521,6 +637,117 @@ final class ResumeController {
     /// Roughly 15× cheaper than the agent loop. Preserves formatting the
     /// same way the agent loop does — edits clone `<w:pPr>` and the first
     /// run's `<w:rPr>` from the template paragraph.
+    /// Outcome of one fast-mode generation pass — held for the refinement
+    /// loop so each iteration can compare passes and keep the best one.
+    private struct FastModeOutcome {
+        let result: String
+        let changelog: String
+        let url: URL
+        /// Bytes of the DOCX that produced `result`. Re-fed as the
+        /// "starting point" for the next refinement pass so iterations
+        /// build on each other instead of restarting from the original.
+        let docxBytes: Data?
+        let postScore: ResumeScore?
+    }
+
+    /// Top-level entry for fast mode. Runs up to 3 passes, retrying on the
+    /// no-edit passthrough and refining until the post-score crosses the
+    /// 95-point floor the user expects from a tailored résumé. Always
+    /// returns the best-scoring outcome — never a regression.
+    private func runFastModeWithRefinement(
+        originalBytes: Data,
+        outputFilename: String?,
+        baseText: String,
+        jd: String,
+        model: String,
+        apiKey: String,
+        openAIKey: String,
+        generationSystemPrompt: String,
+        scoringSystemPrompt: String,
+        preScore: ResumeScore?,
+        skipScoring: Bool,
+        onStatus: @escaping (String) -> Void
+    ) async throws -> FastModeOutcome {
+        let targetScore = 95
+        let maxPasses = 3
+
+        var bestOutcome: FastModeOutcome? = nil
+        var currentBytes = originalBytes
+        var currentText  = baseText
+        var lastScoreForPrompt: Int? = preScore?.score
+
+        for pass in 1...maxPasses {
+            if pass > 1 {
+                onStatus("Refinement pass \(pass)/\(maxPasses) — pushing toward \(targetScore)…")
+            }
+
+            let (r, c, u) = try await self.generateViaFastMode(
+                originalBytes: currentBytes,
+                outputFilename: outputFilename,
+                resumeText: currentText,
+                jd: jd,
+                model: model,
+                apiKey: apiKey,
+                openAIKey: openAIKey,
+                systemPrompt: generationSystemPrompt,
+                onStatus: onStatus,
+                priorScore: pass > 1 ? lastScoreForPrompt : nil,
+                targetScore: pass > 1 ? targetScore : nil,
+                attemptIndex: pass
+            )
+
+            let passthrough = Self.isUnchangedPassthrough(r)
+            let docxBytes: Data? = passthrough ? nil : try? Data(contentsOf: u)
+            let score: ResumeScore?
+            if skipScoring {
+                score = nil
+            } else if passthrough {
+                // Reuse pre-score on passthrough — scoring the placeholder
+                // text would invent a "wrong" number.
+                score = preScore
+            } else {
+                onStatus("Scoring tailored résumé (pass \(pass))…")
+                score = await self.scoreResume(r, jd: jd,
+                                               apiKey: apiKey,
+                                               openAIKey: openAIKey,
+                                               systemPrompt: scoringSystemPrompt)
+            }
+
+            let outcome = FastModeOutcome(
+                result: r, changelog: c, url: u,
+                docxBytes: docxBytes, postScore: score
+            )
+
+            // Keep the best-scoring run; a regression on a refinement pass
+            // shouldn't ever overwrite a good earlier result.
+            if let best = bestOutcome {
+                let bestScore = best.postScore?.score ?? -1
+                let candidateScore = score?.score ?? -1
+                if candidateScore > bestScore {
+                    bestOutcome = outcome
+                }
+            } else {
+                bestOutcome = outcome
+            }
+
+            // Stop conditions for the loop.
+            if let s = score?.score, s >= targetScore { break }
+            if pass == maxPasses { break }
+
+            // Set up the next pass: build on this pass's output unless it
+            // was a passthrough (in which case stay on the original so
+            // we're not feeding placeholder text back in).
+            if let bytes = docxBytes, !passthrough {
+                currentBytes = bytes
+                currentText  = r
+            }
+            lastScoreForPrompt = score?.score ?? lastScoreForPrompt
+        }
+
+        // bestOutcome is set because the loop ran at least once.
+        return bestOutcome!
+    }
+
     private func generateViaFastMode(originalBytes: Data,
                                      outputFilename: String?,
                                      resumeText: String,
@@ -529,7 +756,10 @@ final class ResumeController {
                                      apiKey: String,
                                      openAIKey: String,
                                      systemPrompt: String,
-                                     onStatus: @escaping (String) -> Void) async throws -> (String, String, URL) {
+                                     onStatus: @escaping (String) -> Void,
+                                     priorScore: Int? = nil,
+                                     targetScore: Int? = nil,
+                                     attemptIndex: Int = 1) async throws -> (String, String, URL) {
         // Extract numbered paragraphs directly from the DOCX so Claude sees
         // the exact indices Swift will apply edits against. No text-matching
         // ambiguity — index 7 is always the same paragraph on both sides.
@@ -541,14 +771,23 @@ final class ResumeController {
         }
 
         onStatus("Analyzing résumé and JD…")
-        let userMessage = Self.fastModeIndexedPrompt(paragraphs: paragraphs, jd: jd)
+        let basePrompt = Self.fastModeIndexedPrompt(paragraphs: paragraphs, jd: jd)
+        let userMessage = Self.fastModePromptWithRefinement(
+            base: basePrompt,
+            priorScore: priorScore,
+            targetScore: targetScore,
+            attempt: attemptIndex
+        )
+        let appendix = attemptIndex > 1
+            ? (Self.fastModeIndexedAppendix + "\n\n" + Self.fastModeRefinementAppendix)
+            : Self.fastModeIndexedAppendix
         let raw = try await AIManager.shared.sendMessage(
             userMessage,
             apiKey:       apiKey,
             openAIApiKey: openAIKey,
             model:        model,
             screenshot:   nil,
-            systemPrompt: systemPrompt + "\n\n" + Self.fastModeIndexedAppendix,
+            systemPrompt: systemPrompt + "\n\n" + appendix,
             maxTokens:    8192,
             timeoutInterval: 240
         )
@@ -558,12 +797,30 @@ final class ResumeController {
             return (preview, "", passthrough)
         }
 
+        // Group surgical replacements per paragraph — the DOCX editor
+        // bundles them so a paragraph that gets two surgical swaps still
+        // counts as "handled by surgical" and the coarser rewrite path
+        // below leaves it alone.
+        var surgicalByIdx: [Int: [(old: String, new: String)]] = [:]
+        for s in analysis.surgical_replacements ?? [] {
+            let trimmed = s.old.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            surgicalByIdx[s.index, default: []].append((old: s.old, new: s.new))
+        }
+
         var edits: [DOCXTemplateEditor.IndexedEdit] = []
+        for (idx, reps) in surgicalByIdx {
+            edits.append(.substringReplace(index: idx, replacements: reps))
+        }
         for r in analysis.rewrites ?? [] {
             edits.append(.rewrite(index: r.index, newText: r.new_text))
         }
         for a in analysis.additions ?? [] {
             edits.append(.insertAfter(index: a.after_index, newText: a.new_text))
+        }
+        for ra in analysis.row_additions ?? [] {
+            edits.append(.insertRowAfter(referenceParagraphIndex: ra.after_paragraph_index,
+                                         cells: ra.cells))
         }
         guard !edits.isEmpty else {
             let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
@@ -571,9 +828,11 @@ final class ResumeController {
             return ("No changes suggested.\n\n\(summary)", "", passthrough)
         }
 
-        let rewriteCount = (analysis.rewrites ?? []).count
-        let addCount = (analysis.additions ?? []).count
-        onStatus("Applying \(rewriteCount) rewrite(s) + \(addCount) addition(s)…")
+        let surgicalCount = (analysis.surgical_replacements ?? []).count
+        let rewriteCount  = (analysis.rewrites ?? []).count
+        let addCount      = (analysis.additions ?? []).count
+        let rowAddCount   = (analysis.row_additions ?? []).count
+        onStatus("Applying \(surgicalCount) surgical · \(rewriteCount) rewrite · \(addCount) addition · \(rowAddCount) row(s)…")
 
         let outcome = try DOCXTemplateEditor.applyIndexedEdits(
             to: originalBytes,
@@ -653,13 +912,56 @@ final class ResumeController {
     {
       "gap_summary": "string",
       "missing_keywords": ["string"],
-      "rewrites": [ { "index": 7, "new_text": "…" } ],
-      "additions": [ { "after_index": 12, "new_text": "…" } ]
+      "surgical_replacements": [ { "index": 7, "old": "managed projects", "new": "led data analytics projects" } ],
+      "rewrites": [ { "index": 9, "new_text": "Led [B]data analytics[/B] projects…" } ],
+      "additions": [ { "after_index": 12, "new_text": "…" } ],
+      "row_additions": [ { "after_paragraph_index": 18, "cells": ["Python", "5+ years", "Expert"] } ]
     }
 
-    The résumé's paragraphs are given to you as a numbered list. `index` \
-    and `after_index` are 1-based positions in THAT list. Nothing else \
-    identifies a paragraph — don't try to quote text back.
+    The résumé's paragraphs are given to you as a numbered list. Inside that \
+    list, bold spans are wrapped in `[B]…[/B]`, italics in `[I]…[/I]`, and \
+    underlines in `[U]…[/U]`. Those markers describe the original \
+    formatting — they're NOT literal text the user typed.
+
+    PREFER `surgical_replacements` OVER `rewrites`. Every word you change \
+    via a rewrite collapses bold sub-phrases, hyperlinks, and per-run \
+    fonts on that paragraph into a single style. Surgical replacements \
+    swap only the characters you specify and leave every other run intact. \
+    Use a rewrite ONLY when you genuinely need to restructure the whole \
+    bullet; for "swap a phrase or two", `surgical_replacements` is right.
+
+    For `surgical_replacements`:
+    - `old` MUST be a contiguous substring of paragraph `index`'s plain \
+      text (strip the `[B]/[I]/[U]` markers when matching). Copy it \
+      verbatim — same casing, same punctuation, same whitespace.
+    - `old` must live inside a single formatting span. If the phrase you \
+      want to change crosses a `[B]…[/B]` boundary, either pick a smaller \
+      `old` that stays inside one span, or use a `rewrite` instead.
+    - `new` is plain text — no markers. It inherits the same formatting \
+      as the `<w:t>` it lands in.
+    - Skip dates, year ranges, "Present", and similar — they belong to \
+      role headers, not content.
+
+    For `rewrites`, `new_text` MAY use `[B]/[I]/[U]` markers to keep \
+    inline emphasis. Wrap company names, technologies, or other terms \
+    that should stay bold in `[B]…[/B]`. Markers nest — `[B][I]bold-italic[/I][/B]` \
+    is fine. Anything you don't mark renders in the run's default style.
+
+    `index` / `after_index` / `after_paragraph_index` are 1-based positions \
+    in the numbered list. Nothing else identifies a paragraph — don't try \
+    to quote text back.
+
+    `row_additions` adds a NEW row to a table. Use it whenever the résumé \
+    has a Skills, Languages, Education, Certifications, or similar table \
+    where rows share a column layout. Pick `after_paragraph_index` so it \
+    points at any paragraph inside the row you want to clone — typically \
+    the row immediately above the new one, or the most-recently-listed \
+    item. `cells` fills the new row's cells left-to-right. The cloned row \
+    keeps all per-cell formatting (bold left column, fills, borders, \
+    fonts), so a row whose first column is bold will inject a new bold \
+    first cell automatically — you don't have to mark it. Empty strings \
+    in `cells` leave that column's cloned source text untouched, which is \
+    useful when a column always carries the same label.
 
     YOU ARE AN HONEST RÉSUMÉ TRANSLATOR, NOT A GATEKEEPER. The candidate \
     has already decided to apply to this JD — your only job is to present \
@@ -699,40 +1001,74 @@ final class ResumeController {
     adding what isn't = NO.
 
     TARGET VOLUME (per generation, applies regardless of match quality):
-    - `rewrites`: 6–12 entries. ALWAYS include the summary. For \
-      cross-domain cases, prioritise the bullets with the highest reframe \
-      potential — anything involving data, reporting, automation, \
-      scripting, or stakeholder work.
+    - `surgical_replacements`: 6–14 entries. This is the primary lever — \
+      prefer it for keyword swaps, verb upgrades, JD-vocabulary insertions \
+      anywhere the bullet structure is fine and you only need to change a \
+      phrase or two. Hits more bullets at lower formatting risk.
+    - `rewrites`: 2–5 entries. Reserve these for paragraphs that need \
+      structural changes (e.g. the summary, a heavily mis-pitched bullet). \
+      Always include a rewrite for the summary.
     - `additions`: 0–5 entries. Only add when supporting facts exist \
       elsewhere in the résumé. For cross-domain cases, 0–1 is normal.
+    - `row_additions`: 0–4 entries. Use whenever the résumé has a \
+      skills/languages/education table and the JD lists items not covered \
+      by the existing rows. Each row inherits the cloned row's column \
+      formatting, so a "Skill | Years | Proficiency"-style table stays \
+      consistent.
     - `missing_keywords`: 3–8 JD keywords you couldn't honestly work in. \
       These flag to the candidate what they'd need to learn/add.
     - `gap_summary`: one crisp sentence describing your reframe strategy \
       or, honestly, the domain gap.
 
+    FORMAT PRESERVATION IS NON-NEGOTIABLE. The output document must look \
+    IDENTICAL to the input except for the words you changed:
+    - Never reorder sections, change section headings, merge or split \
+      paragraphs, or change bullet/numbering style. You only edit text \
+      INSIDE existing paragraphs, or add new ones cloned from neighbours.
+    - When a rewrite touches a paragraph with `[B]/[I]/[U]` spans, carry \
+      the markers over onto the same words (or their replacements). \
+      Dropping the markers strips the user's bold/italic styling.
+    - Skills/Languages/Certifications TABLES: never use `rewrites` or \
+      `additions` to put skills text near a table — table changes go \
+      through `row_additions` ONLY, and the new row must follow the \
+      exact column convention of the existing rows (same kind of value \
+      per column, same label style, comparable length). Mirror the \
+      pattern of the row directly above the one you add.
+    - Skills LISTS in plain paragraphs ("Languages: Python, SQL") are \
+      extended with `surgical_replacements` in place ("Python, SQL" → \
+      "Python, SQL, R") — never rewritten wholesale, never duplicated.
+
     HARD RULES:
     - Don't rewrite headings, names, contact info, or employer / date lines.
     - Never invent employers, titles, dates, degrees, certifications, \
       metrics, or technologies absent from the résumé.
-    - Keep `new_text` plain-text (no bullet markers, no markdown, no \
-      quote wrapping).
+    - Keep `new`, `new_text` plain text (no bullet markers, no markdown, \
+      no quote wrapping). `new_text` may contain `[B]/[I]/[U]` formatting \
+      markers; nothing else.
     - Every `index` / `after_index` MUST match a paragraph number shown.
     - Returning empty arrays with a "skills mismatch" gap_summary is a \
       FAILURE. Translate the existing experience instead.
+    - If the same paragraph appears in both `surgical_replacements` and \
+      `rewrites`, the surgical edits win and the rewrite is dropped — \
+      so don't emit both for the same index.
     """
 
     /// Build the numbered paragraph list + JD framing that Claude sees in
     /// index-based Fast mode. Compact — one line per paragraph, prefixed by
     /// its 1-based index, with empty paragraphs marked `(blank)` so the
-    /// AI doesn't waste effort trying to rewrite them.
+    /// AI doesn't waste effort trying to rewrite them. Paragraph text is
+    /// shown with `[B]/[I]/[U]` markers around bold/italic/underline runs
+    /// so Claude knows where inline emphasis lives and can either preserve
+    /// it (rewrite path) or stay inside one span (surgical path).
     private static func fastModeIndexedPrompt(paragraphs: [DOCXTemplateEditor.IndexedParagraph],
                                               jd: String) -> String {
         let numbered = paragraphs.map { p -> String in
-            let text = p.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return "\(p.index). " + (text.isEmpty ? "(blank)" : text)
+            let raw = p.markedText.isEmpty ? p.text : p.markedText
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(p.index). " + (trimmed.isEmpty ? "(blank)" : trimmed)
         }.joined(separator: "\n")
         return """
-        NUMBERED RESUME PARAGRAPHS:
+        NUMBERED RESUME PARAGRAPHS (bold = [B]…[/B], italic = [I]…[/I], underline = [U]…[/U]):
         \(numbered)
 
         JOB DESCRIPTION:
@@ -765,15 +1101,39 @@ final class ResumeController {
         if let kws = analysis.missing_keywords, !kws.isEmpty {
             lines.append("- Keywords woven in: \(kws.joined(separator: ", "))")
         }
-        lines.append("- \(outcome.rewritesApplied) bullet(s) rewritten, \(outcome.insertionsApplied) bullet(s) added")
+        var parts: [String] = []
+        if outcome.surgicalApplied > 0 {
+            parts.append("\(outcome.surgicalApplied) surgical swap(s)")
+        }
+        if outcome.rewritesApplied > 0 {
+            parts.append("\(outcome.rewritesApplied) bullet(s) rewritten")
+        }
+        if outcome.insertionsApplied > 0 {
+            parts.append("\(outcome.insertionsApplied) bullet(s) added")
+        }
+        if outcome.rowsInserted > 0 {
+            parts.append("\(outcome.rowsInserted) table row(s) added")
+        }
+        if !parts.isEmpty {
+            lines.append("- " + parts.joined(separator: ", "))
+        }
+        if outcome.surgicalMissed > 0 {
+            lines.append("- ⚠️ \(outcome.surgicalMissed) surgical edit(s) didn't match — the AI's `old` text wasn't found verbatim in the paragraph")
+        }
         if !outcome.layoutPreserved.isEmpty {
             lines.append("- ℹ️ \(outcome.layoutPreserved.count) edit(s) skipped to preserve layout (paragraphs use tab-aligned dates / skills lists / table cells — collapsing them would break the visual structure)")
+        }
+        if !outcome.headingsProtected.isEmpty {
+            lines.append("- ℹ️ \(outcome.headingsProtected.count) edit(s) blocked — they targeted section headings, which are never modified")
         }
         for idx in outcome.rewritesMissed {
             lines.append("- ⚠️ Rewrite skipped — index \(idx) is out of range")
         }
         for idx in outcome.insertionsMissed {
             lines.append("- ⚠️ Addition skipped — after_index \(idx) is out of range")
+        }
+        for idx in outcome.rowsMissed {
+            lines.append("- ⚠️ Row insertion skipped — paragraph \(idx) isn't inside a table row")
         }
         // `outcome.validationWarning` is intentionally NOT surfaced here.
         // It comes from Foundation's strict XMLParser which trips on harmless

@@ -54,6 +54,9 @@ struct InputBarView: View {
             if vm.pendingScreenshot != nil && vm.shellStage != .pill {
                 screenshotChip
             }
+            if !vm.pendingAttachments.isEmpty && vm.shellStage != .pill {
+                attachmentChips
+            }
             barRow
         }
         // Constant horizontal padding across stages — animating padding
@@ -61,7 +64,7 @@ struct InputBarView: View {
         // which reads as the icon "twitching" as the bar grows. Lock it.
         .padding(.horizontal, 4)
         .padding(.vertical, 4)
-        .background(barShape.fill(Design.Surface.shellFill))
+        .background(barShape.fill(Design.Surface.shellFill).opacity(vm.backgroundOpacity))
         .overlay(barShape.stroke(Color.white.opacity(0.10), lineWidth: 0.75))
         // Clip transitioning content (inner HStack sliding in from the
         // leading edge) to the capsule outline so the controls visibly
@@ -154,7 +157,6 @@ struct InputBarView: View {
     @ViewBuilder
     private var barRow: some View {
         @Bindable var vm = vm
-        let bar = vm.barCustomization
         // `alignment: .center` + a fixed minimum row height keeps the
         // brand pill at exactly the same Y across every stage. Without
         // this, the row's intrinsic height fluctuates as buttons / the
@@ -180,36 +182,38 @@ struct InputBarView: View {
                 .frame(width: 44, height: 44)
 
             if vm.shellStage != .pill {
-                // Plain opacity transition — no transform, so the
-                // controls just fade in inside the capsule as it grows.
+                // Two layouts depending on whether an interview is running:
+                //   - Idle: brand pill + four surface icons (Interview,
+                //     Resume, Browser, Profile). Flows start from a surface.
+                //   - Active interview: text field + model picker + stop
+                //     button. The surface icons disappear so the user can
+                //     focus on the live conversation; they come back the
+                //     moment the interview ends.
                 HStack(alignment: .center, spacing: 4) {
                     divider
-                    if bar.showTextField {
+                    if vm.isInterviewSession {
                         textInputField
-                    }
-                    if bar.showNewSession {
-                        newSessionButton
-                    }
-                    if bar.showHistory && FeatureFlags.sessionsHistoryEnabled {
-                        historyButton
-                    }
-                    if bar.showMode {
-                        permissionsMenu
-                    }
-                    surfaceButtons
-                    if FeatureFlags.workspacesEnabled {
-                        workspaceButton
-                    }
-                    if bar.showModel {
                         modelMenu
-                    }
-                    if bar.showMic {
-                        micButton
-                    }
-                    if bar.showSend {
-                        sendButton
+                        // Text-only Regular call swaps the pause/play
+                        // button for a plain send button so the user
+                        // can ship a message without involving the mic.
+                        if vm.isInterviewTextOnly {
+                            sendButton
+                        } else {
+                            interviewPauseButton
+                            // Manual send: push whatever's typed — or the
+                            // accumulated live transcription — to the AI
+                            // right now, without waiting for a silence
+                            // boundary or auto-generate. The mic keeps
+                            // running.
+                            liveSendButton
+                        }
+                        interviewStopButton
+                    } else {
+                        surfaceButtons
                     }
                 }
+                .padding(.trailing, 12)
                 .clipped()
                 .transition(.opacity)
             }
@@ -360,26 +364,14 @@ struct InputBarView: View {
 
     @ViewBuilder
     private var surfaceButtons: some View {
-        // v1 surface set on the bar: Resumes, then Settings. Prompts moved
-        // INTO Settings (Settings → AI tab → Manage prompts), so the bar
-        // doesn't carry it as a top-level button anymore. History has its
-        // own dedicated button next to + above; Calendar / Browser are
-        // gated by FeatureFlags so we can bring them back in v2. Each
-        // also respects the user's BarCustomization toggle.
-        let bar = vm.barCustomization
-        if bar.showResume {
-            surfaceButton(.resumes,  icon: "doc.richtext",           label: "Resumes")
-        }
-        if FeatureFlags.calendarEnabled {
-            surfaceButton(.calendar, icon: "calendar", label: "Calendar")
-        }
+        // v1 bar surface set: Interview, Resume, Browser, Profile. Everything
+        // else (mode picker, model picker, history, mic, send, text field) is
+        // parked — flows start by clicking one of these four icons.
+        surfaceButton(.interview, icon: "desktopcomputer", label: "Interview")
+        surfaceButton(.resumes,   icon: "doc.richtext",          label: "Resumes")
         if FeatureFlags.browserEnabled {
             surfaceButton(.browser, icon: "globe", label: "Browser")
         }
-        // Profile / settings button is the user's permanent escape hatch
-        // into preferences (and account, API keys, etc.), so unlike the
-        // other surface buttons it isn't gated by BarCustomization — it's
-        // always rendered.
         surfaceButton(.settings, icon: "person.crop.circle", label: "Profile",
                       attention: vm.needsKeyForCurrentModel)
     }
@@ -389,28 +381,41 @@ struct InputBarView: View {
                                label: String,
                                attention: Bool = false) -> some View {
         let active = vm.primarySurface == surface && vm.shellStage != .pill
+        let tint = attention ? Design.Accent.amber
+                  : (active ? Design.Accent.blue : Color.primary.opacity(0.78))
         return Button {
-            withAnimation(Design.Motion.spring) {
+            // Use `.expand` (easeOut 0.32s) so the SwiftUI state change
+            // animates with the exact same curve as the AppKit panel
+            // resize fired off by `onPrimarySurfaceChange`. The previous
+            // `.spring` had a subtle overshoot that didn't match the
+            // panel's smooth easeOut — that desync was one source of
+            // the bar visibly bouncing on surface open.
+            withAnimation(Design.Motion.expand) {
                 if active {
-                    // Tapping the active surface again closes the body
-                    // back to the bar-only (compact) layout — quicker
-                    // than hunting for a separate close button.
                     vm.primarySurface = nil
+                } else if surface == .interview {
+                    // Interview icon resumes the most-recent interview /
+                    // regular-call session when one exists, rather than
+                    // dumping the user onto the setup form every time.
+                    vm.openInterviewSurface()
+                    if vm.shellStage == .pill { vm.shellStage = .expanded }
                 } else {
                     vm.primarySurface = surface
                     if vm.shellStage == .pill { vm.shellStage = .expanded }
                 }
             }
         } label: {
-            iconCircle(
-                systemName: icon,
-                tint: attention ? Design.Accent.amber
-                      : (active ? Design.Accent.blue : .secondary),
-                size: 12,
-                fill: active ? Design.Accent.blue.opacity(0.16) : Color.white.opacity(0.04)
-            )
+            SurfaceIcon(systemName: icon, tint: tint, active: active, attention: attention)
         }
         .buttonStyle(.plain)
+        // Surface buttons are static fixtures in the bar — their position
+        // must NEVER lerp when primarySurface/shellStage changes. The
+        // SurfaceIcon's internal `.animation(value: active)` handles the
+        // color transition; these opt-outs make sure no inherited
+        // `withAnimation(.expand)` from the click can animate the
+        // button's layout/position.
+        .animation(nil, value: vm.primarySurface)
+        .animation(nil, value: vm.shellStage)
         .help(label)
     }
 
@@ -574,6 +579,53 @@ struct InputBarView: View {
         }
     }
 
+    /// Pause / resume button shown while an interview is running. Pausing
+    /// stops the transcriber but keeps the session alive so resuming picks
+    /// up the same transcript and context. Renders as `pause.fill` when
+    /// recording, `play.fill` when paused.
+    private var interviewPauseButton: some View {
+        let paused = vm.isInterviewPaused
+        return Button {
+            if paused { vm.resumeInterviewSession() }
+            else      { vm.pauseInterviewSession() }
+        } label: {
+            ZStack {
+                Circle().fill((paused ? Design.Accent.blue : Color.white).opacity(paused ? 0.20 : 0.06))
+                Circle().strokeBorder(
+                    (paused ? Design.Accent.blue : Color.white).opacity(paused ? 0.45 : 0.15),
+                    lineWidth: 0.5
+                )
+                Image(systemName: paused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(paused ? Design.Accent.blue : .primary.opacity(0.85))
+            }
+            .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .help(paused ? "Resume interview" : "Pause interview")
+    }
+
+    /// Big stop button shown in place of the surface icons while an
+    /// interview is running. One tap ends the live session and the bar
+    /// flips back to the four-icon idle layout.
+    private var interviewStopButton: some View {
+        Button {
+            vm.stopInterviewSession()
+        } label: {
+            ZStack {
+                Circle().fill(Design.Accent.red.opacity(0.20))
+                Circle().strokeBorder(Design.Accent.red.opacity(0.45), lineWidth: 0.5)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Design.Accent.red)
+                    .symbolEffect(.pulse, options: .repeating, value: vm.isInterviewSession)
+            }
+            .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .help("Stop interview")
+    }
+
     private var sendButton: some View {
         let enabled = vm.canSend || !vm.manualInput.isEmpty
         return Button { send() } label: {
@@ -594,6 +646,32 @@ struct InputBarView: View {
         .help("Send (⏎)")
     }
 
+    /// Manual "send now" shown alongside pause during a live (voice)
+    /// interview. Pushes the typed draft — or, if nothing's typed, the
+    /// accumulated transcription — to the AI immediately, instead of
+    /// waiting for a silence boundary / auto-generate. The mic keeps
+    /// running; the transcript clears so the next utterance starts fresh.
+    private var liveSendButton: some View {
+        let enabled = (!vm.manualInput.isEmpty || !vm.transcription.isEmpty)
+            && !vm.isSendingToAI
+        return Button { vm.sendTranscriptManually() } label: {
+            ZStack {
+                Circle().fill(enabled ? Design.Accent.blue : Color.white.opacity(0.04))
+                Circle().strokeBorder(
+                    enabled ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
+                    lineWidth: 0.5
+                )
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(enabled ? .white : .secondary.opacity(0.5))
+            }
+            .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help("Send transcription to AI now")
+    }
+
     // MARK: - Helpers
 
     private func iconCircle(systemName: String,
@@ -609,6 +687,61 @@ struct InputBarView: View {
                 .foregroundColor(tint)
         }
         .frame(width: 30, height: 30)
+    }
+
+    // MARK: - Attachment chips
+
+    /// Pending file attachments queued for the next send. Each chip shows
+    /// the file icon + name and an `x` to remove. The extracted text is
+    /// already in `vm.pendingAttachments[i].extractedText` and will be
+    /// merged into the AI prompt at send time.
+    @ViewBuilder
+    private var attachmentChips: some View {
+        let chips = vm.pendingAttachments
+        HStack(spacing: 6) {
+            ForEach(chips) { att in
+                HStack(spacing: 5) {
+                    Image(systemName: iconFor(att.name))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(att.name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button {
+                        vm.pendingAttachments.removeAll { $0.id == att.id }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                )
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func iconFor(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf":          return "doc.richtext.fill"
+        case "docx", "doc":  return "doc.text.fill"
+        case "rtf":          return "doc.text.fill"
+        case "md", "txt":    return "doc.plaintext.fill"
+        default:             return "doc.fill"
+        }
     }
 
     // MARK: - Screenshot chip
@@ -648,5 +781,63 @@ struct InputBarView: View {
     private func send() {
         if !vm.manualInput.isEmpty { vm.showManualInput = true }
         vm.sendToAI()
+    }
+}
+
+/// Slightly bigger / more readable bar icon. Two visual states beyond
+/// the existing `iconCircle`:
+///   - hover lifts brightness so each icon visibly responds before click;
+///   - active state paints the whole circle in the accent tint with a
+///     stronger stroke so the current surface reads at a glance.
+/// Sizing stays 30×30 so the bar height doesn't shift.
+private struct SurfaceIcon: View {
+    let systemName: String
+    let tint: Color
+    let active: Bool
+    let attention: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(fillColor)
+            Circle()
+                .strokeBorder(strokeColor, lineWidth: 0.5)
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(tint)
+        }
+        .frame(width: 30, height: 30)
+        // Visual state changes are PAINT-only (fill color, stroke color,
+        // tint). No scaleEffect, no font-weight swap, no stroke-width
+        // swap — those all caused the icon to subtly shift in size on
+        // click/hover, which read as the icon "jumping." Keeping the
+        // visual feedback to color animation only means the icon's
+        // bounding glyph stays pixel-stable across every state.
+        .brightness(hovering && !active ? 0.06 : 0)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: active)
+        .contentShape(Circle())
+        .onHover { hovering = $0 }
+    }
+
+    private var fillColor: Color {
+        if active {
+            return Design.Accent.blue.opacity(0.22)
+        }
+        if attention {
+            return Design.Accent.amber.opacity(0.14)
+        }
+        return Color.white.opacity(hovering ? 0.08 : 0.04)
+    }
+
+    private var strokeColor: Color {
+        if active {
+            return Design.Accent.blue.opacity(0.50)
+        }
+        if attention {
+            return Design.Accent.amber.opacity(0.40)
+        }
+        return Color.white.opacity(0.12)
     }
 }

@@ -82,6 +82,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.animateShellFrame(stage: stage)
         }
 
+        // Re-fire the resize whenever the floating pill popup
+        // (resume score / generated resume / quick-ask) appears or
+        // disappears in pill mode — the panel needs to grow tall enough
+        // to host the popup above the brand pill.
+        vm.onPillPopupChange = { [weak self] _ in
+            guard let self, let stage = self.vm?.shellStage else { return }
+            self.animateShellFrame(stage: stage)
+        }
+
         // The expanded panel adapts to whether a surface is open
         // (compact bar-only vs. full body). Surface changes need to
         // re-fire the same resize so the panel matches.
@@ -145,6 +154,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// `.pill` — small capsule that just shows the brand logo.
     static let collapsedSize = NSSize(width: 360, height: 80)
+    /// `.pill` with a floating result popup (resume score / generated
+    /// resume / quick-ask) anchored above the brand. Grows the panel
+    /// tall and wide enough to host the popup without expanding the
+    /// shell — the user still sees only the pill + the popup card.
+    static let pillWithPopupSize = NSSize(width: 480, height: 360)
     /// `.expanded` with no `primarySurface` — InputBar only, single row.
     static let expandedCompactSize = NSSize(width: 620, height: 84)
     /// `.expanded` with a `primarySurface` set — full shell: top header
@@ -623,7 +637,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let target: NSSize
         switch stage {
         case .pill:
-            target = Self.collapsedSize
+            target = vm.hasPillPopup ? Self.pillWithPopupSize : Self.collapsedSize
         case .expanded:
             if surfaceOpen {
                 target = NSSize(
@@ -660,8 +674,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // panel is still resizing while SwiftUI has already settled.
         let target_ = NSRect(x: newX, y: newY, width: target.width, height: target.height)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.32
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             ctx.allowsImplicitAnimation = true
             panel.animator().setFrame(target_, display: true)
         }

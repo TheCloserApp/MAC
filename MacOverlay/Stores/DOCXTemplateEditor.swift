@@ -262,19 +262,44 @@ enum DOCXTemplateEditor {
     /// flow so the AI can reference paragraphs by number instead of re-
     /// quoting text (which fails silently when whitespace or punctuation
     /// doesn't match character-for-character).
+    ///
+    /// `markedText` is the same plain text but with `[B]`/`[I]`/`[U]`
+    /// markers wrapping bold / italic / underline runs. The model edits
+    /// this string; `rewriteParagraphMarked` parses the markers back into
+    /// runs so inline emphasis survives a full-paragraph rewrite.
     struct IndexedParagraph {
         let index: Int
         let text: String
+        let markedText: String
         let xml: String
     }
 
     /// One AI-specified edit referenced by paragraph index rather than by
-    /// text matching. `.rewrite` replaces the paragraph's text; `.insertAfter`
-    /// injects a new paragraph cloned from the target's XML (so bullet marker,
-    /// indent, fonts, and sizes all come along).
+    /// text matching.
+    ///
+    /// - `.substringReplace`: precise in-run swap — Swift finds `old`
+    ///   inside an existing `<w:t>` and replaces only those characters.
+    ///   Run structure (bold sub-phrases, hyperlinks, font colour) stays
+    ///   byte-for-byte intact. The surgical path; pref this whenever
+    ///   only a few words need to change.
+    /// - `.rewrite`: replace the paragraph's text. `newText` may carry
+    ///   `[B]…[/B]` / `[I]…[/I]` / `[U]…[/U]` markers; we split it into
+    ///   runs so inline emphasis is preserved even on full rewrites.
+    /// - `.insertAfter`: clone the target paragraph's XML (bullet marker,
+    ///   indent, fonts) and inject a new one after it carrying `newText`.
     enum IndexedEdit {
+        case substringReplace(index: Int, replacements: [(old: String, new: String)])
         case rewrite(index: Int, newText: String)
         case insertAfter(index: Int, newText: String)
+        /// Clone the table row that contains paragraph `referenceParagraphIndex`
+        /// and inject a new row immediately after it. `cells` fills the new
+        /// row's cells left-to-right; entries past the cell count are ignored
+        /// and empty strings leave the cloned source cell untouched (handy
+        /// when one column always carries the same label). The cloned row
+        /// keeps all per-cell formatting — bold left columns, fills, borders,
+        /// fonts — because we duplicate the row's XML wholesale and only
+        /// swap each cell paragraph's text via `cloneParagraphForInsert`.
+        case insertRowAfter(referenceParagraphIndex: Int, cells: [String])
     }
 
     /// Statistics returned from `applyIndexedEdits`.
@@ -289,7 +314,50 @@ enum DOCXTemplateEditor {
         /// skills lists, table-cell alignment). Collapsing those runs would
         /// destroy the visual layout.
         var layoutPreserved: [Int] = []
+        /// Per-paragraph counts of surgical substring edits that succeeded
+        /// and that we couldn't find a matching `<w:t>` for (the model
+        /// misquoted `old`, e.g. paraphrased instead of copying).
+        var surgicalApplied: Int = 0
+        var surgicalMissed: Int = 0
+        /// Table-row insertions. `rowsInserted` is the count that landed;
+        /// `rowsMissed` carries the reference-paragraph indices whose
+        /// enclosing row we couldn't locate (paragraph wasn't inside a
+        /// `<w:tr>`, or the row XML was malformed).
+        var rowsInserted: Int = 0
+        var rowsMissed: [Int] = []
+        /// Edits refused because the target paragraph is a section heading
+        /// (Heading style or short all-caps line). The model is told not
+        /// to touch these; the code makes it impossible.
+        var headingsProtected: [Int] = []
         var validationWarning: String?
+    }
+
+    /// Inline character-level formatting we capture in `markedText` and
+    /// rebuild from `[B]/[I]/[U]` markers. Scoped to bold / italic /
+    /// underline only — colour, font, hyperlinks etc. ride along inside
+    /// the cloned `<w:rPr>` baseline.
+    struct RunFormat: OptionSet, Hashable {
+        let rawValue: Int
+        static let bold      = RunFormat(rawValue: 1 << 0)
+        static let italic    = RunFormat(rawValue: 1 << 1)
+        static let underline = RunFormat(rawValue: 1 << 2)
+    }
+
+    /// True when the paragraph reads like a section heading — explicit
+    /// Word Heading style, or a short all-caps line ("EXPERIENCE",
+    /// "TECHNICAL SKILLS", a name banner). The model is told never to
+    /// touch headings, but prompts get ignored; this enforces it in code
+    /// so a misbehaving response can't restructure the document.
+    fileprivate static func looksLikeSectionHeading(_ paraXML: String) -> Bool {
+        if paraXML.range(of: #"<w:pStyle w:val="Heading[^"]*""#,
+                         options: .regularExpression) != nil { return true }
+        let text = concatRunText(in: paraXML)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text.count <= 48 else { return false }
+        let letterCount = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        guard letterCount >= 3 else { return false }
+        // All letters uppercase and none lowercase → header-shaped.
+        return text.rangeOfCharacter(from: .lowercaseLetters) == nil
     }
 
     /// True if the paragraph contains inline layout elements that we'd
@@ -383,6 +451,7 @@ enum DOCXTemplateEditor {
         return paraXMLs.enumerated().map { (i, pXML) in
             IndexedParagraph(index: i + 1,
                              text: concatRunText(in: pXML),
+                             markedText: markedRunText(in: pXML),
                              xml: pXML)
         }
     }
@@ -409,14 +478,64 @@ enum DOCXTemplateEditor {
         var (paragraphs, gaps) = splitBodySegments(body)
 
         // Bucket edits by action + target index for clean application.
+        var surgicalByIdx: [Int: [(old: String, new: String)]] = [:]
         var rewritesByIdx: [Int: String] = [:]
         var insertionsByIdx: [Int: [String]] = [:]
+        var rowInsertionsByRef: [Int: [[String]]] = [:]
         for edit in edits {
             switch edit {
+            case .substringReplace(let idx, let reps):
+                surgicalByIdx[idx, default: []].append(contentsOf: reps)
             case .rewrite(let idx, let newText):
                 rewritesByIdx[idx] = newText
             case .insertAfter(let idx, let newText):
                 insertionsByIdx[idx, default: []].append(newText)
+            case .insertRowAfter(let refIdx, let cells):
+                rowInsertionsByRef[refIdx, default: []].append(cells)
+            }
+        }
+
+        // Resolve row insertions against the ORIGINAL paragraph/gap state
+        // before any paragraph edits run — locating the enclosing `<w:tr>`
+        // needs the gap structure intact, and we capture the row's XML
+        // here so subsequent edits to cell paragraphs don't change what
+        // gets cloned. Document-row indexing is stable across paragraph
+        // edits (paragraph mutations never add or remove `<w:tr>` tags),
+        // so we record each insertion's source `rowIndex0` and apply
+        // them post-rebuild in descending order.
+        struct PendingRowInsertion {
+            let refIdx: Int
+            let rowIndex0: Int
+            let sourceRowXML: String
+            let cells: [String]
+        }
+        var pendingRowInsertions: [PendingRowInsertion] = []
+        var rowsMissed: [Int] = []
+        var rowsInserted = 0
+        for (refIdx, cellArrays) in rowInsertionsByRef {
+            let refIdx0 = refIdx - 1
+            guard refIdx0 >= 0, refIdx0 < paragraphs.count,
+                  let span = locateEnclosingRow(refIndex0: refIdx0,
+                                                paragraphs: paragraphs,
+                                                gaps: gaps),
+                  let rowXML = extractRowXML(firstIdx0: span.firstIdx0,
+                                             lastIdx0: span.lastIdx0,
+                                             paragraphs: paragraphs,
+                                             gaps: gaps)
+            else {
+                rowsMissed.append(contentsOf: Array(repeating: refIdx, count: cellArrays.count))
+                continue
+            }
+            // 0-based document row index for our source row. `<w:tr>`
+            // openings only live in gaps; sum opens in gaps[0...firstIdx0]
+            // and subtract 1 — the count includes our row's own opening.
+            var rowIndex0 = -1
+            for k in 0...span.firstIdx0 { rowIndex0 += countTrOpens(in: gaps[k]) }
+            for cells in cellArrays {
+                pendingRowInsertions.append(PendingRowInsertion(
+                    refIdx: refIdx, rowIndex0: rowIndex0,
+                    sourceRowXML: rowXML, cells: cells
+                ))
             }
         }
 
@@ -425,26 +544,61 @@ enum DOCXTemplateEditor {
         var insertionsApplied = 0
         var insertionsMissed: [Int] = []
         var layoutPreserved: [Int] = []
+        var headingsProtected: [Int] = []
+        var surgicalApplied = 0
+        var surgicalMissed = 0
 
-        // Apply rewrites in place (indices stay stable since we're not
-        // inserting yet). For paragraphs with inline layout elements
-        // (tabs / breaks / position tabs) we use SURGICAL replacement —
-        // swap only the largest non-date `<w:t>` text node, leaving runs,
-        // tabs, breaks, and bold sub-phrases untouched. For paragraphs
-        // without those elements we collapse to a single run via
-        // `rewriteParagraphText`, which gives clean text but loses bold
-        // sub-phrases (acceptable trade-off for clean rewrites).
+        // 1. Surgical substring replacements first. These preserve run
+        //    structure (bold sub-phrases, hyperlinks, fonts) byte-for-byte
+        //    because they only swap characters inside an existing `<w:t>`.
+        //    Track which paragraphs landed at least one surgical edit so
+        //    the rewrite pass below can skip them — if the model emitted
+        //    both, surgical wins because it's the more conservative path.
+        var paragraphsHandledBySurgical: Set<Int> = []
+        for (idx, reps) in surgicalByIdx {
+            let arrayIdx = idx - 1
+            guard arrayIdx >= 0, arrayIdx < paragraphs.count else {
+                surgicalMissed += reps.count
+                continue
+            }
+            if looksLikeSectionHeading(paragraphs[arrayIdx]) {
+                headingsProtected.append(idx)
+                continue
+            }
+            let result = applySubstringReplacements(in: paragraphs[arrayIdx],
+                                                    replacements: reps)
+            paragraphs[arrayIdx] = result.xml
+            surgicalApplied += result.applied
+            surgicalMissed += result.missed
+            if result.applied > 0 { paragraphsHandledBySurgical.insert(idx) }
+        }
+
+        // 2. Full-paragraph rewrites. Three branches:
+        //    - Inline-layout paragraphs (tabs / breaks / position tabs):
+        //      surgical-replace the largest non-date `<w:t>` so we don't
+        //      collapse the layout.
+        //    - Marker-bearing rewrites: split `[B]/[I]/[U]` spans into
+        //      multiple runs so bold / italic / underline survive the
+        //      rewrite. Preserves the original first-run rPr for font,
+        //      colour, etc.
+        //    - Plain rewrites: legacy single-run collapse.
+        //    Paragraphs already handled by surgical edits above are
+        //    skipped so we don't undo precise work with a coarse rewrite.
         for (idx, newText) in rewritesByIdx {
+            if paragraphsHandledBySurgical.contains(idx) { continue }
             let arrayIdx = idx - 1
             guard arrayIdx >= 0, arrayIdx < paragraphs.count else {
                 rewritesMissed.append(idx)
                 continue
             }
+            if looksLikeSectionHeading(paragraphs[arrayIdx]) {
+                headingsProtected.append(idx)
+                continue
+            }
             if hasInlineLayoutElements(paragraphs[arrayIdx]) {
-                let edited = surgicallyReplaceLargestText(paragraphs[arrayIdx], with: newText)
+                let plain = stripFormatMarkers(newText)
+                let edited = surgicallyReplaceLargestText(paragraphs[arrayIdx], with: plain)
                 if edited == paragraphs[arrayIdx] {
-                    // Every text segment looked like a date — there was
-                    // nothing safe to swap. Preserve the paragraph as-is.
                     layoutPreserved.append(idx)
                     continue
                 }
@@ -452,7 +606,21 @@ enum DOCXTemplateEditor {
                 rewritesApplied += 1
                 continue
             }
-            paragraphs[arrayIdx] = rewriteParagraphText(paragraphs[arrayIdx], to: newText)
+            // Models (Haiku especially) often return markerless rewrites
+            // for paragraphs that carry inline emphasis. Before collapsing
+            // to a single run, re-derive markers from the original spans —
+            // any bold/italic/underline phrase that survives the rewrite
+            // keeps its formatting.
+            let effective = textContainsFormatMarkers(newText)
+                ? newText
+                : reapplyOriginalEmphasis(from: paragraphs[arrayIdx], to: newText)
+            if textContainsFormatMarkers(effective) {
+                paragraphs[arrayIdx] = rewriteParagraphMarked(paragraphs[arrayIdx],
+                                                              marked: effective)
+            } else {
+                paragraphs[arrayIdx] = rewriteParagraphText(paragraphs[arrayIdx],
+                                                             to: newText)
+            }
             rewritesApplied += 1
         }
 
@@ -469,6 +637,12 @@ enum DOCXTemplateEditor {
             // refuse to clone such paragraphs.
             if hasInlineLayoutElements(paragraphs[arrayIdx]) {
                 layoutPreserved.append(idx)
+                continue
+            }
+            // Cloning a heading as the style template would inject a new
+            // heading-styled paragraph mid-document — never what's wanted.
+            if looksLikeSectionHeading(paragraphs[arrayIdx]) {
+                headingsProtected.append(idx)
                 continue
             }
             let template = paragraphs[arrayIdx]
@@ -489,6 +663,23 @@ enum DOCXTemplateEditor {
         }
         rebuilt += gaps.last ?? ""
         xml = String(xml[..<bodyStart.upperBound]) + rebuilt + String(xml[bodyEnd.lowerBound...])
+
+        // Inject table-row insertions onto the rebuilt body. We work in
+        // DESCENDING `rowIndex0` so each insertion's anchor (the N-th
+        // `<w:tr>` in document order) stays valid — adding a row at
+        // index K shifts every row with index > K by one, but doesn't
+        // affect rows with smaller indices.
+        for insertion in pendingRowInsertions.sorted(by: { $0.rowIndex0 > $1.rowIndex0 }) {
+            let newRow = cloneRowWithCells(insertion.sourceRowXML, cells: insertion.cells)
+            if let modified = injectRowAfter(rowIndex0: insertion.rowIndex0,
+                                             newRow: newRow,
+                                             in: xml) {
+                xml = modified
+                rowsInserted += 1
+            } else {
+                rowsMissed.append(insertion.refIdx)
+            }
+        }
 
         // Sanitise + (non-fatal) validate + write + re-zip.
         xml = Self.sanitizeXMLEntities(xml)
@@ -513,6 +704,11 @@ enum DOCXTemplateEditor {
             insertionsApplied: insertionsApplied,
             insertionsMissed: insertionsMissed,
             layoutPreserved: layoutPreserved,
+            surgicalApplied: surgicalApplied,
+            surgicalMissed: surgicalMissed,
+            rowsInserted: rowsInserted,
+            rowsMissed: rowsMissed,
+            headingsProtected: headingsProtected,
             validationWarning: validationWarning
         )
     }
@@ -583,6 +779,477 @@ enum DOCXTemplateEditor {
 
         let newRun = #"\#(runOpen)\#(rPr)<w:t xml:space="preserve">\#(escapeXML(safeText))</w:t></w:r>"#
         return openingTag + pPr + newRun + "</w:p>"
+    }
+
+    // MARK: - Marker-aware rewrite + surgical substring helpers
+
+    /// True if `text` contains any of the inline format markers we recognise.
+    fileprivate static func textContainsFormatMarkers(_ text: String) -> Bool {
+        text.contains("[B]") || text.contains("[/B]")
+            || text.contains("[I]") || text.contains("[/I]")
+            || text.contains("[U]") || text.contains("[/U]")
+    }
+
+    /// Strip every `[B]/[I]/[U]` marker from a string, leaving plain text.
+    /// Used when we have to fall back to a layout-preserving path that
+    /// can't honour inline emphasis (inline-tab paragraphs, etc.).
+    fileprivate static func stripFormatMarkers(_ text: String) -> String {
+        var out = text
+        for token in ["[B]", "[/B]", "[I]", "[/I]", "[U]", "[/U]"] {
+            out = out.replacingOccurrences(of: token, with: "")
+        }
+        return out
+    }
+
+    /// Walk `<w:r>` siblings inside `paraXML`, detect bold/italic/underline
+    /// on each, and emit the paragraph as plain text with `[B]…[/B]` /
+    /// `[I]…[/I]` / `[U]…[/U]` wrappers around the formatted spans. The
+    /// inverse of `parseMarkedSpans`.
+    fileprivate static func markedRunText(in paraXML: String) -> String {
+        let spans = runSpans(in: paraXML)
+        var out = ""
+        for (text, format) in spans {
+            var wrapped = text
+            // Order matters only for the inverse parse — wrap from inside
+            // out so the open/close markers nest cleanly.
+            if format.contains(.underline) { wrapped = "[U]\(wrapped)[/U]" }
+            if format.contains(.italic)    { wrapped = "[I]\(wrapped)[/I]" }
+            if format.contains(.bold)      { wrapped = "[B]\(wrapped)[/B]" }
+            out += wrapped
+        }
+        return out
+    }
+
+    /// Concatenate text + per-run format from every `<w:r>` in the
+    /// paragraph. Self-closing `<w:r/>` runs and runs with no `<w:t>`
+    /// (e.g. pure `<w:tab/>`) are skipped — they're inline layout, not
+    /// text content.
+    fileprivate static func runSpans(in paraXML: String) -> [(text: String, format: RunFormat)] {
+        var out: [(String, RunFormat)] = []
+        var cursor = paraXML.startIndex
+        guard let textRe = try? NSRegularExpression(
+            pattern: #"<w:t\b[^>]*?>([\s\S]*?)</w:t>"#
+        ) else { return out }
+        while let rOpen = paraXML.range(of: #"<w:r[\s>/]"#,
+                                        options: .regularExpression,
+                                        range: cursor..<paraXML.endIndex) {
+            let lastChar = paraXML[paraXML.index(before: rOpen.upperBound)]
+            if lastChar == "/" {
+                cursor = rOpen.upperBound
+                continue
+            }
+            guard let rClose = paraXML.range(of: "</w:r>",
+                                             range: rOpen.upperBound..<paraXML.endIndex)
+            else { break }
+            let runSlice = String(paraXML[rOpen.lowerBound..<rClose.upperBound])
+
+            var format: RunFormat = []
+            if let rPrInner = substring(of: runSlice, between: "<w:rPr>", and: "</w:rPr>") {
+                if rPrInner.range(of: #"<w:b\b[^/]*/>"#, options: .regularExpression) != nil
+                    || rPrInner.contains("<w:b/>") {
+                    format.insert(.bold)
+                }
+                if rPrInner.range(of: #"<w:i\b[^/]*/>"#, options: .regularExpression) != nil
+                    || rPrInner.contains("<w:i/>") {
+                    format.insert(.italic)
+                }
+                if rPrInner.contains("<w:u/>")
+                    || rPrInner.range(of: #"<w:u\b[^/]*/>"#, options: .regularExpression) != nil {
+                    format.insert(.underline)
+                }
+            }
+
+            var text = ""
+            let ns = runSlice as NSString
+            let matches = textRe.matches(in: runSlice,
+                                         range: NSRange(location: 0, length: ns.length))
+            for m in matches where m.numberOfRanges >= 2 {
+                text += unescapeXML(ns.substring(with: m.range(at: 1)))
+            }
+            if !text.isEmpty { out.append((text, format)) }
+            cursor = rClose.upperBound
+        }
+        return out
+    }
+
+    /// Parse `[B]/[I]/[U]` markers in `marked` into a list of (text,
+    /// format) spans. Markers are tracked as a stack so nested wrappers
+    /// (`[B][I]bold-italic[/I][/B]`) produce a single span with both
+    /// flags. Unmatched markers degrade to literal text rather than
+    /// dropping characters — a misformed AI response shouldn't lose text.
+    fileprivate static func parseMarkedSpans(_ marked: String) -> [(text: String, format: RunFormat)] {
+        var spans: [(String, RunFormat)] = []
+        var buffer = ""
+        var stack: [RunFormat] = []
+        var current: RunFormat { stack.reduce(into: RunFormat()) { $0.formUnion($1) } }
+
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            spans.append((buffer, current))
+            buffer = ""
+        }
+
+        var i = marked.startIndex
+        while i < marked.endIndex {
+            if marked[i] == "[" {
+                let tokens: [(String, RunFormat?)] = [
+                    ("[B]", .bold), ("[I]", .italic), ("[U]", .underline),
+                    ("[/B]", nil),  ("[/I]", nil),    ("[/U]", nil),
+                ]
+                var matched = false
+                for (token, openFmt) in tokens {
+                    if marked[i...].hasPrefix(token) {
+                        flush()
+                        if let f = openFmt {
+                            stack.append(f)
+                        } else {
+                            // Closing — pop the matching open marker if any.
+                            let closing: RunFormat = token == "[/B]" ? .bold
+                                                    : token == "[/I]" ? .italic : .underline
+                            if let last = stack.lastIndex(of: closing) {
+                                stack.remove(at: last)
+                            }
+                        }
+                        i = marked.index(i, offsetBy: token.count)
+                        matched = true
+                        break
+                    }
+                }
+                if matched { continue }
+            }
+            buffer.append(marked[i])
+            i = marked.index(after: i)
+        }
+        flush()
+        return spans
+    }
+
+    /// Re-derive `[B]/[I]/[U]` markers for a markerless rewrite. Any
+    /// formatted span from the original paragraph whose text survives
+    /// (case-insensitively) in `newText` gets re-wrapped, so
+    /// "Led [B]Python[/B] projects" rewritten as "Led Python and SQL
+    /// analytics" keeps Python bold instead of collapsing the paragraph
+    /// to a single plain run. Spans equal to the whole paragraph are
+    /// skipped — uniform formatting already survives via the cloned
+    /// first-run `<w:rPr>` baseline.
+    fileprivate static func reapplyOriginalEmphasis(from paraXML: String,
+                                                    to newText: String) -> String {
+        let originalSpans = runSpans(in: paraXML)
+        let totalLen = originalSpans.reduce(0) { $0 + $1.text.count }
+        var marked = newText
+        for (text, format) in originalSpans where !format.isEmpty {
+            let phrase = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard phrase.count >= 2, phrase.count < totalLen else { continue }
+            // Don't re-mark inside an already-marked region.
+            guard !marked.contains("[B]\(phrase)"), !marked.contains("[I]\(phrase)"),
+                  !marked.contains("[U]\(phrase)") else { continue }
+            guard let r = marked.range(of: phrase, options: [.caseInsensitive]) else { continue }
+            var open = "", close = ""
+            if format.contains(.bold)      { open += "[B]"; close = "[/B]" + close }
+            if format.contains(.italic)    { open += "[I]"; close = "[/I]" + close }
+            if format.contains(.underline) { open += "[U]"; close = "[/U]" + close }
+            marked = marked.replacingCharacters(in: r, with: open + marked[r] + close)
+        }
+        return marked
+    }
+
+    /// Rewrite a paragraph's body from a marker-tagged `marked` string —
+    /// preserves `<w:pPr>`, clones the first run's `<w:rPr>` as the
+    /// baseline (font / size / colour), then emits one run per span with
+    /// `<w:b/>` / `<w:i/>` / `<w:u w:val="single"/>` added or removed to
+    /// match the span's format. Falls back to `rewriteParagraphText` when
+    /// the parsed spans are empty or markerless.
+    fileprivate static func rewriteParagraphMarked(_ paraXML: String,
+                                                   marked: String) -> String {
+        let spans = parseMarkedSpans(marked)
+        let plainConcat = spans.map { $0.text }.joined()
+        if spans.isEmpty {
+            return rewriteParagraphText(paraXML, to: stripFormatMarkers(marked))
+        }
+        let allUnformatted = spans.allSatisfy { $0.format.isEmpty }
+        if allUnformatted {
+            return rewriteParagraphText(paraXML, to: plainConcat)
+        }
+
+        guard let pOpenStart = paraXML.range(of: "<w:p"),
+              let pOpenEnd   = paraXML.range(of: ">", range: pOpenStart.upperBound..<paraXML.endIndex),
+              let pCloseStart = paraXML.range(of: "</w:p>", range: pOpenEnd.upperBound..<paraXML.endIndex)
+        else {
+            return rewriteParagraphText(paraXML, to: plainConcat)
+        }
+        let openingTag = String(paraXML[pOpenStart.lowerBound..<pOpenEnd.upperBound])
+        let body       = String(paraXML[pOpenEnd.upperBound..<pCloseStart.lowerBound])
+
+        let pPr = substring(of: body, between: "<w:pPr>", and: "</w:pPr>")
+                    .map { "<w:pPr>\($0)</w:pPr>" } ?? ""
+        let baselineRPr = firstRunProperties(in: body) ?? ""
+        let runOpen = firstRunOpeningTag(in: body) ?? "<w:r>"
+
+        var runs = ""
+        for (text, format) in spans {
+            let safeText = stripInvalidXMLChars(text)
+            let merged   = mergeRunFormat(into: baselineRPr, format: format)
+            let rPr      = merged.isEmpty ? "" : "<w:rPr>\(merged)</w:rPr>"
+            runs += #"\#(runOpen)\#(rPr)<w:t xml:space="preserve">\#(escapeXML(safeText))</w:t></w:r>"#
+        }
+        return openingTag + pPr + runs + "</w:p>"
+    }
+
+    /// Add or remove `<w:b/>` / `<w:i/>` / `<w:u w:val="single"/>` inside
+    /// an existing `<w:rPr>` body so the resulting run carries the
+    /// requested `RunFormat`. Strips any existing b/i/u first so toggling
+    /// off works as well as toggling on.
+    fileprivate static func mergeRunFormat(into rPrInner: String,
+                                           format: RunFormat) -> String {
+        var out = rPrInner
+        out = out.replacingOccurrences(of: #"<w:b\b[^/]*/>"#, with: "",
+                                       options: .regularExpression)
+        out = out.replacingOccurrences(of: #"<w:i\b[^/]*/>"#, with: "",
+                                       options: .regularExpression)
+        out = out.replacingOccurrences(of: #"<w:u\b[^/]*/>"#, with: "",
+                                       options: .regularExpression)
+        // Per OOXML, b/i/u live near the front of rPr. Prepend any
+        // requested ones so they win the cascade when Word renders.
+        var prefix = ""
+        if format.contains(.bold)      { prefix += "<w:b/>" }
+        if format.contains(.italic)    { prefix += "<w:i/>" }
+        if format.contains(.underline) { prefix += "<w:u w:val=\"single\"/>" }
+        return prefix + out
+    }
+
+    /// Surgical substring replacement: for each (old, new) pair, find a
+    /// `<w:t>` whose unescaped inner text contains `old` and swap only
+    /// that substring inside the matching element. Run structure
+    /// (siblings, `<w:rPr>`, hyperlinks, tabs) survives byte-for-byte.
+    ///
+    /// Constraints:
+    /// - `old` must live entirely inside one `<w:t>`. Cross-run matches
+    ///   are reported as `missed` so the caller can fall back to a full
+    ///   rewrite rather than silently no-op.
+    /// - Date-shaped text (`looksLikeDateSpan`) is skipped. The model
+    ///   shouldn't be touching dates with surgical edits anyway, but
+    ///   guarding here keeps a misclassified `old` from rewriting the
+    ///   year on a role header.
+    /// - Each (old, new) tries every text node in order; the first match
+    ///   wins so repeated phrases don't all swap at once.
+    fileprivate static func applySubstringReplacements(
+        in paraXML: String,
+        replacements: [(old: String, new: String)]
+    ) -> (xml: String, applied: Int, missed: Int) {
+        var xml = paraXML
+        var applied = 0
+        var missed  = 0
+        guard let re = try? NSRegularExpression(
+            pattern: #"<w:t\b[^>]*?>([\s\S]*?)</w:t>"#
+        ) else { return (xml, 0, replacements.count) }
+
+        for rep in replacements {
+            let oldTrimmed = rep.old.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !oldTrimmed.isEmpty else { missed += 1; continue }
+
+            let ns = xml as NSString
+            let matches = re.matches(in: xml,
+                                     range: NSRange(location: 0, length: ns.length))
+            var found = false
+            for m in matches where m.numberOfRanges >= 2 {
+                let innerRange = m.range(at: 1)
+                if innerRange.location == NSNotFound { continue }
+                let raw   = ns.substring(with: innerRange)
+                let plain = unescapeXML(raw)
+                if looksLikeDateSpan(plain) { continue }
+                guard let r = plain.range(of: rep.old) else { continue }
+                let prefix = String(plain[..<r.lowerBound])
+                let suffix = String(plain[r.upperBound...])
+                let combined = prefix + rep.new + suffix
+                let safeCombined = stripInvalidXMLChars(combined)
+                let newInner = escapeXML(safeCombined)
+                xml = (xml as NSString)
+                    .replacingCharacters(in: innerRange, with: newInner) as String
+                applied += 1
+                found = true
+                break
+            }
+            if !found { missed += 1 }
+        }
+        return (xml, applied, missed)
+    }
+
+    // MARK: - Table row insertion
+
+    /// Count `<w:tr ...>` row-opening tags inside `s`. Rows never nest in
+    /// OOXML, so the count is also the 0-based "row index" of the row
+    /// that opens immediately after this prefix.
+    fileprivate static func countTrOpens(in s: String) -> Int {
+        guard let re = try? NSRegularExpression(pattern: #"<w:tr[\s/>]"#)
+        else { return 0 }
+        return re.numberOfMatches(in: s,
+                                  range: NSRange(location: 0, length: (s as NSString).length))
+    }
+
+    /// Given a paragraph at `refIndex0` (0-based into `paragraphs`),
+    /// return the 0-based paragraph indices of the FIRST and LAST
+    /// paragraphs of the table row that encloses it. Returns nil if the
+    /// paragraph is not inside a `<w:tr>`.
+    ///
+    /// Detection works by tracking row depth across gaps: gaps[i] sits
+    /// between paragraphs[i-1] and paragraphs[i]. Walk forward from the
+    /// reference paragraph, accumulating `(opens − closes)` per gap;
+    /// when depth crosses zero we've left the row. Walk backward the
+    /// same way to find the row's opening.
+    fileprivate static func locateEnclosingRow(refIndex0: Int,
+                                               paragraphs: [String],
+                                               gaps: [String])
+    -> (firstIdx0: Int, lastIdx0: Int)? {
+        guard refIndex0 >= 0, refIndex0 < paragraphs.count else { return nil }
+        guard gaps.count >= paragraphs.count + 1 else { return nil }
+
+        func opens(_ s: String) -> Int { countTrOpens(in: s) }
+        func closes(_ s: String) -> Int {
+            var n = 0
+            var cur = s.startIndex
+            while let r = s.range(of: "</w:tr>", range: cur..<s.endIndex) {
+                n += 1
+                cur = r.upperBound
+            }
+            return n
+        }
+
+        // Forward: find the gap that takes us out of the row.
+        var depth = 1
+        var lastIdx0 = refIndex0
+        var i = refIndex0 + 1
+        while i <= paragraphs.count {
+            depth += opens(gaps[i]) - closes(gaps[i])
+            if depth <= 0 {
+                lastIdx0 = i - 1
+                break
+            }
+            i += 1
+        }
+        if depth > 0 { return nil }
+
+        // Backward: find the gap that opens our row.
+        depth = 1
+        var firstIdx0 = refIndex0
+        var j = refIndex0
+        while j >= 0 {
+            depth -= opens(gaps[j]) - closes(gaps[j])
+            if depth <= 0 {
+                firstIdx0 = j
+                break
+            }
+            j -= 1
+        }
+        if depth > 0 { return nil }
+
+        return (firstIdx0, lastIdx0)
+    }
+
+    /// Reassemble the row that spans paragraphs `firstIdx0...lastIdx0`
+    /// into a single XML string `<w:tr ...>…</w:tr>`. Slices the leading
+    /// gap from the last `<w:tr>` opening (in case the gap also closes a
+    /// previous row), walks paragraphs + interior gaps verbatim, and
+    /// slices the trailing gap up to the first `</w:tr>` closing.
+    fileprivate static func extractRowXML(firstIdx0: Int,
+                                          lastIdx0: Int,
+                                          paragraphs: [String],
+                                          gaps: [String]) -> String? {
+        guard firstIdx0 >= 0, lastIdx0 < paragraphs.count, firstIdx0 <= lastIdx0
+        else { return nil }
+        guard let leadOpen = gaps[firstIdx0].range(of: #"<w:tr[\s/>]"#,
+                                                   options: [.regularExpression, .backwards])
+        else { return nil }
+        guard let trailClose = gaps[lastIdx0 + 1].range(of: "</w:tr>")
+        else { return nil }
+
+        var row = String(gaps[firstIdx0][leadOpen.lowerBound...])
+        for i in firstIdx0...lastIdx0 {
+            row += paragraphs[i]
+            if i < lastIdx0 { row += gaps[i + 1] }
+        }
+        row += String(gaps[lastIdx0 + 1][..<trailClose.upperBound])
+        return row
+    }
+
+    /// Clone a row's XML for insertion as a brand-new row right after the
+    /// source. Strips the `w:rsid*` / `w14:paraId` identifiers that Word
+    /// stamps on every paragraph (Google Docs rejects duplicates), then
+    /// walks each `<w:p>...</w:p>` in source order and rewrites its text
+    /// from the corresponding `cells[i]` via `cloneParagraphForInsert`.
+    /// Paragraphs past `cells.count` keep their original text — handy if
+    /// a column always carries a fixed label the new row should inherit.
+    fileprivate static func cloneRowWithCells(_ rowXML: String,
+                                              cells: [String]) -> String {
+        var clone = rowXML
+        let idAttrPatterns = [
+            #"\s+w14:paraId="[^"]*""#,
+            #"\s+w14:textId="[^"]*""#,
+            #"\s+w:rsidR="[^"]*""#,
+            #"\s+w:rsidRDefault="[^"]*""#,
+            #"\s+w:rsidP="[^"]*""#,
+            #"\s+w:rsidTr="[^"]*""#,
+        ]
+        for pattern in idAttrPatterns {
+            clone = clone.replacingOccurrences(of: pattern, with: "",
+                                               options: .regularExpression)
+        }
+
+        var result = ""
+        var cellIndex = 0
+        var cursor = clone.startIndex
+        while let pOpen = clone.range(of: #"<w:p[\s/>]"#,
+                                      options: .regularExpression,
+                                      range: cursor..<clone.endIndex) {
+            guard let pClose = clone.range(of: "</w:p>",
+                                           range: pOpen.upperBound..<clone.endIndex)
+            else { break }
+            result += String(clone[cursor..<pOpen.lowerBound])
+            let pXML = String(clone[pOpen.lowerBound..<pClose.upperBound])
+            if cellIndex < cells.count {
+                let trimmed = cells[cellIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+                // Empty cell value → keep the source paragraph's text rather
+                // than wiping it, so the model can leave a column alone
+                // by passing "" without zeroing the cloned content.
+                if trimmed.isEmpty {
+                    result += pXML
+                } else {
+                    result += cloneParagraphForInsert(pXML, to: cells[cellIndex])
+                }
+            } else {
+                result += pXML
+            }
+            cellIndex += 1
+            cursor = pClose.upperBound
+        }
+        result += String(clone[cursor...])
+        return result
+    }
+
+    /// Find the `rowIndex0`-th `<w:tr>` opening tag in `xml` (0-based,
+    /// counting in document order), walk to its matching `</w:tr>`, and
+    /// inject `newRow` right after the close. Returns nil if the row
+    /// can't be located.
+    fileprivate static func injectRowAfter(rowIndex0: Int,
+                                           newRow: String,
+                                           in xml: String) -> String? {
+        var count = 0
+        var cursor = xml.startIndex
+        var targetOpen: Range<String.Index>?
+        while let r = xml.range(of: #"<w:tr[\s/>]"#,
+                                options: .regularExpression,
+                                range: cursor..<xml.endIndex) {
+            if count == rowIndex0 {
+                targetOpen = r
+                break
+            }
+            count += 1
+            cursor = r.upperBound
+        }
+        guard let openR = targetOpen else { return nil }
+        guard let closeR = xml.range(of: "</w:tr>",
+                                     range: openR.upperBound..<xml.endIndex)
+        else { return nil }
+        return String(xml[..<closeR.upperBound]) + newRow + String(xml[closeR.upperBound...])
     }
 
     /// Drop characters that XML 1.0 forbids. Keeps tab (0x09), LF (0x0A),

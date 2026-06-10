@@ -96,8 +96,10 @@ class AIManager {
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
 
+        // `max_completion_tokens` replaced `max_tokens` on Chat Completions —
+        // reasoning models (o1/o3/o4, GPT-5) reject the old field outright.
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_tokens": maxTokens,
+            "model": model, "max_completion_tokens": maxTokens,
             "messages": messages
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -468,6 +470,19 @@ class AIManager {
             messages.append(["role": "user",      "content": turn.user])
             messages.append(["role": "assistant", "content": turn.assistant])
         }
+        // Cache breakpoint on the last history turn: live sessions resend
+        // the same growing prefix (system + history) every turn, so marking
+        // it lets the server reuse the cached prefix — cuts time-to-first-
+        // token and input cost on every turn after the first. Below the
+        // per-model minimum cacheable size the marker is simply ignored.
+        if var last = messages.last,
+           let prior = last["content"] as? String, !prior.isEmpty {
+            last["content"] = [[
+                "type": "text", "text": prior,
+                "cache_control": ["type": "ephemeral"],
+            ] as [String: Any]]
+            messages[messages.count - 1] = last
+        }
         var parts: [[String: Any]] = []
         if let img = screenshot, let b64 = pngBase64(from: img) {
             parts.append(["type": "image", "source": ["type": "base64", "media_type": "image/png", "data": b64]])
@@ -475,12 +490,20 @@ class AIManager {
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
 
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_tokens": 1024,
-            "system": systemPrompt,
+        var body: [String: Any] = [
+            "model": model, "max_tokens": 2048,
             "messages": messages,
             "stream": true
-        ])
+        ]
+        // System prompt as a cached block — empty text blocks are rejected
+        // by the API, so omit the field entirely when there's no prompt.
+        if !systemPrompt.isEmpty {
+            body["system"] = [[
+                "type": "text", "text": systemPrompt,
+                "cache_control": ["type": "ephemeral"],
+            ] as [String: Any]]
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (bytes, response) = try await URLSession.shared.bytes(for: req)
         guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
@@ -552,8 +575,10 @@ class AIManager {
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
 
+        // `max_completion_tokens` replaced `max_tokens` on Chat Completions —
+        // reasoning models (o1/o3/o4, GPT-5) reject the old field outright.
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_tokens": 1024,
+            "model": model, "max_completion_tokens": 2048,
             "messages": messages,
             "stream": true,
             "stream_options": ["include_usage": true]
