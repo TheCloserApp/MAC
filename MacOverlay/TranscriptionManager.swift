@@ -40,7 +40,13 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
     /// Consecutive failed connection attempts since the last healthy
     /// `session_started`. Only touched on the main queue.
     private var reconnectAttempts = 0
-    private let maxReconnectAttempts = 5
+    /// After this many straight failures the UI is told the connection is
+    /// down (`.failed`) — but reconnection KEEPS RUNNING in the background
+    /// for as long as the session is live. Hours-long interviews ride out
+    /// wifi blips, sleep/wake, and VPN flaps far longer than any fixed
+    /// attempt budget; audio capture never stops, so the moment the
+    /// network returns the transcript picks back up.
+    private let reconnectAttemptsBeforeWarning = 5
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession:    URLSession?
@@ -82,6 +88,10 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         stopAudioCapture()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
+        // Invalidate, don't just drop: URLSession instances are retained
+        // by the system until invalidated, so a session that reconnected
+        // many times over hours would otherwise accumulate dead sessions.
+        urlSession?.finishTasksAndInvalidate()
         urlSession    = nil
     }
 
@@ -139,6 +149,8 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         var request = URLRequest(url: url)
         request.setValue(elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
 
+        // Tear down the previous session before replacing it (see stop()).
+        urlSession?.finishTasksAndInvalidate()
         let session = URLSession(configuration: .default)
         urlSession    = session
         let task = session.webSocketTask(with: request)
@@ -173,32 +185,34 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Reconnect with capped exponential backoff (0.5 → 1 → 2 → 4 → 4s).
-    /// Audio capture keeps running the whole time — only the WebSocket is
-    /// rebuilt — so at most the in-flight utterance is lost. The user sees
-    /// "Reconnecting…" via `onConnectionEvent`, and an error only when
-    /// `maxReconnectAttempts` straight attempts fail. Main queue only.
+    /// Reconnect with capped exponential backoff (0.5 → 1 → 2 → 4 → 5s,
+    /// then every 5s indefinitely). Audio capture keeps running the whole
+    /// time — only the WebSocket is rebuilt — so at most the in-flight
+    /// utterance is lost. The user sees "Reconnecting…" via
+    /// `onConnectionEvent`; after several straight failures they get the
+    /// louder `.failed` message, but retries continue for as long as the
+    /// session is running — a long outage must never permanently kill
+    /// transcription mid-interview. Main queue only.
     private func handleSocketFailure(_ error: Error) {
         guard isRunning else { return }
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
 
-        guard reconnectAttempts < maxReconnectAttempts else {
-            let msg = "Transcription connection lost: \(error.localizedDescription). Check your network and ElevenLabs key."
+        reconnectAttempts += 1
+        let attempt = reconnectAttempts
+        let delay = min(0.5 * pow(2.0, Double(attempt - 1)), 5.0)
+        NSLog("[TranscriptionManager] socket failed (%@); reconnect attempt %d in %.1fs",
+              error.localizedDescription, attempt, delay)
+        if attempt == reconnectAttemptsBeforeWarning {
+            let msg = "Transcription connection lost: \(error.localizedDescription). Still retrying — check your network and ElevenLabs key."
             if let onConnectionEvent {
                 onConnectionEvent(.failed(msg))
             } else {
                 (onError ?? onUpdate)?(msg)
             }
-            return
+        } else {
+            onConnectionEvent?(.reconnecting(attempt: attempt))
         }
-
-        reconnectAttempts += 1
-        let attempt = reconnectAttempts
-        let delay = min(0.5 * pow(2.0, Double(attempt - 1)), 4.0)
-        NSLog("[TranscriptionManager] socket failed (%@); reconnect attempt %d in %.1fs",
-              error.localizedDescription, attempt, delay)
-        onConnectionEvent?(.reconnecting(attempt: attempt))
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.isRunning, self.webSocketTask == nil else { return }

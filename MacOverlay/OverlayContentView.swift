@@ -319,7 +319,14 @@ struct OverlayView: View {
                 EmptyView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // `alignment: .top` matters: the default (.center) floated any
+        // body shorter than the card — the Live Focus Q&A — in the
+        // vertical middle of the panel. And in focus mode the height must
+        // HUG the content (`nil`), not claim .infinity, or the greedy
+        // frame defeats `focusHugging` and the card covers the full panel.
+        .frame(maxWidth: .infinity,
+               maxHeight: focusHugging ? nil : .infinity,
+               alignment: .top)
         .id(vm.primarySurface)
     }
 }

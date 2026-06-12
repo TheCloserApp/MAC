@@ -32,6 +32,12 @@ final class AIController {
     /// reads from `session.turns` and still updates per-chunk — this only
     /// rate-limits the secondary status views (top strip, response panel).
     @ObservationIgnored private var lastResponseFlushAt: ContinuousClock.Instant = .now
+    /// Monotonic stream token. A new `runStream` bumps it; the old task —
+    /// even though it gets cancelled — may still run its completion block,
+    /// and without this check that block nil'd out `streamingTask` (so
+    /// Stop couldn't cancel the NEW stream) and flipped `isSendingToAI`
+    /// off while the new answer was still streaming.
+    @ObservationIgnored private var streamGeneration = 0
 
     var canRetry: Bool { lastRetry != nil }
 
@@ -62,6 +68,11 @@ final class AIController {
                    assistantTurnID: UUID,
                    wasFirstExchange: Bool) {
         guard let vm else { return }
+        // One stream at a time: a new send always supersedes the old one.
+        // Callers that want the old answer to finish must not call this.
+        streamingTask?.cancel()
+        streamGeneration += 1
+        let gen = streamGeneration
         lastRetry = PendingRetry(
             userText: userText,
             screenshot: screenshot,
@@ -101,7 +112,9 @@ final class AIController {
                         if now - self.lastResponseFlushAt >= .milliseconds(33) {
                             vm.sessionStore.setStreamingContent(accumulated,
                                                                 turnID: assistantTurnID)
-                            vm.aiResponse = accumulated
+                            if gen == self.streamGeneration {
+                                vm.aiResponse = accumulated
+                            }
                             self.lastResponseFlushAt = now
                         }
                     case .usage(let inTok, let outTok):
@@ -113,7 +126,7 @@ final class AIController {
                 // Final flush so the trailing tokens land even if they
                 // arrived inside the last 33ms window.
                 vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
-                if vm.aiResponse != accumulated {
+                if gen == self.streamGeneration, vm.aiResponse != accumulated {
                     vm.aiResponse = accumulated
                 }
 
@@ -126,7 +139,6 @@ final class AIController {
                     vm.notesManager.add(content: accumulated, source: .ai, mode: vm.sessionMode)
                     vm.sessionNotes = vm.notesManager.entries
                 }
-                self.lastRetry = nil
             } catch is CancellationError {
                 // User hit Stop, or a newer question interrupted this
                 // answer. Keep whatever streamed — no error decoration,
@@ -134,16 +146,21 @@ final class AIController {
                 // is already scheduled by whoever cancelled us.
                 streamFailed = true
                 vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
-                if vm.aiResponse != accumulated { vm.aiResponse = accumulated }
+                if gen == self.streamGeneration, vm.aiResponse != accumulated {
+                    vm.aiResponse = accumulated
+                }
             } catch {
                 streamFailed = true
                 let errMsg = "Error: \(error.localizedDescription)"
                 let display = accumulated.isEmpty ? errMsg : accumulated + "\n\n" + errMsg
-                vm.aiResponse = display
                 // Replace (not append): the throttled store may not have
                 // the full accumulated text yet.
                 vm.sessionStore.setStreamingContent(display, turnID: assistantTurnID)
+                if gen == self.streamGeneration { vm.aiResponse = display }
             }
+            // A newer stream owns the shared state now — this (superseded)
+            // task must not flip its flags or clear its task handle.
+            guard gen == self.streamGeneration else { return }
             vm.isSendingToAI = false
             self.streamingTask = nil
             if !streamFailed {

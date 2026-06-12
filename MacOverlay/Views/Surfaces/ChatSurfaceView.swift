@@ -215,18 +215,7 @@ struct ChatSurfaceView: View {
                 Divider().opacity(0.25)
 
                 if streaming {
-                    // Whole-answer-at-once: indicator + Stop while the
-                    // model writes. One layout pass when it finishes.
-                    HStack(spacing: 12) {
-                        TypingIndicatorView()
-                        focusChip(icon: "stop.fill", label: "Stop",
-                                  help: "Stop generating") {
-                            vm.cancelStreaming()
-                        }
-                        Spacer()
-                    }
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 14)
+                    streamingAnswer(pair.answer)
                 } else if let a = pair.answer, !a.content.isEmpty {
                     completedAnswer(a, isLatest: isLatest)
                 } else {
@@ -296,6 +285,37 @@ struct ChatSurfaceView: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .help(help)
+    }
+
+    /// The answer while it streams. The user is mid-interview — they need
+    /// the first line the moment it exists, not after the whole answer
+    /// lands. This renders the partial text live but WITHOUT the
+    /// height-measuring ScrollView used for completed answers: the text
+    /// hugs naturally up to the cap, then clips at the bottom with the
+    /// top (the say-this-now line) pinned visible. No GeometryReader /
+    /// preference feedback loop, so per-flush layout stays as cheap as a
+    /// normal chat bubble — the churn that made the old token-by-token
+    /// focus card lag came from re-measuring the card per token, not from
+    /// laying out the text.
+    private func streamingAnswer(_ turn: ChatTurn?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                TypingIndicatorView()
+                focusChip(icon: "stop.fill", label: "Stop",
+                          help: "Stop generating") {
+                    vm.cancelStreaming()
+                }
+                Spacer()
+            }
+            if let turn, !turn.content.isEmpty {
+                MarkdownResponseView(text: turn.content, baseSize: 13.5)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, maxHeight: Self.focusMaxHeight,
+               alignment: .topLeading)
+        .clipped()
     }
 
     /// A finished answer. Measured ONCE (the text is static now), so the

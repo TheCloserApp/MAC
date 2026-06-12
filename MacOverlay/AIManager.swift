@@ -460,6 +460,11 @@ class AIManager {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        // Idle timeout (resets every time bytes arrive). Without it a
+        // connection that silently dies mid-stream leaves the answer
+        // stuck on the typing indicator until the user notices. 60s is
+        // generous headroom for slow first tokens from reasoning models.
+        req.timeoutInterval = 60
         req.setValue(apiKey,            forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",      forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -574,6 +579,8 @@ class AIManager {
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        // Idle timeout — see streamAnthropic for rationale.
+        req.timeoutInterval = 60
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.setValue("text/event-stream", forHTTPHeaderField: "accept")

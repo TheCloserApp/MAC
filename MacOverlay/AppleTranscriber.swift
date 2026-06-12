@@ -164,6 +164,12 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
     /// so callbacks from a superseded (cancelled) task — including its
     /// "canceled" error — are silently dropped.
     private var activeTaskID = UUID()
+    /// Consecutive recognition tasks that died within seconds of starting.
+    /// Routine task deaths (no-speech timeouts, server-side resets) are
+    /// recovered by rolling a fresh task — but a task that fails INSTANTLY
+    /// over and over signals something fatal (permission revoked, language
+    /// pack gone), and rolling forever would spin a tight error loop.
+    private var rapidTaskFailures = 0
 
     private func installRecognitionTask() {
         guard let recognizer else { return }
@@ -184,10 +190,23 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
                 guard let self, self.isRunning, self.activeTaskID == taskID else { return }
                 if let error {
                     NSLog("[AppleTranscriber] recognition error: %@", error.localizedDescription)
-                    (self.onError ?? self.onUpdate)?("Error: \(error.localizedDescription)")
+                    // SFSpeech tasks die routinely on long sessions
+                    // ("no speech detected" after ~1min of quiet, server
+                    // resets). Roll straight to a fresh task so the engine
+                    // never sits deaf waiting for the periodic refresh —
+                    // unless tasks are dying instantly back-to-back, which
+                    // means something fatal that rolling can't fix.
+                    let taskAge = Date().timeIntervalSince(self.taskStartedAt)
+                    self.rapidTaskFailures = taskAge < 2 ? self.rapidTaskFailures + 1 : 0
+                    if self.rapidTaskFailures < 3 {
+                        self.refreshRecognitionTask()
+                    } else {
+                        (self.onError ?? self.onUpdate)?("Error: \(error.localizedDescription)")
+                    }
                     return
                 }
                 guard let result else { return }
+                self.rapidTaskFailures = 0
                 let text = result.bestTranscription.formattedString
                 if text != self.currentText {
                     self.currentText = text
@@ -217,6 +236,22 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         }
         let old = task
         old?.cancel()
+        request?.endAudio()
+        installRecognitionTask()
+    }
+
+    /// Drop everything heard so far and start a fresh recognition segment
+    /// WITHOUT touching the audio engine or taps. Used right after a live
+    /// send so the next utterance starts clean. The old path tore down the
+    /// whole engine and restarted it (~0.8s deaf window) — and NOT
+    /// resetting after a manual send made the already-sent text resurface
+    /// on the next recognition update, double-sending the same question.
+    func resetSegment() {
+        guard isRunning else { return }
+        committedPrefix  = ""
+        currentText      = ""
+        lastTextChangeAt = Date()
+        task?.cancel()
         request?.endAudio()
         installRecognitionTask()
     }

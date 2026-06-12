@@ -915,7 +915,12 @@ final class OverlayViewModel {
                 case .reconnecting:
                     self.statusMessage = "Reconnecting transcription…"
                 case .reconnected:
-                    if self.statusMessage == "Reconnecting transcription…" {
+                    // Clear BOTH the transient "Reconnecting…" line and the
+                    // louder connection-lost error — the manager keeps
+                    // retrying after reporting .failed, so a late recovery
+                    // must wipe the stale error too.
+                    if self.statusMessage == "Reconnecting transcription…"
+                        || self.statusMessage.hasPrefix("Error: Transcription connection lost") {
                         self.statusMessage = ""
                     }
                 case .failed(let message):
@@ -1320,9 +1325,14 @@ final class OverlayViewModel {
 
         guard !userText.isEmpty || pendingScreenshot != nil || hasAttachments else { return }
 
+        // Missing key: tell the user instead of silently dropping the
+        // message. The "Error" prefix makes the status row render even
+        // mid-interview, where regular status text is suppressed.
         let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
-        if  isOpenAI && openAIApiKey.isEmpty { return }
-        if !isOpenAI && apiKey.isEmpty       { return }
+        if (isOpenAI && openAIApiKey.isEmpty) || (!isOpenAI && apiKey.isEmpty) {
+            statusMessage = "Error: no \(isOpenAI ? "OpenAI" : "Anthropic") API key — add it in Profile → API keys, or pick another model."
+            return
+        }
 
         let resolvedPrompt   = resolveActivePrompt()
         let historySnapshot  = sessionStore.replayContext()
@@ -1395,17 +1405,21 @@ final class OverlayViewModel {
         }
         guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         showManualInput = false             // sendToAI sends + clears transcription
+        // Apple keeps accumulating within a recognition task — without a
+        // segment reset the text just sent resurfaces on the next update
+        // and gets sent again. ElevenLabs needs no reset (clearing
+        // `transcription` drops the committed backlog via didSet).
+        if appleTranscriber.isRunning { appleTranscriber.resetSegment() }
         sendToAI()
     }
 
     /// Auto-send the live transcript during an interview and prep the
     /// transcriber for the next utterance. ElevenLabs keeps the WebSocket
     /// and capture running — its server-side VAD already segments
-    /// utterances, and tearing the engine down used to go deaf for ~0.8s
-    /// (teardown + 300ms settle + reconnect) right when the interviewer
-    /// might start the next sentence. Apple accumulates recognition text
-    /// within a task, so the only way to start a clean segment there is
-    /// the stop/restart cycle.
+    /// utterances. Apple accumulates recognition text within a task, so
+    /// it rolls to a fresh recognition segment in place
+    /// (`resetSegment`) — the engine and taps keep running, so there's
+    /// no deaf window between question and answer.
     private func autoSendLiveTranscript() async {
         // Echo suppression: if the segment is mostly words from the answer
         // we just showed, the mic is hearing the USER read the reply aloud
@@ -1424,29 +1438,12 @@ final class OverlayViewModel {
         let hadDraft = showManualInput && !manualInput.isEmpty
         showManualInput = false
 
-        if transcriptionManager.isRunning {
-            sendToAI()                     // captures + clears transcription
-            if hadDraft { showManualInput = true }
-            return
-        }
-
-        captureEpoch += 1
-        let epoch = captureEpoch
-        stopTranscriber()
-        isRecording   = false
-        statusMessage = ""
-        sendToAI()                         // captures + clears transcription
+        // Apple: roll to a fresh recognition segment in place so the
+        // already-sent text can't resurface on the next update. The mic
+        // and engine keep running throughout.
+        if appleTranscriber.isRunning { appleTranscriber.resetSegment() }
+        sendToAI()                     // captures + clears transcription
         if hadDraft { showManualInput = true }
-
-        // Restart after a short pause (lets mic settle). Bail if the user
-        // paused, stopped, or switched source in the meantime — the epoch
-        // check makes those transitions win over this stale restart.
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        guard epoch == captureEpoch, isInterviewSession, !isInterviewPaused else { return }
-        let result = await beginCapture(statusWhileStarting: "")
-        if case .failed = result {
-            isInterviewSession = false
-        }
     }
 
     /// Debounced auto-send for interview mode. A VAD commit doesn't
@@ -1471,7 +1468,7 @@ final class OverlayViewModel {
             guard TranscriptFilter.isMeaningful(self.transcription) else { return }
             // Detach before sending — sendToAI cancels pendingAutoSendTask
             // (to supersede stale sends), and that must not self-cancel
-            // this task mid-flight or the Apple restart sleep gets skipped.
+            // this task mid-flight.
             self.pendingAutoSendTask = nil
             await self.autoSendLiveTranscript()
         }
