@@ -2,7 +2,11 @@ import AVFoundation
 import ScreenCaptureKit
 import Foundation
 
-class TranscriptionManager: NSObject {
+/// `@unchecked Sendable`: callbacks hop between the audio render thread,
+/// URLSession's queue, and main — but every mutation of shared state is
+/// funnelled through the main queue, which is the invariant the compiler
+/// can't see (hence "unchecked").
+class TranscriptionManager: NSObject, @unchecked Sendable {
 
     // MARK: - Public interface
 
@@ -24,6 +28,9 @@ class TranscriptionManager: NSObject {
         case failed(String)
     }
     var onConnectionEvent: ((ConnectionEvent) -> Void)?
+    /// Audio capture died underneath us (input device disconnected,
+    /// system-audio stream stopped). The owner should restart capture.
+    var onCaptureInterrupted: (() -> Void)?
     var elevenLabsAPIKey: String = ""
 
     private(set) var isRunning = false
@@ -41,6 +48,7 @@ class TranscriptionManager: NSObject {
     private var audioEngine  = AVAudioEngine()
     private var converter:    AVAudioConverter?
     private var targetFormat: AVAudioFormat?
+    private var engineObserver: NSObjectProtocol?
 
     private var scStream:           SCStream?
     private var systemAudioHandler: SystemAudioHandler?
@@ -80,6 +88,10 @@ class TranscriptionManager: NSObject {
     /// Stop mic/system audio but keep the WebSocket open so ElevenLabs
     /// can still deliver any in-flight committed_transcript.
     func stopAudioCapture() {
+        if let engineObserver {
+            NotificationCenter.default.removeObserver(engineObserver)
+            self.engineObserver = nil
+        }
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
@@ -305,6 +317,20 @@ class TranscriptionManager: NSObject {
             NSLog("[TranscriptionManager] AVAudioEngine.start failed: %@", error.localizedDescription)
             throw error
         }
+
+        // Input device changes (AirPods battery dies, headset unplugged)
+        // silently stop the engine — without this the UI keeps saying
+        // "Listening" while no audio flows. Surface it so the owner can
+        // restart capture on the new device.
+        if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
+        engineObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.isRunning else { return }
+            NSLog("[TranscriptionManager] engine configuration changed — capture interrupted")
+            self.onCaptureInterrupted?()
+        }
     }
 
     private func convertAndSendMic(_ input: AVAudioPCMBuffer) {
@@ -352,6 +378,12 @@ class TranscriptionManager: NSObject {
         config.height               = 2
 
         let handler = SystemAudioHandler { [weak self] data in self?.sendAudio(data) }
+        handler.onStopped = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isRunning else { return }
+                self.onCaptureInterrupted?()
+            }
+        }
         systemAudioHandler = handler
 
         scStream = SCStream(filter: filter, configuration: config, delegate: handler)
@@ -373,6 +405,9 @@ class TranscriptionManager: NSObject {
 
 class SystemAudioHandler: NSObject, SCStreamDelegate, SCStreamOutput {
     private let onData: (Data) -> Void
+    /// Stream died (display change, permission revoked, SCK hiccup) —
+    /// owner should restart capture rather than sit deaf.
+    var onStopped: (() -> Void)?
     init(onData: @escaping (Data) -> Void) { self.onData = onData }
 
     func stream(_ stream: SCStream,
@@ -398,6 +433,7 @@ class SystemAudioHandler: NSObject, SCStreamDelegate, SCStreamOutput {
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("System audio stream stopped: \(error.localizedDescription)")
+        onStopped?()
     }
 }
 

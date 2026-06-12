@@ -22,8 +22,10 @@ enum FeatureFlags {
     // MARK: - Hidden in v1, planned for a later release
 
     /// Embedded WebKit browser tabs inside the overlay. Heavy + maintenance
-    /// burden; users have a real browser. Plan: re-enable in v2.
-    static let browserEnabled = true
+    /// burden, and its system-audio path needs the BlackHole driver +
+    /// output-device reconfiguration — the most error-prone surface in the
+    /// app. Users have a real browser. Plan: re-enable in v2.
+    static let browserEnabled = false
 
     /// Peer Control Server — let a colleague view your overlay and send
     /// messages to the AI over LAN. Cool tech demo, near-zero real-world

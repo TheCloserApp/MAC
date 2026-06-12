@@ -546,11 +546,21 @@ struct ResumePanelView: View {
     }
 
     /// Big primary button at the bottom of the card stack — drives
-    /// `vm.generateResume()` and shows the progress state inline.
+    /// `vm.generateResume()` and shows the progress state inline. Free
+    /// users see how much of the weekly quota is left BEFORE hitting the
+    /// cap — previously the limit only surfaced as a block after the fact.
     private var generateRow: some View {
         let disabled = vm.resumeJD.isEmpty || vm.currentResumeText.isEmpty
             || vm.isGeneratingResume || vm.apiKey.isEmpty
-        return HStack {
+        return HStack(spacing: 10) {
+            if !vm.entitlement.isPremium {
+                let remaining = vm.quota.remainingThisWeek()
+                Text(remaining > 0
+                     ? "\(remaining) free résumé\(remaining == 1 ? "" : "s") left this week"
+                     : "Weekly free limit reached")
+                    .font(.caption2)
+                    .foregroundColor(remaining > 0 ? .secondary : .orange)
+            }
             Spacer()
             Button { vm.generateResume() } label: {
                 HStack(spacing: 6) {

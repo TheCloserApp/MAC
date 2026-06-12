@@ -165,7 +165,9 @@ final class SessionStore {
         var s = activeSession
         guard let idx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
         s.turns[idx].content = content
-        s.updatedAt = Date()
+        // No updatedAt bump here: it changes sort keys 30×/sec during a
+        // stream, invalidating History and every date-sorted observer for
+        // no reason. begin/finalize stamp it.
         activeSession = s
     }
 
@@ -176,7 +178,6 @@ final class SessionStore {
         var s = sessions[sIdx]
         guard let tIdx = s.turns.firstIndex(where: { $0.id == turnID }) else { return }
         s.turns[tIdx].content = content
-        s.updatedAt = Date()
         sessions[sIdx] = s
     }
 

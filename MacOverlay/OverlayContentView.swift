@@ -13,6 +13,20 @@ import SwiftUI
 struct OverlayView: View {
     @Environment(OverlayViewModel.self) private var vm
 
+    /// Chrome (session title row, input bar) reveals on hover and melts
+    /// away otherwise — matching the reference UI where only the content
+    /// is visible until the cursor enters the panel.
+    @State private var chromeHovering = false
+
+    /// The input bar is the whole UI in pill stage, so it never hides
+    /// there. While expanded it shows on hover — and stays while the user
+    /// has a draft typed or is interacting, so it can't vanish mid-thought.
+    private var barVisible: Bool {
+        vm.shellStage == .pill
+            || chromeHovering
+            || !vm.manualInput.isEmpty
+    }
+
     var body: some View {
         @Bindable var vm = vm
         rootContent
@@ -89,8 +103,14 @@ struct OverlayView: View {
                 // own internal hover/press states normally.
                 .animation(nil, value: vm.primarySurface)
                 .animation(nil, value: vm.shellStage)
+                // Hover-reveal: opacity (not removal) so the layout never
+                // reflows and the panel height stays put.
+                .opacity(barVisible ? 1 : 0)
+                .allowsHitTesting(barVisible)
+                .animation(.easeInOut(duration: 0.18), value: barVisible)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .onHover { chromeHovering = $0 }
         // Floating popup that hovers above the brand pill when the shell
         // is collapsed. Resume score / generated-resume / quick-ask
         // results render here so the user never loses status just
@@ -153,16 +173,31 @@ struct OverlayView: View {
     /// is open, the ambient status strip otherwise. Animations for the
     /// surface transition live here (not on the parent ZStack) so the
     /// sibling InputBarView never inherits them.
+    /// Live Focus hugs its content: the glass card only covers the Q&A,
+    /// and the panel space below it is empty SwiftUI — which the hosting
+    /// view doesn't claim, so clicks pass through to the window beneath.
+    /// Applies on BOTH the interview and chat surfaces — they render the
+    /// same live session, and requiring `.interview` here left the chat
+    /// surface's focus view floating centered in a full-height card.
+    private var focusHugging: Bool {
+        (vm.primarySurface == .interview || vm.primarySurface == .chat)
+            && vm.isInterviewSession
+            && !vm.isInterviewTextOnly && vm.interviewFocusMode
+    }
+
     @ViewBuilder
     private var upperLayer: some View {
         VStack(spacing: 0) {
             if vm.shellStage == .expanded && vm.primarySurface != nil {
                 topCard
-                    .cardSurface(topRadius: 18, bottomRadius: 18, opacity: vm.backgroundOpacity)
+                    .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
                     .padding(.leading, Self.panelInsetLeading)
                     .padding(.trailing, Self.panelInsetTrailing)
-                    .frame(maxHeight: .infinity)
+                    .frame(maxHeight: focusHugging ? nil : .infinity)
                     .transition(.opacity)
+                if focusHugging {
+                    Spacer(minLength: 0)
+                }
             } else if vm.shellStage == .expanded && vm.primarySurface == nil
                         && hasAmbientStatus {
                 Spacer(minLength: 0)
@@ -177,25 +212,35 @@ struct OverlayView: View {
     }
 
     /// Shared horizontal insets for the floating top card AND the bar.
-    /// Asymmetric on purpose — the user wants the top panel shifted to
-    /// the left of the overlay, with the bar sitting directly under it
-    /// (matching center). Applying the same leading/trailing insets to
-    /// both elements guarantees identical horizontal extent and
-    /// therefore identical centers.
+    /// Symmetric — the card fills the (now 400pt-wide) panel edge to
+    /// edge like the ChatGPT companion window, instead of the old
+    /// shifted-left layout with a wide empty right margin.
     private static let panelInsetLeading: CGFloat = 8
-    private static let panelInsetTrailing: CGFloat = 120
+    private static let panelInsetTrailing: CGFloat = 8
 
     /// Top card content — title + body. `.headed` (title-only) state is
     /// gone; if the user opens a surface, they see its body.
     @ViewBuilder
     private var topCard: some View {
         VStack(spacing: 0) {
-            TopStripView()
-            Rectangle()
-                .fill(Color.white.opacity(0.06))
-                .frame(height: 0.5)
+            // Title + compose + ⋯ + ✕ reveal on hover; opacity keeps the
+            // row's space so the surface body never jumps.
+            VStack(spacing: 0) {
+                TopStripView()
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(height: 0.5)
+            }
+            .opacity(chromeHovering ? 1 : 0)
+            .allowsHitTesting(chromeHovering)
+            .animation(.easeInOut(duration: 0.18), value: chromeHovering)
             primarySurface
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // alignment: .top — when the body is shorter than the
+                // card (focus mode, short answers) it pins to the top
+                // instead of centering vertically.
+                .frame(maxWidth: .infinity,
+                       maxHeight: focusHugging ? nil : .infinity,
+                       alignment: .top)
         }
     }
 

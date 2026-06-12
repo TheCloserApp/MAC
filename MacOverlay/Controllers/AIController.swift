@@ -22,6 +22,10 @@ final class AIController {
     @ObservationIgnored private weak var vm: OverlayViewModel?
     @ObservationIgnored private var streamingTask: Task<Void, Never>?
     @ObservationIgnored private(set) var lastRetry: PendingRetry?
+    /// The most recent request regardless of outcome. `lastRetry` clears
+    /// on success (it gates the error-Retry UI), but Regenerate must keep
+    /// working after a good answer — without this it silently no-opped.
+    @ObservationIgnored private(set) var lastRequest: PendingRetry?
     /// Last time we mirrored the streaming buffer onto `vm.aiResponse`.
     /// Used to throttle the assignment so SwiftUI doesn't invalidate every
     /// observer of `vm` on every token (~30+/sec). The chat surface itself
@@ -65,6 +69,7 @@ final class AIController {
             history: history,
             assistantTurnID: assistantTurnID
         )
+        lastRequest = lastRetry
         vm.isSendingToAI = true
         vm.aiResponse    = ""
         lastResponseFlushAt = .now
@@ -122,6 +127,14 @@ final class AIController {
                     vm.sessionNotes = vm.notesManager.entries
                 }
                 self.lastRetry = nil
+            } catch is CancellationError {
+                // User hit Stop, or a newer question interrupted this
+                // answer. Keep whatever streamed — no error decoration,
+                // no retry-state churn. The interrupting question's send
+                // is already scheduled by whoever cancelled us.
+                streamFailed = true
+                vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
+                if vm.aiResponse != accumulated { vm.aiResponse = accumulated }
             } catch {
                 streamFailed = true
                 let errMsg = "Error: \(error.localizedDescription)"
@@ -143,9 +156,12 @@ final class AIController {
         }
     }
 
-    /// Reset the assistant turn and replay the last failed request.
+    /// Reset the assistant turn and replay the last request — the failed
+    /// one when there is one, otherwise the last successful one
+    /// (Regenerate).
     func retry() {
-        guard let r = lastRetry, let vm else { return }
+        guard streamingTask == nil else { return }
+        guard let r = lastRetry ?? lastRequest, let vm else { return }
         vm.resetAssistantTurn(id: r.assistantTurnID)
         runStream(userText: r.userText,
                   screenshot: r.screenshot,

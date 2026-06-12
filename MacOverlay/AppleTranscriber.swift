@@ -9,7 +9,11 @@ import Foundation
 ///
 /// Used as an automatic fallback when `elevenLabsAPIKey` is empty — Interview
 /// and recording modes continue to work without any external API setup.
-final class AppleTranscriber: NSObject {
+/// `@unchecked Sendable`: callbacks hop between the audio render thread,
+/// Speech framework queues, and main — but every mutation of shared state
+/// is funnelled through the main queue, which is the invariant the
+/// compiler can't see (hence "unchecked").
+final class AppleTranscriber: NSObject, @unchecked Sendable {
 
     // MARK: - Public API (mirrors TranscriptionManager)
 
@@ -21,6 +25,9 @@ final class AppleTranscriber: NSObject {
     /// (legacy behaviour) — but consumers should set this so error
     /// strings never masquerade as transcript text.
     var onError:   ((String) -> Void)?
+    /// Audio capture died underneath us (input device disconnected,
+    /// system-audio stream stopped). The owner should restart capture.
+    var onCaptureInterrupted: (() -> Void)?
 
     private(set) var isRunning = false
 
@@ -30,13 +37,32 @@ final class AppleTranscriber: NSObject {
     private var request:       SFSpeechAudioBufferRecognitionRequest?
     private var task:          SFSpeechRecognitionTask?
     private var recognizer:    SFSpeechRecognizer? = SFSpeechRecognizer(locale: Locale.current)
+    private var engineObserver: NSObjectProtocol?
 
     private var scStream:           SCStream?
     private var systemAudioHandler: AppleSystemAudioHandler?
 
     private var currentText       = ""
+    /// Text recognized by PREVIOUS recognition tasks in this run. A single
+    /// SFSpeech request degrades (and server-backed ones get killed) after
+    /// roughly a minute of continuous audio, so we roll to a fresh request
+    /// periodically (see refreshRecognitionTask) and fold what it heard in
+    /// here — callers see one continuous transcript across the seams.
+    private var committedPrefix   = ""
+    private var taskStartedAt     = Date()
+    /// Roll the recognition request after this much continuous run time,
+    /// at the next brief quiet moment.
+    private let taskRefreshInterval: TimeInterval = 55
     private var lastTextChangeAt  = Date()
     private var lastCommitAt      = Date()
+
+    /// The transcript as callers should see it: prior tasks' text plus the
+    /// live task's text.
+    private var fullText: String {
+        if committedPrefix.isEmpty { return currentText }
+        if currentText.isEmpty     { return committedPrefix }
+        return committedPrefix + " " + currentText
+    }
     /// Fires onSilence after this much quiet time post-speech. This is the
     /// dominant source of "delay before the AI replies" on the Apple
     /// backend — 1.2s keeps mid-sentence pauses from committing
@@ -72,15 +98,6 @@ final class AppleTranscriber: NSObject {
             }
         }
 
-        let req = SFSpeechAudioBufferRecognitionRequest()
-        req.shouldReportPartialResults  = true
-        req.requiresOnDeviceRecognition = false
-        // Punctuated transcripts read better AND power the question-
-        // completeness heuristic that keeps auto-mode from answering
-        // mid-sentence (TranscriptFilter.seemsComplete).
-        req.addsPunctuation             = true
-        request = req
-
         if source == .microphone || source == .both {
             // Rebuild the engine on every start. The same `AVAudioEngine`
             // can refuse to re-tap after the default input device changes
@@ -113,49 +130,106 @@ final class AppleTranscriber: NSObject {
                 NSLog("[AppleTranscriber] AVAudioEngine.start failed: %@", error.localizedDescription)
                 throw error
             }
+
+            // Input device changes (AirPods battery dies, headset
+            // unplugged) silently stop the engine — without this the UI
+            // keeps saying "Listening" while no audio flows. Surface it
+            // so the owner can restart capture on the new device.
+            if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
+            engineObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: audioEngine, queue: .main
+            ) { [weak self] _ in
+                guard let self, self.isRunning else { return }
+                NSLog("[AppleTranscriber] engine configuration changed — capture interrupted")
+                self.onCaptureInterrupted?()
+            }
         }
 
         if source == .systemAudio || source == .both {
             try await setupSystemAudioCapture()
         }
 
+        isRunning = true
+        currentText = ""
+        committedPrefix = ""
+        lastTextChangeAt = Date()
+        installRecognitionTask()
+        NSLog("[AppleTranscriber] recognitionTask installed")
+        startSilenceWatcher()
+    }
+
+    /// Create a fresh request + recognition task pair. Used at start and
+    /// by the periodic long-run refresh. The handler checks a task token
+    /// so callbacks from a superseded (cancelled) task — including its
+    /// "canceled" error — are silently dropped.
+    private var activeTaskID = UUID()
+
+    private func installRecognitionTask() {
+        guard let recognizer else { return }
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults  = true
+        req.requiresOnDeviceRecognition = false
+        // Punctuated transcripts read better AND power the question-
+        // completeness heuristic that keeps auto-mode from answering
+        // mid-sentence (TranscriptFilter.seemsComplete).
+        req.addsPunctuation             = true
+        request = req
+        taskStartedAt = Date()
+
+        let taskID = UUID()
+        activeTaskID = taskID
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-            guard let self else { return }
-            if let error {
-                NSLog("[AppleTranscriber] recognition error: %@", error.localizedDescription)
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, self.isRunning else { return }
-                    (self.onError ?? self.onUpdate)?("Error: \(error.localizedDescription)")
-                }
-                return
-            }
-            guard let result else { return }
-            let text = result.bestTranscription.formattedString
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.isRunning else { return }
+                guard let self, self.isRunning, self.activeTaskID == taskID else { return }
+                if let error {
+                    NSLog("[AppleTranscriber] recognition error: %@", error.localizedDescription)
+                    (self.onError ?? self.onUpdate)?("Error: \(error.localizedDescription)")
+                    return
+                }
+                guard let result else { return }
+                let text = result.bestTranscription.formattedString
                 if text != self.currentText {
                     self.currentText = text
                     self.lastTextChangeAt = Date()
-                    self.onUpdate?(text)
-                    self.onPartial?(text)
+                    self.onUpdate?(self.fullText)
+                    self.onPartial?(self.fullText)
                 }
                 if result.isFinal {
                     self.commitCurrent()
                 }
             }
         }
-        NSLog("[AppleTranscriber] recognitionTask installed")
+    }
 
-        isRunning = true
-        currentText = ""
-        lastTextChangeAt = Date()
-        startSilenceWatcher()
+    /// Roll to a fresh recognition request. A single request degrades on
+    /// long-running audio (and server-backed recognition enforces a hard
+    /// duration cap), which used to kill transcription partway into long
+    /// interviews. Current text folds into `committedPrefix` so the
+    /// transcript reads continuous across the seam.
+    private func refreshRecognitionTask() {
+        guard isRunning else { return }
+        NSLog("[AppleTranscriber] rolling recognition task after %.0fs",
+              Date().timeIntervalSince(taskStartedAt))
+        if !currentText.isEmpty {
+            committedPrefix = fullText
+            currentText = ""
+        }
+        let old = task
+        old?.cancel()
+        request?.endAudio()
+        installRecognitionTask()
     }
 
     func stop() {
         isRunning = false
         silenceTimer?.cancel()
         silenceTimer = nil
+
+        if let engineObserver {
+            NotificationCenter.default.removeObserver(engineObserver)
+            self.engineObserver = nil
+        }
 
         task?.cancel()
         task = nil
@@ -173,7 +247,8 @@ final class AppleTranscriber: NSObject {
         scStream           = nil
         systemAudioHandler = nil
 
-        currentText = ""
+        currentText     = ""
+        committedPrefix = ""
     }
 
     /// Parity shim with `TranscriptionManager.stopAudioCapture()` — the
@@ -193,8 +268,15 @@ final class AppleTranscriber: NSObject {
         timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
         timer.setEventHandler { [weak self] in
             guard let self, self.isRunning else { return }
-            guard !self.currentText.isEmpty else { return }
             let quietFor = Date().timeIntervalSince(self.lastTextChangeAt)
+            // Long-run refresh: roll the recognition request at a quiet
+            // moment once it's been alive past the interval — before the
+            // recognizer degrades or kills it mid-interview.
+            if Date().timeIntervalSince(self.taskStartedAt) > self.taskRefreshInterval,
+               quietFor > 0.8 {
+                self.refreshRecognitionTask()
+            }
+            guard !self.fullText.isEmpty else { return }
             let sinceCommit = Date().timeIntervalSince(self.lastCommitAt)
             // Only fire once per quiet period.
             if quietFor >= silenceThreshold && sinceCommit >= silenceThreshold {
@@ -206,9 +288,9 @@ final class AppleTranscriber: NSObject {
     }
 
     private func commitCurrent() {
-        guard !currentText.isEmpty else { return }
+        guard !fullText.isEmpty else { return }
         lastCommitAt = Date()
-        onCommit?(currentText)
+        onCommit?(fullText)
         onSilence?()
     }
 
@@ -257,6 +339,12 @@ final class AppleTranscriber: NSObject {
         let handler = AppleSystemAudioHandler { [weak self] buffer in
             self?.request?.append(buffer)
         }
+        handler.onStopped = { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isRunning else { return }
+                self.onCaptureInterrupted?()
+            }
+        }
         systemAudioHandler = handler
 
         scStream = SCStream(filter: filter, configuration: config, delegate: handler)
@@ -271,6 +359,9 @@ final class AppleTranscriber: NSObject {
 final class AppleSystemAudioHandler: NSObject, SCStreamDelegate, SCStreamOutput {
     private let onBuffer: (AVAudioPCMBuffer) -> Void
     private let format: AVAudioFormat?
+    /// Stream died (display change, permission revoked, SCK hiccup) —
+    /// owner should restart capture rather than sit deaf.
+    var onStopped: (() -> Void)?
 
     init(onBuffer: @escaping (AVAudioPCMBuffer) -> Void) {
         self.onBuffer = onBuffer
@@ -312,5 +403,6 @@ final class AppleSystemAudioHandler: NSObject, SCStreamDelegate, SCStreamOutput 
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("Apple system audio stream stopped: \(error.localizedDescription)")
+        onStopped?()
     }
 }
