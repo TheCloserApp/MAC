@@ -70,9 +70,11 @@ struct TopStripView: View {
 
     /// Close the whole shell back to the collapsed brand pill — the
     /// reference UI's top-left ✕. The brand pill stays available to
-    /// reopen, so this is a soft close, not a quit.
+    /// reopen, so this is a soft close, not a quit. Esc triggers it too,
+    /// except while the title is being edited (Esc cancels the edit then).
+    @ViewBuilder
     private var closeButton: some View {
-        Button {
+        let button = Button {
             // Match the panel's easeOut resize curve — see surfaceButton
             // in InputBarView for the rationale (spring overshoot vs the
             // AppKit resize was visibly bouncing the bar).
@@ -82,14 +84,20 @@ struct TopStripView: View {
             }
         } label: {
             Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold))
                 .foregroundColor(.secondary)
-                .frame(width: 26, height: 26)
+                .frame(width: 20, height: 20)
                 .background(Circle().fill(Color.white.opacity(0.06)))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .help("Close")
+        .help("Close (Esc)")
+
+        if editingTitle {
+            button
+        } else {
+            button.keyboardShortcut(.cancelAction)
+        }
     }
 
     /// Compose / new-chat button — the reference UI's top-right pencil.
@@ -120,6 +128,60 @@ struct TopStripView: View {
 
     private var sessionMenu: some View {
         Menu {
+            // Live-session controls first — pause/resume and End moved
+            // here from the input bar so the bar stays minimal during
+            // an interview.
+            if vm.isInterviewSession {
+                if !vm.isInterviewTextOnly {
+                    Button {
+                        if vm.isInterviewPaused {
+                            vm.resumeInterviewSession()
+                        } else {
+                            vm.pauseInterviewSession()
+                        }
+                    } label: {
+                        Label(vm.isInterviewPaused ? "Resume interview" : "Pause interview",
+                              systemImage: vm.isInterviewPaused ? "play.fill" : "pause.fill")
+                    }
+                }
+                Button(role: .destructive) {
+                    vm.stopInterviewSession()
+                } label: {
+                    Label("End session", systemImage: "stop.circle")
+                }
+                Divider()
+            }
+
+            // Model picker — moved out of the bar; switching applies
+            // from the next answer.
+            Menu {
+                let visibility = ModelVisibility.shared
+                ForEach(["Anthropic", "OpenAI"], id: \.self) { provider in
+                    let models = OverlayViewModel.availableModels
+                        .filter { $0.provider == provider && visibility.isVisible($0.id) }
+                    if !models.isEmpty {
+                        Section(provider) {
+                            ForEach(models, id: \.id) { m in
+                                Button {
+                                    vm.selectedModel = m.id
+                                } label: {
+                                    HStack {
+                                        Text(m.name)
+                                        if vm.selectedModel == m.id {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Model: \(currentModelName)", systemImage: "cpu")
+            }
+
+            Divider()
+
             Button {
                 // Context-aware new session: on the Interview surface,
                 // flip back to the setup form rather than minting a new
@@ -176,6 +238,87 @@ struct TopStripView: View {
                 Label("Audio source: \(vm.audioSource.label)", systemImage: "waveform")
             }
 
+            // Quick transparency presets — reachable mid-interview so the
+            // overlay can fade over the call window without a trip to
+            // Preferences (which also has the fine-grained sliders).
+            Menu {
+                ForEach([1.0, 0.85, 0.7, 0.55, 0.4], id: \.self) { level in
+                    Button {
+                        vm.opacity = level
+                    } label: {
+                        HStack {
+                            Text("\(Int(level * 100))%")
+                            if abs(vm.opacity - level) < 0.01 {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Transparency: \(Int(vm.opacity * 100))%",
+                      systemImage: "circle.lefthalf.filled")
+            }
+
+            Menu {
+                ForEach([1.0, 0.8, 0.6, 0.4, 0.2], id: \.self) { level in
+                    Button {
+                        vm.backgroundOpacity = level
+                    } label: {
+                        HStack {
+                            Text("\(Int(level * 100))%")
+                            if abs(vm.backgroundOpacity - level) < 0.01 {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Background: \(Int(vm.backgroundOpacity * 100))%",
+                      systemImage: "rectangle.on.rectangle")
+            }
+
+            // Which speech engine is doing the transcribing — switchable
+            // here so the strip doesn't need a badge for it.
+            Menu {
+                ForEach(OverlayViewModel.TranscriptionPreference.allCases) { pref in
+                    Button {
+                        vm.transcriptionPreference = pref
+                    } label: {
+                        HStack {
+                            Text(pref.displayName)
+                            if vm.transcriptionPreference == pref {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Transcription: \(vm.transcriptionBackend.rawValue)",
+                      systemImage: "waveform.badge.mic")
+            }
+
+            if vm.isInterviewSession && !vm.isInterviewTextOnly {
+                Divider()
+
+                Button {
+                    vm.showLiveTranscript.toggle()
+                } label: {
+                    HStack {
+                        Text("Show live transcript")
+                        if vm.showLiveTranscript { Image(systemName: "checkmark") }
+                    }
+                }
+
+                Button {
+                    vm.interviewFocusMode.toggle()
+                } label: {
+                    HStack {
+                        Text("Focus mode (current Q&A only)")
+                        if vm.interviewFocusMode { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+
             if vm.showTokenCounts {
                 Divider()
                 let s = vm.sessionStore.activeSession
@@ -189,6 +332,22 @@ struct TopStripView: View {
             } label: {
                 Label("Delete Session", systemImage: "trash")
             }
+
+            Divider()
+
+            // App-level controls — there's no menu-bar icon (it would be
+            // visible to others during screen shares), so these live here.
+            Button {
+                (NSApp.delegate as? AppDelegate)?.resetPosition()
+            } label: {
+                Label("Reset overlay position", systemImage: "arrow.uturn.backward")
+            }
+
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Label("Quit MacOverlay", systemImage: "power")
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
@@ -200,6 +359,10 @@ struct TopStripView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    private var currentModelName: String {
+        OverlayViewModel.availableModels.first { $0.id == vm.selectedModel }?.name ?? "Model"
     }
 
     private func commitTitle() {

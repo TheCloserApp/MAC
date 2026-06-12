@@ -47,7 +47,6 @@ class UnconstrainedPanel: NSPanel {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var overlayPanel: NSPanel!
-    var statusItem: NSStatusItem!
     var vm: OverlayViewModel!
 
     private var localKeyMonitor: Any?
@@ -64,7 +63,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vm = OverlayViewModel()
         NSApp.setActivationPolicy(.accessory)
         setupOverlayPanel()
-        setupStatusItem()
+        // No menu-bar status item: the icon next to the clock/battery is
+        // visible to other people during screen shares (the menu bar IS
+        // captured, unlike our capture-excluded panel) and defeats the
+        // app's discretion. Quit / Reset position moved into the session
+        // ⋯ menu inside the overlay.
         setupKeyboardShortcuts()
 
         // With @Observable the ViewModel no longer publishes a Combine $opacity.
@@ -160,10 +163,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// shell — the user still sees only the pill + the popup card.
     static let pillWithPopupSize = NSSize(width: 480, height: 360)
     /// `.expanded` with no `primarySurface` — InputBar only, single row.
-    static let expandedCompactSize = NSSize(width: 620, height: 84)
+    static let expandedCompactSize = NSSize(width: 440, height: 84)
     /// `.expanded` with a `primarySurface` set — full shell: top header
-    /// + body + InputBar.
-    static let expandedSize  = NSSize(width: 620, height: 500)
+    /// + body + InputBar. Narrow + tall ChatGPT-companion proportions.
+    static let expandedSize  = NSSize(width: 440, height: 600)
 
     /// Last-known full-state size. Captured whenever the user transitions
     /// from full → mini so we can restore exactly what they had on expand,
@@ -222,23 +225,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         restorePanelOrigin()
 
         overlayPanel.orderFrontRegardless()
-    }
-
-    // MARK: - Status Bar
-
-    func setupStatusItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let btn = statusItem.button {
-            btn.image = NSImage(systemSymbolName: "waveform.badge.mic", accessibilityDescription: "Overlay")
-            btn.image?.size = NSSize(width: 18, height: 18)
-        }
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Toggle Overlay", action: #selector(toggleOverlay), keyEquivalent: "t"))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Reset Position", action: #selector(resetPosition), keyEquivalent: "r"))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit",           action: #selector(quitApp),       keyEquivalent: "q"))
-        statusItem.menu = menu
     }
 
     // MARK: - Keyboard Shortcuts
@@ -601,8 +587,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// this. Two values: pill (just the brand) and expanded (wide enough
     /// for every visible bar element).
     static let pillMinSize             = NSSize(width: 240, height: 60)
-    static let expandedCompactMinSize  = NSSize(width: 600, height: 80)
-    static let expandedMinSize         = NSSize(width: 600, height: 340)
+    static let expandedCompactMinSize  = NSSize(width: 360, height: 80)
+    static let expandedMinSize         = NSSize(width: 360, height: 420)
 
     /// Resize the panel for the given shell stage. Within `.expanded`
     /// the height also adapts to whether a `primarySurface` is open:

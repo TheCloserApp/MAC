@@ -166,6 +166,17 @@ final class OverlayViewModel {
     /// toggle today.
     var interviewAutoGenerate: Bool = true
 
+    /// Live Focus: during a live interview, show only the current question
+    /// and the latest streaming answer instead of the full conversation —
+    /// everything that isn't the current exchange melts away. Toggleable
+    /// from the live strip; resets to ON each time a session goes live.
+    var interviewFocusMode: Bool = true
+
+    /// Whether the live transcript strip is visible during an interview.
+    /// Hiding it leaves ONLY the question + answer on screen; the toggle
+    /// lives in the session ⋯ menu. Resets to visible per live session.
+    var showLiveTranscript: Bool = true
+
     /// Two modes the Interview surface can host: a full interview (resume
     /// + JD + transcription) or a lighter Regular call (just system
     /// prompt + context, with a Call/Chat sub-toggle).
@@ -394,6 +405,11 @@ final class OverlayViewModel {
         didSet {
             UserDefaults.standard.set(transcriptionPreference.rawValue,
                                       forKey: "transcriptionPreference")
+            // Mid-session engine switch (⋯ menu): restart capture so the
+            // new backend takes over immediately, like the source picker.
+            if oldValue != transcriptionPreference, isRecording {
+                restartCaptureForNewSource()
+            }
         }
     }
 
@@ -868,6 +884,28 @@ final class OverlayViewModel {
         transcriptionManager.onError = errorHandler
         appleTranscriber.onError     = errorHandler
 
+        // Audio capture self-healing: when the input device disappears
+        // mid-session (AirPods die, headset unplugged) or the system-audio
+        // stream stops, the engine halts silently — restart capture on
+        // whatever device is current. The 400ms settle gives CoreAudio
+        // time to re-resolve the default device; the epoch system makes
+        // user actions during that window win over this recovery.
+        let interruptionHandler: () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.isRecording else { return }
+                // Debounce: device flapping can fire config-change
+                // notifications in bursts — one recovery per window.
+                guard Date().timeIntervalSince(self.lastCaptureRecoveryAt) > 1.5 else { return }
+                self.lastCaptureRecoveryAt = Date()
+                self.statusMessage = "Reconnecting audio…"
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard self.isRecording else { return }
+                _ = await self.beginCapture(statusWhileStarting: "Reconnecting audio…")
+            }
+        }
+        transcriptionManager.onCaptureInterrupted = interruptionHandler
+        appleTranscriber.onCaptureInterrupted     = interruptionHandler
+
         // Transient connection drops self-heal (the manager reconnects with
         // backoff); the user just sees a status line flip while it happens.
         transcriptionManager.onConnectionEvent = { [weak self] event in
@@ -877,7 +915,12 @@ final class OverlayViewModel {
                 case .reconnecting:
                     self.statusMessage = "Reconnecting transcription…"
                 case .reconnected:
-                    if self.statusMessage == "Reconnecting transcription…" {
+                    // Clear BOTH the transient "Reconnecting…" line and the
+                    // louder connection-lost error — the manager keeps
+                    // retrying after reporting .failed, so a late recovery
+                    // must wipe the stale error too.
+                    if self.statusMessage == "Reconnecting transcription…"
+                        || self.statusMessage.hasPrefix("Error: Transcription connection lost") {
                         self.statusMessage = ""
                     }
                 case .failed(let message):
@@ -909,12 +952,22 @@ final class OverlayViewModel {
                         self.transcription = ""
                         return
                     }
-                    // A response is still streaming — leave the segment
-                    // queued in the transcript. AIController flushes it
-                    // when the stream finishes (flushPendingLiveTranscript),
-                    // so questions asked while the AI is answering are no
-                    // longer dropped.
-                    guard !self.isSendingToAI else { return }
+                    // A response is still streaming and a NEW question just
+                    // committed: the latest question wins. Cancel the
+                    // in-flight answer and let the debounced send pick up
+                    // the new one — waiting for the old answer to finish
+                    // made the app feel deaf mid-interview. Echo check
+                    // first so the user reading the streaming answer
+                    // aloud doesn't kill their own answer.
+                    if self.isSendingToAI {
+                        let lastAnswer = self.sessionStore.activeSession.turns
+                            .last(where: { $0.role == .assistant })?.content ?? ""
+                        if TranscriptFilter.echoesAnswer(self.transcription, answer: lastAnswer) {
+                            self.transcription = ""   // read-along — drop it
+                            return
+                        }
+                        self.cancelStreaming()
+                    }
                     // Debounced: a VAD commit isn't proof the question is
                     // over. scheduleAutoSend waits a short grace window
                     // (longer when the text trails off mid-thought) and
@@ -990,6 +1043,15 @@ final class OverlayViewModel {
     /// on — recording silently continued under a "Paused" UI.
     @ObservationIgnored private var captureEpoch = 0
 
+    /// App Nap suppression while capture runs. Hours-long interviews sit
+    /// in the background from macOS's perspective (the overlay never
+    /// becomes the active app), and App Nap throttles timers + I/O of
+    /// napping processes — which surfaced as transcription stalls deep
+    /// into long sessions.
+    @ObservationIgnored private var captureActivity: NSObjectProtocol?
+    /// Last time the capture self-recovery ran (device-change handler).
+    @ObservationIgnored private var lastCaptureRecoveryAt = Date.distantPast
+
     private enum CaptureStartResult { case started, superseded, failed }
 
     /// Start capture on the current `audioSource`. Always tears down any
@@ -1012,6 +1074,11 @@ final class OverlayViewModel {
             }
             isRecording   = true
             statusMessage = ""
+            if captureActivity == nil {
+                captureActivity = ProcessInfo.processInfo.beginActivity(
+                    options: [.userInitiated, .idleSystemSleepDisabled],
+                    reason: "Live transcription session")
+            }
             return .started
         } catch {
             guard epoch == captureEpoch else { return .superseded }
@@ -1030,6 +1097,10 @@ final class OverlayViewModel {
         stopTranscriber()
         isRecording   = false
         statusMessage = status
+        if let activity = captureActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            captureActivity = nil
+        }
     }
 
     /// Live audio-source switch: restart the engine on the new source
@@ -1085,6 +1156,8 @@ final class OverlayViewModel {
         }
         isInterviewSession = true
         isInterviewPaused  = false
+        interviewFocusMode = true
+        showLiveTranscript = true
         transcription = ""
         aiResponse    = ""
         // Fresh start — reset the elapsed counter and begin a new
@@ -1252,9 +1325,14 @@ final class OverlayViewModel {
 
         guard !userText.isEmpty || pendingScreenshot != nil || hasAttachments else { return }
 
+        // Missing key: tell the user instead of silently dropping the
+        // message. The "Error" prefix makes the status row render even
+        // mid-interview, where regular status text is suppressed.
         let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
-        if  isOpenAI && openAIApiKey.isEmpty { return }
-        if !isOpenAI && apiKey.isEmpty       { return }
+        if (isOpenAI && openAIApiKey.isEmpty) || (!isOpenAI && apiKey.isEmpty) {
+            statusMessage = "Error: no \(isOpenAI ? "OpenAI" : "Anthropic") API key — add it in Profile → API keys, or pick another model."
+            return
+        }
 
         let resolvedPrompt   = resolveActivePrompt()
         let historySnapshot  = sessionStore.replayContext()
@@ -1276,8 +1354,13 @@ final class OverlayViewModel {
             return userText.isEmpty ? blocks : "\(blocks)\n\n\(userText)"
         }()
 
-        // Sending a message implies the user wants to see the response.
-        primarySurface = .chat
+        // Sending a message implies the user wants to see the response —
+        // but don't yank the Interview surface over to Chat mid-session;
+        // both render the live conversation, and the flip re-laid-out the
+        // focus card on every auto-send.
+        if primarySurface != .interview {
+            primarySurface = .chat
+        }
         if shellStage != .expanded {
             withAnimation(Design.Motion.spring) {
                 shellStage = .expanded
@@ -1322,46 +1405,45 @@ final class OverlayViewModel {
         }
         guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         showManualInput = false             // sendToAI sends + clears transcription
+        // Apple keeps accumulating within a recognition task — without a
+        // segment reset the text just sent resurfaces on the next update
+        // and gets sent again. ElevenLabs needs no reset (clearing
+        // `transcription` drops the committed backlog via didSet).
+        if appleTranscriber.isRunning { appleTranscriber.resetSegment() }
         sendToAI()
     }
 
     /// Auto-send the live transcript during an interview and prep the
     /// transcriber for the next utterance. ElevenLabs keeps the WebSocket
     /// and capture running — its server-side VAD already segments
-    /// utterances, and tearing the engine down used to go deaf for ~0.8s
-    /// (teardown + 300ms settle + reconnect) right when the interviewer
-    /// might start the next sentence. Apple accumulates recognition text
-    /// within a task, so the only way to start a clean segment there is
-    /// the stop/restart cycle.
+    /// utterances. Apple accumulates recognition text within a task, so
+    /// it rolls to a fresh recognition segment in place
+    /// (`resetSegment`) — the engine and taps keep running, so there's
+    /// no deaf window between question and answer.
     private func autoSendLiveTranscript() async {
+        // Echo suppression: if the segment is mostly words from the answer
+        // we just showed, the mic is hearing the USER read the reply aloud
+        // — not the interviewer asking something new. Sending it would
+        // answer our own answer, over and over. Drop it and keep listening.
+        let lastAnswer = sessionStore.activeSession.turns
+            .last(where: { $0.role == .assistant })?.content ?? ""
+        if TranscriptFilter.echoesAnswer(transcription, answer: lastAnswer) {
+            NSLog("[AutoSend] dropped segment — reads as echo of the last answer")
+            transcription = ""
+            return
+        }
+
         // Never hijack a typed draft — force the transcript path through
         // sendToAI, then restore the draft flag.
         let hadDraft = showManualInput && !manualInput.isEmpty
         showManualInput = false
 
-        if transcriptionManager.isRunning {
-            sendToAI()                     // captures + clears transcription
-            if hadDraft { showManualInput = true }
-            return
-        }
-
-        captureEpoch += 1
-        let epoch = captureEpoch
-        stopTranscriber()
-        isRecording   = false
-        statusMessage = ""
-        sendToAI()                         // captures + clears transcription
+        // Apple: roll to a fresh recognition segment in place so the
+        // already-sent text can't resurface on the next update. The mic
+        // and engine keep running throughout.
+        if appleTranscriber.isRunning { appleTranscriber.resetSegment() }
+        sendToAI()                     // captures + clears transcription
         if hadDraft { showManualInput = true }
-
-        // Restart after a short pause (lets mic settle). Bail if the user
-        // paused, stopped, or switched source in the meantime — the epoch
-        // check makes those transitions win over this stale restart.
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        guard epoch == captureEpoch, isInterviewSession, !isInterviewPaused else { return }
-        let result = await beginCapture(statusWhileStarting: "")
-        if case .failed = result {
-            isInterviewSession = false
-        }
     }
 
     /// Debounced auto-send for interview mode. A VAD commit doesn't
@@ -1386,7 +1468,7 @@ final class OverlayViewModel {
             guard TranscriptFilter.isMeaningful(self.transcription) else { return }
             // Detach before sending — sendToAI cancels pendingAutoSendTask
             // (to supersede stale sends), and that must not self-cancel
-            // this task mid-flight or the Apple restart sleep gets skipped.
+            // this task mid-flight.
             self.pendingAutoSendTask = nil
             await self.autoSendLiveTranscript()
         }

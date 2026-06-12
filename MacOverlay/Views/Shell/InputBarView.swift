@@ -51,26 +51,31 @@ struct InputBarView: View {
         // so the brand logo never leaves its position — the capsule just
         // grows wider to accommodate.
         VStack(alignment: .leading, spacing: 6) {
-            if vm.pendingScreenshot != nil && vm.shellStage != .pill {
-                screenshotChip
-            }
-            if !vm.pendingAttachments.isEmpty && vm.shellStage != .pill {
-                attachmentChips
+            // Attachments float in their own tray ABOVE the bar capsule.
+            // Stacking them inside the capsule stretched it into a tall
+            // pill with bulging rounded ends — this keeps the bar a bar.
+            if (vm.pendingScreenshot != nil || !vm.pendingAttachments.isEmpty)
+                && vm.shellStage != .pill {
+                attachmentTray
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             barRow
+                // Constant horizontal padding across stages — animating
+                // padding 4 → 8 during expansion shifts the brand pill 4pt
+                // right mid-flight, which reads as the icon "twitching" as
+                // the bar grows. Lock it.
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+                .background(barShape.fill(Design.Surface.shellFill).opacity(vm.backgroundOpacity))
+                .overlay(barShape.stroke(Color.white.opacity(0.10), lineWidth: 0.75))
+                // Clip transitioning content (inner HStack sliding in from
+                // the leading edge) to the capsule outline so the controls
+                // visibly emerge from inside the bar.
+                .clipShape(barShape)
+                .designShadow(Design.Shadow.raised)
         }
-        // Constant horizontal padding across stages — animating padding
-        // 4 → 8 during expansion shifts the brand pill 4pt right mid-flight,
-        // which reads as the icon "twitching" as the bar grows. Lock it.
-        .padding(.horizontal, 4)
-        .padding(.vertical, 4)
-        .background(barShape.fill(Design.Surface.shellFill).opacity(vm.backgroundOpacity))
-        .overlay(barShape.stroke(Color.white.opacity(0.10), lineWidth: 0.75))
-        // Clip transitioning content (inner HStack sliding in from the
-        // leading edge) to the capsule outline so the controls visibly
-        // emerge from inside the bar instead of bleeding past it.
-        .clipShape(barShape)
-        .designShadow(Design.Shadow.raised)
+        .animation(Design.Motion.fast, value: vm.pendingAttachments.count)
+        .animation(Design.Motion.fast, value: vm.pendingScreenshot != nil)
         .animation(Design.Motion.expand, value: vm.shellStage)
         // Hover-preview tracking: when the bar expanded purely from a
         // hover (no click yet), watch for the mouse leaving the panel.
@@ -192,23 +197,20 @@ struct InputBarView: View {
                 HStack(alignment: .center, spacing: 4) {
                     divider
                     if vm.isInterviewSession {
+                        // Minimal live row: just the field + send. Pause,
+                        // End session, and the model picker live in the
+                        // session ⋯ menu so nothing competes with the
+                        // answer during an interview.
                         textInputField
-                        modelMenu
-                        // Text-only Regular call swaps the pause/play
-                        // button for a plain send button so the user
-                        // can ship a message without involving the mic.
                         if vm.isInterviewTextOnly {
                             sendButton
                         } else {
-                            interviewPauseButton
                             // Manual send: push whatever's typed — or the
                             // accumulated live transcription — to the AI
-                            // right now, without waiting for a silence
-                            // boundary or auto-generate. The mic keeps
-                            // running.
+                            // right now (also ⌘⏎), without waiting for a
+                            // silence boundary. The mic keeps running.
                             liveSendButton
                         }
-                        interviewStopButton
                     } else {
                         surfaceButtons
                     }
@@ -509,7 +511,9 @@ struct InputBarView: View {
                 .contentShape(Rectangle())
             }
         )
-        .help("Choose model")
+        .help(vm.isInterviewSession
+              ? "Choose model — applies from the next answer"
+              : "Choose model")
     }
 
     private func modelMenuItems() -> [PopUpItem] {
@@ -579,52 +583,8 @@ struct InputBarView: View {
         }
     }
 
-    /// Pause / resume button shown while an interview is running. Pausing
-    /// stops the transcriber but keeps the session alive so resuming picks
-    /// up the same transcript and context. Renders as `pause.fill` when
-    /// recording, `play.fill` when paused.
-    private var interviewPauseButton: some View {
-        let paused = vm.isInterviewPaused
-        return Button {
-            if paused { vm.resumeInterviewSession() }
-            else      { vm.pauseInterviewSession() }
-        } label: {
-            ZStack {
-                Circle().fill((paused ? Design.Accent.blue : Color.white).opacity(paused ? 0.20 : 0.06))
-                Circle().strokeBorder(
-                    (paused ? Design.Accent.blue : Color.white).opacity(paused ? 0.45 : 0.15),
-                    lineWidth: 0.5
-                )
-                Image(systemName: paused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(paused ? Design.Accent.blue : .primary.opacity(0.85))
-            }
-            .frame(width: 30, height: 30)
-        }
-        .buttonStyle(.plain)
-        .help(paused ? "Resume interview" : "Pause interview")
-    }
-
-    /// Big stop button shown in place of the surface icons while an
-    /// interview is running. One tap ends the live session and the bar
-    /// flips back to the four-icon idle layout.
-    private var interviewStopButton: some View {
-        Button {
-            vm.stopInterviewSession()
-        } label: {
-            ZStack {
-                Circle().fill(Design.Accent.red.opacity(0.20))
-                Circle().strokeBorder(Design.Accent.red.opacity(0.45), lineWidth: 0.5)
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Design.Accent.red)
-                    .symbolEffect(.pulse, options: .repeating, value: vm.isInterviewSession)
-            }
-            .frame(width: 30, height: 30)
-        }
-        .buttonStyle(.plain)
-        .help("Stop interview")
-    }
+    // Pause/resume, End session, and the model picker moved to the
+    // session ⋯ menu (TopStripView) — the live bar stays minimal.
 
     private var sendButton: some View {
         let enabled = vm.canSend || !vm.manualInput.isEmpty
@@ -643,7 +603,8 @@ struct InputBarView: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .help("Send (⏎)")
+        .keyboardShortcut(.return, modifiers: .command)
+        .help("Send (⏎ or ⌘⏎)")
     }
 
     /// Manual "send now" shown alongside pause during a live (voice)
@@ -661,15 +622,16 @@ struct InputBarView: View {
                     enabled ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
                     lineWidth: 0.5
                 )
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 11, weight: .semibold))
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(enabled ? .white : .secondary.opacity(0.5))
             }
             .frame(width: 30, height: 30)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .help("Send transcription to AI now")
+        .keyboardShortcut(.return, modifiers: .command)
+        .help("Send the live transcript now (⌘⏎) — it also sends automatically when the speaker pauses")
     }
 
     // MARK: - Helpers
@@ -689,48 +651,74 @@ struct InputBarView: View {
         .frame(width: 30, height: 30)
     }
 
-    // MARK: - Attachment chips
+    // MARK: - Attachment tray
 
-    /// Pending file attachments queued for the next send. Each chip shows
-    /// the file icon + name and an `x` to remove. The extracted text is
-    /// already in `vm.pendingAttachments[i].extractedText` and will be
-    /// merged into the AI prompt at send time.
-    @ViewBuilder
-    private var attachmentChips: some View {
-        let chips = vm.pendingAttachments
-        HStack(spacing: 6) {
-            ForEach(chips) { att in
-                HStack(spacing: 5) {
-                    Image(systemName: iconFor(att.name))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
-                    Text(att.name)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.primary.opacity(0.85))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button {
-                        vm.pendingAttachments.removeAll { $0.id == att.id }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+    /// Floating tray above the bar holding everything queued for the next
+    /// send — screenshot thumbnail + file chips. Renders as its own glass
+    /// card so the bar capsule keeps its shape; scrolls horizontally when
+    /// there are many files. The extracted text is already in
+    /// `vm.pendingAttachments[i].extractedText` and merges into the AI
+    /// prompt at send time.
+    private var attachmentTray: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if let img = vm.pendingScreenshot {
+                    trayChip(remove: { vm.pendingScreenshot = nil }) {
+                        Image(nsImage: img)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 34, height: 24)
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5))
+                        Text("Screenshot")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.primary.opacity(0.85))
                     }
-                    .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
-                )
+                ForEach(vm.pendingAttachments) { att in
+                    trayChip(remove: {
+                        vm.pendingAttachments.removeAll { $0.id == att.id }
+                    }) {
+                        Image(systemName: iconFor(att.name))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Design.Accent.blue)
+                            .frame(width: 24, height: 24)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Design.Accent.blue.opacity(0.14)))
+                        Text(att.name)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.primary.opacity(0.85))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 150, alignment: .leading)
+                    }
+                }
             }
-            Spacer(minLength: 0)
+            .padding(8)
         }
+        .glassCard(cornerRadius: 14, opacity: vm.backgroundOpacity)
+    }
+
+    /// One chip in the tray: leading content + remove ✕.
+    private func trayChip<Content: View>(remove: @escaping () -> Void,
+                                         @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            content()
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
     }
 
     private func iconFor(_ name: String) -> String {
@@ -741,40 +729,6 @@ struct InputBarView: View {
         case "rtf":          return "doc.text.fill"
         case "md", "txt":    return "doc.plaintext.fill"
         default:             return "doc.fill"
-        }
-    }
-
-    // MARK: - Screenshot chip
-
-    @ViewBuilder
-    private var screenshotChip: some View {
-        if let img = vm.pendingScreenshot {
-            HStack(spacing: 8) {
-                Image(nsImage: img)
-                    .resizable().scaledToFit()
-                    .frame(height: 22)
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                Text("Screenshot attached")
-                    .font(Design.Font.tiny)
-                    .foregroundColor(.secondary)
-                Spacer()
-                Button { vm.pendingScreenshot = nil } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Design.Accent.blue.opacity(0.10))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Design.Accent.blue.opacity(0.20), lineWidth: 0.5)
-            )
         }
     }
 

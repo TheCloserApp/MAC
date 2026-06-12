@@ -60,6 +60,31 @@ enum TranscriptFilter {
         return !danglingConnectives.contains(lastWord)
     }
 
+    /// True when `segment` is mostly made of words from `answer` — the
+    /// signature of the user reading the assistant's reply out loud into
+    /// their own microphone. Without this check, auto-mode transcribes the
+    /// read-back, treats it as a new question, and answers it — generating
+    /// 3+ answers per real question in mic / mic+system setups.
+    ///
+    /// Heuristic: take the segment's significant words (≥3 letters, not
+    /// filler); if ≥75% of them appear in the answer, it's a read-back.
+    /// Real follow-up questions bring new vocabulary, so they pass.
+    static func echoesAnswer(_ segment: String, answer: String) -> Bool {
+        guard !answer.isEmpty else { return false }
+        let segWords = tokenize(segment).filter { $0.count >= 3 && !fillers.contains($0) }
+        // Too few significant words to judge — let isMeaningful decide.
+        guard segWords.count >= 4 else { return false }
+        let answerSet = Set(tokenize(answer))
+        let hits = segWords.filter { answerSet.contains($0) }.count
+        return Double(hits) / Double(segWords.count) >= 0.75
+    }
+
+    private static func tokenize(_ raw: String) -> [String] {
+        raw.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+    }
+
     /// True when `raw` contains at least some real spoken content. Returns
     /// false for empty / whitespace-only input, non-speech annotations
     /// (`[noise]`, `(music)`, `[BLANK_AUDIO]`), filler-only utterances, and

@@ -6,6 +6,10 @@ import AppKit
 /// re-tokenise long responses.
 struct MarkdownResponseView: View {
     let text: String
+    /// Base body-text size. Headings/bullets/code derive from it, so the
+    /// live-interview Focus view can render answers slightly larger for
+    /// read-while-speaking without touching every call site.
+    var baseSize: CGFloat = 12
 
     enum Block {
         case code(lang: String, body: String)
@@ -39,21 +43,22 @@ struct MarkdownResponseView: View {
 
         case .heading(let level, let text):
             inlineText(text)
-                .font(.system(size: level == 1 ? 14 : level == 2 ? 13 : 12, weight: .semibold))
+                .font(.system(size: level == 1 ? baseSize + 2 : level == 2 ? baseSize + 1 : baseSize,
+                              weight: .semibold))
 
         case .bullet(let text):
             HStack(alignment: .top, spacing: 5) {
                 Text("•")
-                    .font(.system(size: 12))
+                    .font(.system(size: baseSize))
                     .foregroundColor(.secondary)
                     .frame(width: 10, alignment: .center)
                 inlineText(text)
-                    .font(.system(size: 12))
+                    .font(.system(size: baseSize))
             }
 
         case .plain(let text):
             inlineText(text)
-                .font(.system(size: 12))
+                .font(.system(size: baseSize))
         }
     }
 

@@ -46,9 +46,10 @@ enum Design {
     // instead of a repo-wide search-and-replace.
     enum Surface {
         /// Base fill under shell capsules, cards, panels, and onboarding.
-        /// Slightly warmer than pure neutral grey so it reads as a tinted
-        /// dark surface rather than chrome.
-        static let shellFill = Color(red: 22/255, green: 22/255, blue: 24/255)
+        /// One flat, uniform shade everywhere — neutral charcoal (#212123),
+        /// the ChatGPT-desktop palette: near-black surface, white primary
+        /// text, soft-gray secondaries, subtle blue accents. No gradient.
+        static let shellFill = Color(red: 0x21/255, green: 0x21/255, blue: 0x23/255)
     }
 
     // MARK: - macOS system accents (used by sidebar / top strip / chat rail)

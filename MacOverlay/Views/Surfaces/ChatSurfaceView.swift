@@ -9,6 +9,14 @@ import UniformTypeIdentifiers
 struct ChatSurfaceView: View {
     @Environment(OverlayViewModel.self) private var vm
     @State private var isDropTargeted = false
+    /// Hover over the Live Focus area — reveals the Copy/Retry/model row.
+    @State private var focusHovering = false
+    /// Measured height of the focus answer content, so the card hugs it.
+    @State private var focusContentHeight: CGFloat = 0
+    /// How many Q&A pairs back from the latest the focus view is showing.
+    /// 0 = live pair; the ‹ › arrows step through history and any new
+    /// question snaps it back to 0.
+    @State private var focusPairOffset = 0
 
     var body: some View {
         let session = vm.sessionStore.activeSession
@@ -111,7 +119,8 @@ struct ChatSurfaceView: View {
     @ViewBuilder
     private func content(session: ChatSession) -> some View {
         VStack(spacing: 0) {
-            if vm.isRecording || vm.isInterviewSession || !vm.transcription.isEmpty {
+            if (vm.isRecording || vm.isInterviewSession || !vm.transcription.isEmpty)
+                && (vm.showLiveTranscript || !vm.isInterviewSession) {
                 liveTranscriptStrip
                 Divider().opacity(0.4)
             }
@@ -133,7 +142,12 @@ struct ChatSurfaceView: View {
                 Divider().opacity(0.4)
             }
 
-            if session.turns.isEmpty && !vm.isSendingToAI && vm.aiResponse.isEmpty {
+            if vm.isInterviewSession && !vm.isInterviewTextOnly && vm.interviewFocusMode {
+                // Live Focus: during a live interview only the current
+                // exchange matters — the full conversation stays one
+                // toggle away (list button on the strip).
+                liveFocusView(session: session)
+            } else if session.turns.isEmpty && !vm.isSendingToAI && vm.aiResponse.isEmpty {
                 if showsContinueButton(session: session) {
                     // Empty session that's still resumable (a previously-
                     // started interview / call that never got a message).
@@ -148,6 +162,290 @@ struct ChatSurfaceView: View {
                 conversationView(session: session)
             }
         }
+    }
+
+    // MARK: - Live Focus (interview)
+
+    /// One question + its answer, as the focus view shows them.
+    private struct QAPair {
+        let question: ChatTurn
+        let answer: ChatTurn?
+    }
+
+    private func qaPairs(in session: ChatSession) -> [QAPair] {
+        var out: [QAPair] = []
+        var i = 0
+        let turns = session.turns
+        while i < turns.count {
+            if turns[i].role == .user {
+                if i + 1 < turns.count, turns[i + 1].role == .assistant {
+                    out.append(QAPair(question: turns[i], answer: turns[i + 1]))
+                    i += 2
+                } else {
+                    out.append(QAPair(question: turns[i], answer: nil))
+                    i += 1
+                }
+            } else {
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Focused live-interview layout: one Q&A at a time, with ‹ › arrows
+    /// to flip through earlier questions. While generating it shows ONLY
+    /// the typing indicator — the full answer lands in one paint when the
+    /// stream completes. Rendering the text token-by-token re-measured
+    /// and re-laid-out the card ~30×/sec, which SwiftUI eventually
+    /// throttled — the "stuck after two lines, then laggy" symptom.
+    private func liveFocusView(session: ChatSession) -> some View {
+        let pairs   = qaPairs(in: session)
+        let clamped = pairs.isEmpty ? 0 : min(focusPairOffset, pairs.count - 1)
+        let pair    = pairs.isEmpty ? nil : pairs[pairs.count - 1 - clamped]
+        let isLatest = clamped == 0
+        let streaming = vm.isSendingToAI && isLatest
+
+        return VStack(alignment: .leading, spacing: 0) {
+            if let pair {
+                focusHeader(pair: pair,
+                            position: pairs.count - clamped,
+                            total: pairs.count,
+                            offset: clamped,
+                            maxOffset: pairs.count - 1)
+                Divider().opacity(0.25)
+
+                if streaming {
+                    streamingAnswer(pair.answer)
+                } else if let a = pair.answer, !a.content.isEmpty {
+                    completedAnswer(a, isLatest: isLatest)
+                } else {
+                    Text("No answer for this question.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 12)
+                }
+            } else {
+                focusEmptyState
+            }
+        }
+        .onHover { focusHovering = $0 }
+        // A new question arrived — snap back to the live pair.
+        .onChange(of: pairs.last?.question.id) { _, _ in focusPairOffset = 0 }
+    }
+
+    /// Question line + ‹ › pair navigation. Arrows only appear once
+    /// there's more than one exchange.
+    private func focusHeader(pair: QAPair, position: Int, total: Int,
+                             offset: Int, maxOffset: Int) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "questionmark.bubble")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Design.Accent.blue)
+                .padding(.top, 2)
+            Text(pair.question.content)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Spacer(minLength: 6)
+            if total > 1 {
+                HStack(spacing: 3) {
+                    focusArrow(icon: "chevron.left",
+                               enabled: offset < maxOffset,
+                               help: "Previous question") {
+                        focusPairOffset = min(offset + 1, maxOffset)
+                    }
+                    Text("\(position)/\(total)")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                    focusArrow(icon: "chevron.right",
+                               enabled: offset > 0,
+                               help: "Next question") {
+                        focusPairOffset = max(offset - 1, 0)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private func focusArrow(icon: String, enabled: Bool, help: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(enabled ? .secondary : .secondary.opacity(0.3))
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Color.white.opacity(enabled ? 0.06 : 0.02)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(help)
+    }
+
+    /// The answer while it streams. The user is mid-interview — they need
+    /// the first line the moment it exists, not after the whole answer
+    /// lands. This renders the partial text live but WITHOUT the
+    /// height-measuring ScrollView used for completed answers: the text
+    /// hugs naturally up to the cap, then clips at the bottom with the
+    /// top (the say-this-now line) pinned visible. No GeometryReader /
+    /// preference feedback loop, so per-flush layout stays as cheap as a
+    /// normal chat bubble — the churn that made the old token-by-token
+    /// focus card lag came from re-measuring the card per token, not from
+    /// laying out the text.
+    private func streamingAnswer(_ turn: ChatTurn?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                TypingIndicatorView()
+                focusChip(icon: "stop.fill", label: "Stop",
+                          help: "Stop generating") {
+                    vm.cancelStreaming()
+                }
+                Spacer()
+            }
+            if let turn, !turn.content.isEmpty {
+                MarkdownResponseView(text: turn.content, baseSize: 13.5)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, maxHeight: Self.focusMaxHeight,
+               alignment: .topLeading)
+        .clipped()
+    }
+
+    /// A finished answer. Measured ONCE (the text is static now), so the
+    /// card hugs short answers and caps + scrolls long ones — none of the
+    /// per-token measurement churn that made streaming laggy.
+    private func completedAnswer(_ turn: ChatTurn, isLatest: Bool) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                MarkdownResponseView(text: turn.content, baseSize: 13.5)
+                focusActionRow(for: turn, isLatest: isLatest)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: FocusHeightKey.self, value: g.size.height)
+            })
+        }
+        .onPreferenceChange(FocusHeightKey.self) { focusContentHeight = $0 }
+        .frame(height: min(max(focusContentHeight, 56), Self.focusMaxHeight),
+               alignment: .top)
+        .onChange(of: turn.id) { _, _ in focusContentHeight = 0 }
+    }
+
+    /// Cap on the focus answer area before it starts scrolling.
+    private static let focusMaxHeight: CGFloat = 460
+
+    @ViewBuilder
+    private func focusActionRow(for turn: ChatTurn, isLatest: Bool) -> some View {
+        // Copy / Retry / model picker reveal on hover only — invisible
+        // while the user is reading. Retry + model switch only make
+        // sense on the live (latest) answer.
+        let actionsVisible = focusHovering
+        HStack(spacing: 8) {
+            FocusCopyButton(text: turn.content)
+            if isLatest {
+                focusChip(icon: "arrow.clockwise", label: "Retry",
+                          help: "Regenerate this answer") {
+                    vm.retryLastResponse()
+                }
+                // Same question + full context, different model: picking
+                // one switches the default AND regenerates immediately.
+                Menu {
+                    let visibility = ModelVisibility.shared
+                    ForEach(["Anthropic", "OpenAI"], id: \.self) { provider in
+                        let models = OverlayViewModel.availableModels
+                            .filter { $0.provider == provider && visibility.isVisible($0.id) }
+                        if !models.isEmpty {
+                            Section(provider) {
+                                ForEach(models, id: \.id) { m in
+                                    Button {
+                                        vm.selectedModel = m.id
+                                        vm.retryLastResponse()
+                                    } label: {
+                                        HStack {
+                                            Text(m.name)
+                                            if vm.selectedModel == m.id {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(currentModelName)
+                            .font(.system(size: 10, weight: .semibold))
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.06)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Re-ask the same question with a different model")
+            }
+            Spacer()
+        }
+        .opacity(actionsVisible ? 1 : 0)
+        .allowsHitTesting(actionsVisible)
+        .animation(.easeInOut(duration: 0.15), value: actionsVisible)
+    }
+
+    private var currentModelName: String {
+        OverlayViewModel.availableModels.first { $0.id == vm.selectedModel }?.name ?? "Model"
+    }
+
+    private func focusChip(icon: String, label: String, help: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.06)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    private var focusEmptyState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "waveform.and.mic")
+                .font(.system(size: 22, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("Waiting for the first question")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            Text("The answer appears here the moment the interviewer finishes asking.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
     }
 
     /// Hero header + Continue-session button for empty sessions tagged as
@@ -184,17 +482,27 @@ struct ChatSurfaceView: View {
                     if vm.isInterviewSession {
                         LiveSessionTimer()
                     }
+                    // During an interview the transcript stays on ONE line
+                    // and scrolls — head truncation keeps the newest words
+                    // visible — so it never pushes the answer around.
                     Text(placeholderOrTranscription)
                         .font(Design.Font.body)
                         .foregroundStyle(vm.transcription.isEmpty
                                          ? AnyShapeStyle(.tertiary)
                                          : AnyShapeStyle(.primary))
-                        .lineLimit(4)
+                        .lineLimit(vm.isInterviewSession ? 1 : 4)
+                        .truncationMode(vm.isInterviewSession ? .head : .tail)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                         .animation(.easeInOut(duration: 0.12), value: vm.transcription)
                     Spacer(minLength: 6)
-                    backendBadge
+                    if !vm.isInterviewSession {
+                        backendBadge
+                    }
+                    if vm.isInterviewSession && !vm.isInterviewTextOnly {
+                        focusToggle
+                        hideTranscriptButton
+                    }
                 }
 
                 if vm.isSendingToAI {
@@ -217,6 +525,44 @@ struct ChatSurfaceView: View {
                 ? Color.red.opacity(0.03)
                 : Color.primary.opacity(0.03)
         )
+    }
+
+    /// Flip between Live Focus (current Q + A only) and the full
+    /// conversation during a live interview.
+    private var focusToggle: some View {
+        Button {
+            withAnimation(Design.Motion.fast) { vm.interviewFocusMode.toggle() }
+        } label: {
+            Image(systemName: vm.interviewFocusMode
+                  ? "list.bullet"
+                  : "rectangle.compress.vertical")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(vm.interviewFocusMode
+              ? "Show the full conversation"
+              : "Focus on the current answer")
+    }
+
+    /// Hide the transcript strip entirely so only the question + answer
+    /// remain. Bring it back from the session ⋯ menu.
+    private var hideTranscriptButton: some View {
+        Button {
+            withAnimation(Design.Motion.fast) { vm.showLiveTranscript = false }
+        } label: {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Hide the transcript — bring it back from the ⋯ menu")
     }
 
     private var backendBadge: some View {
@@ -424,7 +770,47 @@ struct ChatSurfaceView: View {
             .onChange(of: (session.turns.last?.content.count ?? 0) / 32) { _, _ in
                 proxy.scrollTo("bottom-anchor", anchor: .bottom)
             }
+            // Floating controls while a reply streams: Stop was previously
+            // only reachable in the input bar's mic slot, invisible when
+            // scrolled mid-conversation; ↓ snaps back to the live tail.
+            .overlay(alignment: .bottomTrailing) {
+                if vm.isSendingToAI {
+                    HStack(spacing: 6) {
+                        streamChipButton(icon: "stop.fill", label: "Stop",
+                                         help: "Stop generating") {
+                            vm.cancelStreaming()
+                        }
+                        streamChipButton(icon: "arrow.down", label: nil,
+                                         help: "Jump to latest") {
+                            proxy.scrollTo("bottom-anchor", anchor: .bottom)
+                        }
+                    }
+                    .padding(10)
+                    .transition(.opacity)
+                }
+            }
         }
+    }
+
+    private func streamChipButton(icon: String, label: String?,
+                                  help: String,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .semibold))
+                if let label {
+                    Text(label).font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .foregroundColor(.primary.opacity(0.85))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     /// Whether to render the inline "Continue session" affordance.
@@ -563,11 +949,21 @@ private struct TurnBubble: View {
                 feedback = feedback == .down ? .none : .down
             }
             actionButton("arrow.clockwise", help: "Regenerate") { onRetry() }
+            Text(Self.timeFormatter.string(from: turn.timestamp))
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 4)
         }
         .animation(Design.Motion.fast, value: copied)
         .animation(Design.Motion.fast, value: isSpeaking)
         .animation(Design.Motion.fast, value: feedback)
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 
     /// One icon in the assistant action row. Hover brightens; `active`
     /// paints it in the primary tint (e.g. while reading aloud).
@@ -606,6 +1002,47 @@ private struct TurnBubble: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             withAnimation(Design.Motion.fast) { copied = false }
         }
+    }
+}
+
+/// Reports the laid-out height of the Live Focus content so the card can
+/// hug it instead of claiming the whole panel.
+private struct FocusHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Compact copy chip for the Live Focus action row — mirrors the bubble
+/// action button but stands alone (TurnBubble's row is private state).
+private struct FocusCopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation(Design.Motion.fast) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                withAnimation(Design.Motion.fast) { copied = false }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: copied ? "checkmark" : "square.on.square")
+                    .font(.system(size: 9, weight: .semibold))
+                Text(copied ? "Copied" : "Copy")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.white.opacity(0.06)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Copy answer")
     }
 }
 

@@ -460,6 +460,11 @@ class AIManager {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        // Idle timeout (resets every time bytes arrive). Without it a
+        // connection that silently dies mid-stream leaves the answer
+        // stuck on the typing indicator until the user notices. 60s is
+        // generous headroom for slow first tokens from reasoning models.
+        req.timeoutInterval = 60
         req.setValue(apiKey,            forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01",      forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -470,18 +475,33 @@ class AIManager {
             messages.append(["role": "user",      "content": turn.user])
             messages.append(["role": "assistant", "content": turn.assistant])
         }
-        // Cache breakpoint on the last history turn: live sessions resend
-        // the same growing prefix (system + history) every turn, so marking
-        // it lets the server reuse the cached prefix — cuts time-to-first-
-        // token and input cost on every turn after the first. Below the
-        // per-model minimum cacheable size the marker is simply ignored.
-        if var last = messages.last,
-           let prior = last["content"] as? String, !prior.isEmpty {
-            last["content"] = [[
-                "type": "text", "text": prior,
+        // Cache breakpoints (up to 4 allowed; we use 3 with system):
+        //
+        // 1. End of the FIRST history pair — the session anchor. It carries
+        //    the attached resume/JD/context blocks and is byte-stable for
+        //    the whole session, so the expensive part of the prompt reads
+        //    from cache every turn. Without this, the sliding memory
+        //    window changed the prefix each turn and the multi-thousand-
+        //    token anchor was re-processed uncached — the "slow with
+        //    attachments" lag.
+        // 2. The last history turn — incremental reuse of the recent
+        //    conversation within the window.
+        //
+        // Below the per-model minimum cacheable size markers are ignored.
+        func markCached(_ index: Int) {
+            guard index >= 0, index < messages.count,
+                  let text = messages[index]["content"] as? String,
+                  !text.isEmpty else { return }
+            messages[index]["content"] = [[
+                "type": "text", "text": text,
                 "cache_control": ["type": "ephemeral"],
             ] as [String: Any]]
-            messages[messages.count - 1] = last
+        }
+        if messages.count >= 2 {
+            markCached(1)                      // anchor pair's assistant turn
+        }
+        if messages.count >= 4 {
+            markCached(messages.count - 1)     // most recent history turn
         }
         var parts: [[String: Any]] = []
         if let img = screenshot, let b64 = pngBase64(from: img) {
@@ -559,6 +579,8 @@ class AIManager {
         guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        // Idle timeout — see streamAnthropic for rationale.
+        req.timeoutInterval = 60
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.setValue("text/event-stream", forHTTPHeaderField: "accept")

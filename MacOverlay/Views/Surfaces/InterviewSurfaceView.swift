@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 ///     session, optional resume, optional context, system prompt, Start).
 ///   - `vm.isInterviewSession == true`  → live interview view — reuses
 ///     `ChatSurfaceView` so the running session looks identical to the
-///     chat surface (transcript strip + HUD + bubbles).
+///     chat surface (transcript strip + Live Focus card / bubbles).
 struct InterviewSurfaceView: View {
     @Environment(OverlayViewModel.self) private var vm
 
@@ -429,26 +429,31 @@ private struct InterviewSetupForm: View {
     }
 
     private var startRow: some View {
-        HStack {
-            Spacer()
-            Button {
-                vm.beginInterviewFromSetup()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 11, weight: .bold))
-                    Text("Start interview")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 9)
-                .background(Capsule().fill(Design.Accent.blue))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+        VStack(alignment: .leading, spacing: 8) {
+            if vm.needsKeyForCurrentModel {
+                MissingKeyWarning()
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.return, modifiers: .command)
-            .help("Start interview (⌘↩)")
+            HStack {
+                Spacer()
+                Button {
+                    vm.beginInterviewFromSetup()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Start interview")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(Design.Accent.blue))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Start interview (⌘↩)")
+            }
         }
     }
 
@@ -754,6 +759,15 @@ private struct RegularCallSetupForm: View {
     }
 
     private var startRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if vm.needsKeyForCurrentModel {
+                MissingKeyWarning()
+            }
+            startButtonRow
+        }
+    }
+
+    private var startButtonRow: some View {
         HStack {
             Spacer()
             Button {
@@ -883,6 +897,43 @@ private struct RegularCallSetupForm: View {
             ))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Missing-key warning
+
+/// Amber banner shown above Start when the selected model has no API key
+/// configured. Without it, the session starts, the mic records, and every
+/// answer silently never arrives — the single most confusing failure a
+/// new user can hit. Tapping it jumps straight to the key fields.
+private struct MissingKeyWarning: View {
+    @Environment(OverlayViewModel.self) private var vm
+
+    var body: some View {
+        Button {
+            vm.primarySurface = .settings
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(Design.Accent.amber)
+                Text("No API key for the selected model — answers won't generate. Click to add one.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.primary.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Design.Accent.amber.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(Design.Accent.amber.opacity(0.35), lineWidth: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open Profile → API keys")
     }
 }
 

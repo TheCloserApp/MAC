@@ -57,7 +57,41 @@ struct NotesPanelView: View {
                 }
                 .frame(maxHeight: 180)
             }
+
+            addNoteRow
         }
+    }
+
+    /// Manual note entry — `saveNoteManually` existed in the VM but had
+    /// no UI; the panel was read-only.
+    @State private var draftNote = ""
+
+    private var addNoteRow: some View {
+        HStack(spacing: 6) {
+            TextField("Add a note…", text: $draftNote)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .onSubmit(saveDraft)
+            Button(action: saveDraft) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(draftNote.trimmingCharacters(in: .whitespaces).isEmpty
+                                     ? .secondary.opacity(0.4) : .accentColor)
+            }
+            .buttonStyle(.plain)
+            .disabled(draftNote.trimmingCharacters(in: .whitespaces).isEmpty)
+            .help("Save note")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.03))
+    }
+
+    private func saveDraft() {
+        let trimmed = draftNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        vm.saveNoteManually(trimmed)
+        draftNote = ""
     }
 }
 
