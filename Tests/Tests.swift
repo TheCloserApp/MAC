@@ -311,6 +311,26 @@ func testTranscriptFilterEchoesAnswer() throws {
     // Edge cases: empty answer or tiny segments never count as echo.
     try assertFalse(TranscriptFilter.echoesAnswer("anything at all here", answer: ""))
     try assertFalse(TranscriptFilter.echoesAnswer("the key was", answer: answer))
+    // A "?"-terminated segment is a question, never a read-back — even
+    // when it reuses the answer's vocabulary heavily (follow-ups quote
+    // the answer all the time).
+    try assertFalse(TranscriptFilter.echoesAnswer(
+        "canary rollouts with automated rollback during the payment migration?",
+        answer: answer))
+}
+
+@MainActor
+func testTranscriptFilterNormalized() throws {
+    // Punctuation / casing revisions normalize to the same form — the
+    // signal the auto-send debounce uses to ignore cosmetic re-emits.
+    try assertEq(TranscriptFilter.normalized("so tell me"),
+                 TranscriptFilter.normalized("So, tell me"))
+    try assertEq(TranscriptFilter.normalized("What is REST?"),
+                 TranscriptFilter.normalized("what is rest"))
+    // New words are a substantive change.
+    try assertTrue(TranscriptFilter.normalized("so tell me")
+                   != TranscriptFilter.normalized("so tell me about"))
+    try assertEq(TranscriptFilter.normalized("  "), "")
 }
 
 @MainActor
@@ -371,6 +391,7 @@ struct TestsMain {
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)
         TestRunner.run("TranscriptFilter question completeness", testTranscriptFilterSeemsComplete)
         TestRunner.run("TranscriptFilter answer echo suppression", testTranscriptFilterEchoesAnswer)
+        TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
 

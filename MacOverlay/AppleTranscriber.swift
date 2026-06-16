@@ -42,6 +42,37 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
     private var scStream:           SCStream?
     private var systemAudioHandler: AppleSystemAudioHandler?
 
+    // MARK: Dead-engine watchdog state
+    //
+    // On-device recognition on macOS sometimes produces NOTHING even when
+    // `supportsOnDeviceRecognition` is true (model still downloading,
+    // stale asset, OS bug). The user experience was "I started the
+    // interview, spoke for ages, and no transcript appeared". The
+    // watchdog detects speech-level audio flowing into a task that has
+    // produced zero results and recovers automatically.
+
+    /// Last time audio with speech-level energy hit the engine
+    /// (main-thread mirror, written via throttled dispatch from the
+    /// capture threads).
+    private var lastVoiceAt = Date.distantPast
+    /// Throttles main-queue dispatches from the capture threads. Locked
+    /// because mic taps and system-audio callbacks arrive on different
+    /// threads.
+    private var lastVoiceNoteAt = Date.distantPast
+    private let voiceNoteLock = NSLock()
+    /// True once the CURRENT recognition task has produced any result.
+    private var hasResultSinceInstall = false
+    /// Whether the current task runs on-device — tells the watchdog which
+    /// recovery applies.
+    private var currentTaskOnDevice = false
+    /// Flipped when on-device recognition proves dead: every later task
+    /// this run goes server-side. In-memory on purpose — retrying
+    /// on-device next launch self-heals once the local model is ready.
+    private var preferServerRecognition = false
+    /// One free dead-task retry (server path) before telling the user.
+    private var deadTaskRetried   = false
+    private var deadEngineReported = false
+
     private var currentText       = ""
     /// Text recognized by PREVIOUS recognition tasks in this run. A single
     /// SFSpeech request degrades (and server-backed ones get killed) after
@@ -65,9 +96,11 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
     }
     /// Fires onSilence after this much quiet time post-speech. This is the
     /// dominant source of "delay before the AI replies" on the Apple
-    /// backend — 1.2s keeps mid-sentence pauses from committing
-    /// prematurely while staying responsive (ElevenLabs runs at 0.6s).
-    private let silenceThreshold: TimeInterval = 1.2
+    /// backend. 0.9s balances mid-sentence pauses against responsiveness —
+    /// closer to ElevenLabs' 0.6s server VAD so switching backends doesn't
+    /// change how the app feels (the debounced grace window downstream is
+    /// the second line of defence against half-questions).
+    private let silenceThreshold: TimeInterval = 0.9
     private var silenceTimer:     DispatchSourceTimer?
 
     // MARK: - Lifecycle
@@ -117,6 +150,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
             var bufferCount = 0
             node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
                 self?.request?.append(buf)
+                self?.noteVoiceActivity(buf)
                 bufferCount += 1
                 if bufferCount == 1 || bufferCount % 200 == 0 {
                     NSLog("[AppleTranscriber] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
@@ -154,6 +188,9 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         currentText = ""
         committedPrefix = ""
         lastTextChangeAt = Date()
+        lastVoiceAt        = .distantPast
+        deadTaskRetried    = false
+        deadEngineReported = false
         installRecognitionTask()
         NSLog("[AppleTranscriber] recognitionTask installed")
         startSilenceWatcher()
@@ -175,7 +212,16 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         guard let recognizer else { return }
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults  = true
-        req.requiresOnDeviceRecognition = false
+        // On-device when the installed language pack supports it: constant
+        // low latency (no per-word server round-trip) and no server-side
+        // duration kills. But macOS sometimes reports support while the
+        // local model silently produces nothing — the dead-engine watchdog
+        // in the silence watcher detects that within seconds and flips
+        // `preferServerRecognition` so we never sit deaf trusting the flag.
+        let onDevice = recognizer.supportsOnDeviceRecognition && !preferServerRecognition
+        req.requiresOnDeviceRecognition = onDevice
+        currentTaskOnDevice   = onDevice
+        hasResultSinceInstall = false
         // Punctuated transcripts read better AND power the question-
         // completeness heuristic that keeps auto-mode from answering
         // mid-sentence (TranscriptFilter.seemsComplete).
@@ -206,11 +252,21 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
                     return
                 }
                 guard let result else { return }
-                self.rapidTaskFailures = 0
+                self.rapidTaskFailures      = 0
+                self.hasResultSinceInstall  = true
+                self.deadTaskRetried        = false
                 let text = result.bestTranscription.formattedString
                 if text != self.currentText {
+                    // Only RESTART the silence clock when the words actually
+                    // changed. The recognizer keeps revising punctuation and
+                    // casing after the speaker has stopped, and treating
+                    // each revision as "new speech" pushed the commit out by
+                    // an unpredictable amount — the same question sometimes
+                    // answered fast, sometimes seconds late.
+                    let substantive = TranscriptFilter.normalized(text)
+                        != TranscriptFilter.normalized(self.currentText)
                     self.currentText = text
-                    self.lastTextChangeAt = Date()
+                    if substantive { self.lastTextChangeAt = Date() }
                     self.onUpdate?(self.fullText)
                     self.onPartial?(self.fullText)
                 }
@@ -303,6 +359,31 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
         timer.setEventHandler { [weak self] in
             guard let self, self.isRunning else { return }
+
+            // Dead-engine watchdog: speech-level audio is flowing but the
+            // task has produced NOTHING since install. On-device models
+            // sometimes load slowly or silently fail even when the
+            // recognizer claims support — without this, the user spoke
+            // for ages with no transcript. Fall back to the server path,
+            // retry once there, and only then tell the user.
+            if !self.hasResultSinceInstall,
+               Date().timeIntervalSince(self.taskStartedAt) > 3.5,
+               self.lastVoiceAt > self.taskStartedAt.addingTimeInterval(0.3) {
+                if self.currentTaskOnDevice {
+                    NSLog("[AppleTranscriber] on-device task silent despite voice — falling back to server recognition")
+                    self.preferServerRecognition = true
+                    self.refreshRecognitionTask()
+                } else if !self.deadTaskRetried {
+                    self.deadTaskRetried = true
+                    NSLog("[AppleTranscriber] recognition task silent despite voice — rolling a fresh task")
+                    self.refreshRecognitionTask()
+                } else if !self.deadEngineReported {
+                    self.deadEngineReported = true
+                    self.onError?("Error: speech recognition is not returning results. Check System Settings → Privacy & Security → Speech Recognition, or add an ElevenLabs key in Preferences for cloud transcription.")
+                }
+                return
+            }
+
             let quietFor = Date().timeIntervalSince(self.lastTextChangeAt)
             // Long-run refresh: roll the recognition request at a quiet
             // moment once it's been alive past the interval — before the
@@ -327,6 +408,32 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         lastCommitAt = Date()
         onCommit?(fullText)
         onSilence?()
+    }
+
+    /// Cheap voice-activity note from the capture threads. A coarse peak
+    /// scan (every 64th sample) is enough to tell "someone is speaking"
+    /// from silence/room noise — it powers the dead-engine watchdog, not
+    /// transcription. Throttled so the main queue sees at most ~2
+    /// notes/second.
+    private func noteVoiceActivity(_ buf: AVAudioPCMBuffer) {
+        guard let data = buf.floatChannelData?[0] else { return }
+        let n = Int(buf.frameLength)
+        guard n > 0 else { return }
+        var peak: Float = 0
+        var i = 0
+        while i < n {
+            let v = abs(data[i])
+            if v > peak { peak = v }
+            i += 64
+        }
+        guard peak > 0.02 else { return }
+        let now = Date()
+        voiceNoteLock.lock()
+        let shouldNote = now.timeIntervalSince(lastVoiceNoteAt) > 0.5
+        if shouldNote { lastVoiceNoteAt = now }
+        voiceNoteLock.unlock()
+        guard shouldNote else { return }
+        DispatchQueue.main.async { [weak self] in self?.lastVoiceAt = now }
     }
 
     // MARK: - Permissions
@@ -373,6 +480,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
 
         let handler = AppleSystemAudioHandler { [weak self] buffer in
             self?.request?.append(buffer)
+            self?.noteVoiceActivity(buffer)
         }
         handler.onStopped = { [weak self] in
             DispatchQueue.main.async { [weak self] in
