@@ -60,6 +60,16 @@ enum TranscriptFilter {
         return !danglingConnectives.contains(lastWord)
     }
 
+    /// Canonical form of a transcript for change detection: lowercase
+    /// alphanumeric words joined by single spaces. Speech engines revise
+    /// punctuation and capitalization AFTER the speaker has stopped
+    /// ("so tell me" → "So, tell me") — comparing normalized forms lets
+    /// the silence/auto-send clocks ignore those cosmetic revisions
+    /// instead of restarting on every one, which randomly delayed sends.
+    static func normalized(_ raw: String) -> String {
+        tokenize(raw).joined(separator: " ")
+    }
+
     /// True when `segment` is mostly made of words from `answer` — the
     /// signature of the user reading the assistant's reply out loud into
     /// their own microphone. Without this check, auto-mode transcribes the
@@ -71,6 +81,14 @@ enum TranscriptFilter {
     /// Real follow-up questions bring new vocabulary, so they pass.
     static func echoesAnswer(_ segment: String, answer: String) -> Bool {
         guard !answer.isEmpty else { return false }
+        // A segment the engine punctuated as a QUESTION is almost never a
+        // read-back (answers are statements). Follow-ups that quote the
+        // answer's own vocabulary ("can you expand on the canary rollout
+        // part?") used to be silently dropped here — the interviewer asked,
+        // and nothing happened.
+        if segment.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
+            return false
+        }
         let segWords = tokenize(segment).filter { $0.count >= 3 && !fillers.contains($0) }
         // Too few significant words to judge — let isMeaningful decide.
         guard segWords.count >= 4 else { return false }

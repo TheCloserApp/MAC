@@ -99,9 +99,28 @@ final class OverlayViewModel {
             // Any flow that clears the strip (send, new session, filter
             // drop) intends a fresh start — drop queued committed segments
             // with it so they can't resurface in the next compose.
-            if transcription.isEmpty { committedBacklog = "" }
+            if transcription.isEmpty {
+                committedBacklog      = ""
+                lastPartialNormalized = ""
+            }
             scheduleBroadcast()
         }
+    }
+    /// Normalized form of the last partial that cancelled the pending
+    /// auto-send. Engines re-emit text with revised punctuation/casing
+    /// after the speaker stops — only a SUBSTANTIVE change (new words)
+    /// should reset the auto-send debounce, or cosmetic revisions delay
+    /// the answer by an unpredictable amount.
+    @ObservationIgnored private var lastPartialNormalized = ""
+
+    /// Cancel the pending debounced auto-send — but only when the new
+    /// partial actually contains different words than the one that armed
+    /// the cancel last time.
+    private func cancelAutoSendIfNewSpeech(_ text: String) {
+        let norm = TranscriptFilter.normalized(text)
+        guard norm != lastPartialNormalized else { return }
+        lastPartialNormalized = norm
+        pendingAutoSendTask?.cancel()
     }
     /// Committed-but-unsent ElevenLabs segments. Scribe partials describe
     /// only the *current* utterance, so without this backlog every new
@@ -840,7 +859,7 @@ final class OverlayViewModel {
         appleTranscriber.onUpdate = { [weak self] text in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.pendingAutoSendTask?.cancel()
+                self.cancelAutoSendIfNewSpeech(text)
                 self.transcription = text
             }
         }
@@ -854,7 +873,7 @@ final class OverlayViewModel {
         transcriptionManager.onPartial = { [weak self] text in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.pendingAutoSendTask?.cancel()
+                self.cancelAutoSendIfNewSpeech(text)
                 self.transcription = self.committedBacklog.isEmpty
                     ? text
                     : self.committedBacklog + " " + text
@@ -1456,9 +1475,22 @@ final class OverlayViewModel {
     /// question is sent whole instead of answered in halves.
     private func scheduleAutoSend() {
         pendingAutoSendTask?.cancel()
-        let grace: Duration = TranscriptFilter.seemsComplete(transcription)
-            ? .milliseconds(250)
-            : .milliseconds(1400)
+        // Near-constant grace: a "?" is a definitive end → go now; other
+        // terminal punctuation → quick; unpunctuated/trailing-off → one
+        // beat longer. The old 1400ms incomplete window made the SAME
+        // question answer fast or slow depending on whether the engine
+        // happened to punctuate it — the inconsistency users felt most.
+        // Cancellation-on-new-speech (onPartial/onUpdate) remains the real
+        // guard against answering mid-question.
+        let trimmed = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let grace: Duration
+        if trimmed.hasSuffix("?") {
+            grace = .milliseconds(120)
+        } else if TranscriptFilter.seemsComplete(trimmed) {
+            grace = .milliseconds(250)
+        } else {
+            grace = .milliseconds(900)
+        }
         pendingAutoSendTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: grace)
             guard let self, !Task.isCancelled else { return }

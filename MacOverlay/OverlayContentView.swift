@@ -220,11 +220,21 @@ struct OverlayView: View {
 
     /// Top card content — title + body. `.headed` (title-only) state is
     /// gone; if the user opens a surface, they see its body.
+    /// In Live Focus the session-name strip should leave NO trace when the
+    /// cursor is away — not just fade the title but collapse the whole bar
+    /// so the card hugs straight to the Q&A. Elsewhere we keep the strip's
+    /// reserved height (opacity-only reveal) so the surface body never
+    /// jumps as the cursor enters.
+    private var titleStripCollapsed: Bool {
+        focusHugging && !chromeHovering
+    }
+
     @ViewBuilder
     private var topCard: some View {
         VStack(spacing: 0) {
-            // Title + compose + ⋯ + ✕ reveal on hover; opacity keeps the
-            // row's space so the surface body never jumps.
+            // Title + compose + ⋯ + ✕ reveal on hover. In Live Focus the
+            // strip also collapses to zero height when not hovering (see
+            // titleStripCollapsed) so no empty bar lingers above the answer.
             VStack(spacing: 0) {
                 TopStripView()
                 Rectangle()
@@ -233,6 +243,8 @@ struct OverlayView: View {
             }
             .opacity(chromeHovering ? 1 : 0)
             .allowsHitTesting(chromeHovering)
+            .frame(height: titleStripCollapsed ? 0 : nil, alignment: .top)
+            .clipped()
             .animation(.easeInOut(duration: 0.18), value: chromeHovering)
             primarySurface
                 // alignment: .top — when the body is shorter than the
