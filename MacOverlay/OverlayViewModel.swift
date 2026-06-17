@@ -167,10 +167,23 @@ final class OverlayViewModel {
     var showNotesPanel = false
 
     // MARK: - Interview setup (pre-Start form on the Interview surface)
-    /// Optional resume the user uploaded for the upcoming interview. The file
-    /// is read once at Start time and prepended to the interview's context
-    /// payload; we hold the URL so the form can display the filename.
-    var interviewResumeFileURL: URL? = nil
+    /// Optional resume the user uploaded for the upcoming interview. We hold
+    /// the URL so the form can display the filename — and the moment it's
+    /// set we kick off `prepareInterviewResumeText()` so the (potentially
+    /// slow) PDF/DOCX parse happens in the background BEFORE Start, not as a
+    /// blocking step the instant the user wants to begin.
+    var interviewResumeFileURL: URL? = nil {
+        didSet {
+            guard interviewResumeFileURL != oldValue else { return }
+            prepareInterviewResumeText()
+        }
+    }
+    /// Resume text pre-extracted at pick time (see `prepareInterviewResumeText`).
+    /// `readInterviewResumeText()` uses this so Start is instant.
+    private(set) var interviewResumeText: String = ""
+    /// True while the picked resume is being parsed in the background — lets
+    /// the setup form show a "Reading…" hint instead of looking idle.
+    private(set) var isPreparingResume = false
     /// Free-text context describing the role, company, JD, etc. Empty = none.
     var interviewContext: String = ""
     /// Which past session the user picked to resume. `nil` means "New session".
@@ -1305,11 +1318,38 @@ final class OverlayViewModel {
         startInterviewSession()
     }
 
-    /// Reads the user-selected resume file as plain text using the existing
-    /// resume importer (covers pdf/docx/rtf/txt/md). Returns "" on failure.
+    /// Resume text for the interview payload. Prefers the copy we already
+    /// extracted in the background when the file was picked; only falls back
+    /// to a synchronous read if Start somehow beat the background parse (or
+    /// it failed), so we never start an interview missing the resume.
     private func readInterviewResumeText() -> String {
         guard let url = interviewResumeFileURL else { return "" }
+        if !interviewResumeText.isEmpty { return interviewResumeText }
         return (try? ResumeImporter.importFile(url: url)) ?? ""
+    }
+
+    /// Parse the picked resume off the main thread and cache the text in
+    /// `interviewResumeText`. Called automatically when `interviewResumeFileURL`
+    /// changes, so by the time the user hits Start the text is usually ready
+    /// and the interview begins without a parse stall.
+    private func prepareInterviewResumeText() {
+        interviewResumeText = ""
+        guard let url = interviewResumeFileURL else {
+            isPreparingResume = false
+            return
+        }
+        isPreparingResume = true
+        Task.detached(priority: .userInitiated) {
+            let text = (try? ResumeImporter.importFile(url: url)) ?? ""
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                // Drop a stale result if the user swapped or cleared the
+                // file while this parse was still in flight.
+                guard self.interviewResumeFileURL == url else { return }
+                self.interviewResumeText = text
+                self.isPreparingResume = false
+            }
+        }
     }
 
     // MARK: - Quick actions

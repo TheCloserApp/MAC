@@ -257,6 +257,29 @@ private struct InterviewSetupForm: View {
                 .buttonStyle(.plain)
                 .help("PDF · DOCX · RTF · TXT · MD")
 
+                // Resume text is extracted in the background the moment the
+                // file is picked, so Start doesn't block on parsing.
+                if vm.interviewResumeFileURL != nil {
+                    if vm.isPreparingResume {
+                        HStack(spacing: 5) {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("Reading…")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                    } else if !vm.interviewResumeText.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.green)
+                            Text("Ready")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 Spacer()
             }
         }

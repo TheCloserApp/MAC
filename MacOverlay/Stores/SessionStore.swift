@@ -199,6 +199,18 @@ final class SessionStore {
         let currentPairs = pairs(from: activeSession)
         var sliced = memoryIncludeAll ? currentPairs : Array(currentPairs.suffix(memoryWindow))
 
+        // Size budget on the rolling window. Interview answers are long
+        // and detailed, so re-sending the last N of them on every turn is
+        // what makes replies feel slower the deeper a session runs — the
+        // input prompt keeps growing. Trim the window to a character
+        // budget, dropping the OLDEST recent pairs first so the latest
+        // exchanges always survive. The resume/context anchor below is
+        // added AFTER, so it's never trimmed away. `memoryIncludeAll` is
+        // an explicit "send everything" override — respect it untouched.
+        if !memoryIncludeAll {
+            sliced = trimmedToBudget(sliced, budget: Self.recentContextBudget)
+        }
+
         // Anchor the session's opening exchange: it carries the setup
         // context (resume, JD, interview brief) that the whole session
         // leans on. Without this, a long interview silently loses its
@@ -217,6 +229,28 @@ final class SessionStore {
 
         let crossPairs: [(String, String)] = others.compactMap { pairs(from: $0).last }
         return crossPairs + sliced
+    }
+
+    /// Character budget for the rolling recent-history window — roughly
+    /// 12k chars ≈ 3k tokens, a handful of recent exchanges. Excludes the
+    /// resume/context anchor and the system prompt, which ride on top.
+    private static let recentContextBudget = 12_000
+
+    /// Keep the most recent pairs that fit inside `budget` characters,
+    /// walking newest → oldest. The latest pair is always kept even if it
+    /// alone blows the budget, so the model never loses the question it's
+    /// answering.
+    private func trimmedToBudget(_ pairs: [(String, String)],
+                                 budget: Int) -> [(String, String)] {
+        var kept: [(String, String)] = []
+        var total = 0
+        for pair in pairs.reversed() {
+            let cost = pair.0.count + pair.1.count
+            if !kept.isEmpty, total + cost > budget { break }
+            kept.append(pair)
+            total += cost
+        }
+        return kept.reversed()
     }
 
     private func pairs(from session: ChatSession) -> [(String, String)] {
