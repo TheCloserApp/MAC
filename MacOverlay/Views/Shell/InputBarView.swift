@@ -366,11 +366,14 @@ struct InputBarView: View {
 
     @ViewBuilder
     private var surfaceButtons: some View {
-        // v1 bar surface set: Interview, Resume, Browser, Profile. Everything
-        // else (mode picker, model picker, history, mic, send, text field) is
-        // parked — flows start by clicking one of these four icons.
+        // v1 bar surface set: Interview, Profile (Resume + Browser are behind
+        // feature flags, off for v1). Everything else (mode picker, model
+        // picker, history, mic, send, text field) is parked — flows start by
+        // clicking one of these icons.
         surfaceButton(.interview, icon: "desktopcomputer", label: "Interview")
-        surfaceButton(.resumes,   icon: "doc.richtext",          label: "Resumes")
+        if FeatureFlags.resumesEnabled {
+            surfaceButton(.resumes, icon: "doc.richtext", label: "Resumes")
+        }
         if FeatureFlags.browserEnabled {
             surfaceButton(.browser, icon: "globe", label: "Browser")
         }
@@ -519,7 +522,7 @@ struct InputBarView: View {
     private func modelMenuItems() -> [PopUpItem] {
         var items: [PopUpItem] = []
         let visibility = ModelVisibility.shared
-        let providers = ["Anthropic", "OpenAI"]
+        let providers = ["Anthropic", "OpenAI", "Kimi"]
         for provider in providers {
             let models = OverlayViewModel.availableModels
                 .filter { $0.provider == provider && visibility.isVisible($0.id) }

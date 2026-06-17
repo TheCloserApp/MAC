@@ -88,8 +88,12 @@ class HotkeyManager {
 
         add(kVK_ANSI_Y,      ctrlOpt,   .pushToTalk)
         add(kVK_ANSI_A,      ctrlOpt,   .sendSelection)
-        add(kVK_ANSI_R,      ctrlOpt,   .resumeGenerate)
-        add(kVK_ANSI_M,      ctrlOpt,   .resumeScore)
+        // Résumé hotkeys (generate / score) only registered when the résumé
+        // surface is enabled — see FeatureFlags.resumesEnabled.
+        if FeatureFlags.resumesEnabled {
+            add(kVK_ANSI_R,  ctrlOpt,   .resumeGenerate)
+            add(kVK_ANSI_M,  ctrlOpt,   .resumeScore)
+        }
         add(kVK_ANSI_Q,      ctrlOpt,   .quickAsk)
     }
 

@@ -371,9 +371,11 @@ private func tabRow(_ t: Tab) -> some View {
                 subtitle: "Stored locally. Never uploaded.") {
             KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
             KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
+            KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
 
+        if FeatureFlags.resumesEnabled {
         section(title: "Resume model",
                 subtitle: "Which Claude model edits the DOCX. Haiku handles most résumé tweaks well and is roughly 3× cheaper per run.") {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -436,6 +438,7 @@ private func tabRow(_ t: Tab) -> some View {
                 defaultText: OverlayViewModel.defaultResumeScoringPrompt
             )
         }
+        } // if FeatureFlags.resumesEnabled
 
         section(title: "Usage") {
             Toggle(isOn: $vm.showTokenCounts) {
@@ -510,7 +513,7 @@ private func tabRow(_ t: Tab) -> some View {
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
         let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI"]
+        let providers = ["Anthropic", "OpenAI", "Kimi"]
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in

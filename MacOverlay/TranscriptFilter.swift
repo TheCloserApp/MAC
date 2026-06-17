@@ -70,32 +70,12 @@ enum TranscriptFilter {
         tokenize(raw).joined(separator: " ")
     }
 
-    /// True when `segment` is mostly made of words from `answer` — the
-    /// signature of the user reading the assistant's reply out loud into
-    /// their own microphone. Without this check, auto-mode transcribes the
-    /// read-back, treats it as a new question, and answers it — generating
-    /// 3+ answers per real question in mic / mic+system setups.
-    ///
-    /// Heuristic: take the segment's significant words (≥3 letters, not
-    /// filler); if ≥75% of them appear in the answer, it's a read-back.
-    /// Real follow-up questions bring new vocabulary, so they pass.
-    static func echoesAnswer(_ segment: String, answer: String) -> Bool {
-        guard !answer.isEmpty else { return false }
-        // A segment the engine punctuated as a QUESTION is almost never a
-        // read-back (answers are statements). Follow-ups that quote the
-        // answer's own vocabulary ("can you expand on the canary rollout
-        // part?") used to be silently dropped here — the interviewer asked,
-        // and nothing happened.
-        if segment.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
-            return false
-        }
-        let segWords = tokenize(segment).filter { $0.count >= 3 && !fillers.contains($0) }
-        // Too few significant words to judge — let isMeaningful decide.
-        guard segWords.count >= 4 else { return false }
-        let answerSet = Set(tokenize(answer))
-        let hits = segWords.filter { answerSet.contains($0) }.count
-        return Double(hits) / Double(segWords.count) >= 0.75
-    }
+    // NOTE: Echo suppression (dropping segments that read back the last
+    // answer) was removed deliberately. Real use runs the mic on System
+    // audio (interviewer only — nothing to echo), and during mic testing the
+    // user's own follow-up questions must transcribe and send. Noise/filler
+    // is still filtered by `isMeaningful`. If a read-back problem resurfaces
+    // for mic/mic+system setups, restore it from git history.
 
     private static func tokenize(_ raw: String) -> [String] {
         raw.lowercased()

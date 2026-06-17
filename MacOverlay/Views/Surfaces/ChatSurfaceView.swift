@@ -367,7 +367,7 @@ struct ChatSurfaceView: View {
                 // one switches the default AND regenerates immediately.
                 Menu {
                     let visibility = ModelVisibility.shared
-                    ForEach(["Anthropic", "OpenAI"], id: \.self) { provider in
+                    ForEach(["Anthropic", "OpenAI", "Kimi"], id: \.self) { provider in
                         let models = OverlayViewModel.availableModels
                             .filter { $0.provider == provider && visibility.isVisible($0.id) }
                         if !models.isEmpty {

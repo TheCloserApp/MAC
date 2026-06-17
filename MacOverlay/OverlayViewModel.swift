@@ -16,8 +16,8 @@ final class OverlayViewModel {
     /// can hide models they don't use without losing them — flipping the
     /// switch in Settings → AI brings any of them back instantly.
     /// Routing: ids prefixed `gpt-` / `o1` / `o3` / `o4` go through the
-    /// OpenAI path (see `AIManager.isOpenAIModel`); everything else goes
-    /// to Anthropic.
+    /// OpenAI path; ids prefixed `kimi` / `moonshot-` go through the Moonshot
+    /// (Kimi) path; everything else goes to Anthropic. See `AIManager`.
     static let availableModels: [(id: String, name: String, provider: String)] = [
         // Anthropic
         ("claude-fable-5",            "Fable 5",         "Anthropic"),
@@ -25,27 +25,18 @@ final class OverlayViewModel {
         ("claude-opus-4-7",           "Opus 4.7",        "Anthropic"),
         ("claude-opus-4-6",           "Opus 4.6",        "Anthropic"),
         ("claude-sonnet-4-6",         "Sonnet 4.6",      "Anthropic"),
-        ("claude-sonnet-4-5",         "Sonnet 4.5",      "Anthropic"),
         ("claude-haiku-4-5-20251001", "Haiku 4.5",       "Anthropic"),
-        // OpenAI — frontier
-        ("gpt-5",                     "GPT-5",           "OpenAI"),
-        ("gpt-5-mini",                "GPT-5 mini",      "OpenAI"),
-        ("gpt-5-nano",                "GPT-5 nano",      "OpenAI"),
-        ("gpt-4.5-preview",           "GPT-4.5",         "OpenAI"),
+        // OpenAI
+        ("gpt-5.5",                   "GPT-5.5",         "OpenAI"),
+        ("gpt-5.5-mini",              "GPT-5.5 mini",    "OpenAI"),
+        ("gpt-5.5-pro",               "GPT-5.5 pro",     "OpenAI"),
+        ("gpt-5.4",                   "GPT-5.4",         "OpenAI"),
         ("gpt-4.1",                   "GPT-4.1",         "OpenAI"),
         ("gpt-4.1-mini",              "GPT-4.1 mini",    "OpenAI"),
-        ("gpt-4.1-nano",              "GPT-4.1 nano",    "OpenAI"),
-        ("gpt-4o",                    "GPT-4o",          "OpenAI"),
-        ("gpt-4o-mini",               "GPT-4o mini",     "OpenAI"),
-        ("gpt-4-turbo",               "GPT-4 Turbo",     "OpenAI"),
-        // OpenAI — reasoning
-        ("o3-pro",                    "o3-pro",          "OpenAI"),
-        ("o3",                        "o3",              "OpenAI"),
-        ("o3-mini",                   "o3-mini",         "OpenAI"),
-        ("o4-mini",                   "o4-mini",         "OpenAI"),
-        ("o1-pro",                    "o1-pro",          "OpenAI"),
-        ("o1",                        "o1",              "OpenAI"),
-        ("o1-mini",                   "o1-mini",         "OpenAI"),
+        // Kimi (Moonshot) — OpenAI-compatible, https://api.moonshot.ai/v1
+        ("kimi-k2.7-code",            "Kimi 2.7 Code",   "Kimi"),
+        ("kimi-k2.6",                 "Kimi 2.6",        "Kimi"),
+        ("kimi-k2.5",                 "Kimi 2.5",        "Kimi"),
     ]
 
     // MARK: - Session
@@ -411,6 +402,11 @@ final class OverlayViewModel {
     }
     var openAIApiKey: String {
         didSet { UserDefaults.standard.set(openAIApiKey, forKey: "openAIApiKey") }
+    }
+    /// Moonshot / Kimi API key. Kimi models route through Moonshot's
+    /// OpenAI-compatible endpoint with this key — see AIManager.
+    var moonshotAPIKey: String {
+        didSet { UserDefaults.standard.set(moonshotAPIKey, forKey: "moonshotAPIKey") }
     }
     var elevenLabsAPIKey: String {
         didSet {
@@ -798,6 +794,7 @@ final class OverlayViewModel {
         vadEnabled         = UserDefaults.standard.bool(forKey: "vadEnabled")
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
+        moonshotAPIKey     = UserDefaults.standard.string(forKey: "moonshotAPIKey") ?? ""
         elevenLabsAPIKey   = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
@@ -812,7 +809,13 @@ final class OverlayViewModel {
             rawValue: UserDefaults.standard.string(forKey: "resumeMode") ?? ""
         ) ?? .fast
         resumeSkipScoring = UserDefaults.standard.bool(forKey: "resumeSkipScoring")
-        selectedModel      = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
+        // Migration: if the persisted model was dropped from the catalogue
+        // (e.g. an OpenAI model we no longer list, or Sonnet 4.5), fall back
+        // to the default so the user isn't stuck on a model that 404s. Done
+        // via a local so the closure doesn't capture `self` during init.
+        let storedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
+        selectedModel = OverlayViewModel.availableModels.contains(where: { $0.id == storedModel })
+            ? storedModel : "claude-sonnet-4-6"
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
         showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
@@ -976,10 +979,13 @@ final class OverlayViewModel {
                     // on the Interview setup — when OFF, the transcript
                     // stays accumulating until the user hits Send manually.
                     guard self.interviewAutoGenerate else { return }
-                    // Don't fire the AI on noise / filler-only commits
-                    // ("um", coughs, [noise] the engine hallucinated). Drop
-                    // the segment so it doesn't linger in the transcript and
-                    // keep listening.
+                    // The ONLY filter is noise / filler-only commits ("um",
+                    // coughs, [noise], a stray word or two) — they aren't
+                    // worth an answer. Everything else transcribes and sends,
+                    // even if it overlaps the last answer: in real use the mic
+                    // runs on System audio (interviewer only, nothing to echo),
+                    // and during mic testing the user's own follow-ups must
+                    // still go through.
                     guard TranscriptFilter.isMeaningful(self.transcription) else {
                         self.transcription = ""
                         return
@@ -988,16 +994,8 @@ final class OverlayViewModel {
                     // committed: the latest question wins. Cancel the
                     // in-flight answer and let the debounced send pick up
                     // the new one — waiting for the old answer to finish
-                    // made the app feel deaf mid-interview. Echo check
-                    // first so the user reading the streaming answer
-                    // aloud doesn't kill their own answer.
+                    // made the app feel deaf mid-interview.
                     if self.isSendingToAI {
-                        let lastAnswer = self.sessionStore.activeSession.turns
-                            .last(where: { $0.role == .assistant })?.content ?? ""
-                        if TranscriptFilter.echoesAnswer(self.transcription, answer: lastAnswer) {
-                            self.transcription = ""   // read-along — drop it
-                            return
-                        }
                         self.cancelStreaming()
                     }
                     // Debounced: a VAD commit isn't proof the question is
@@ -1387,9 +1385,9 @@ final class OverlayViewModel {
         // Missing key: tell the user instead of silently dropping the
         // message. The "Error" prefix makes the status row render even
         // mid-interview, where regular status text is suppressed.
-        let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
-        if (isOpenAI && openAIApiKey.isEmpty) || (!isOpenAI && apiKey.isEmpty) {
-            statusMessage = "Error: no \(isOpenAI ? "OpenAI" : "Anthropic") API key — add it in Profile → API keys, or pick another model."
+        let (modelKey, modelProvider) = keyForSelectedModel
+        if modelKey.isEmpty {
+            statusMessage = "Error: no \(modelProvider) API key — add it in Profile → API keys, or pick another model."
             return
         }
 
@@ -1480,17 +1478,11 @@ final class OverlayViewModel {
     /// (`resetSegment`) — the engine and taps keep running, so there's
     /// no deaf window between question and answer.
     private func autoSendLiveTranscript() async {
-        // Echo suppression: if the segment is mostly words from the answer
-        // we just showed, the mic is hearing the USER read the reply aloud
-        // — not the interviewer asking something new. Sending it would
-        // answer our own answer, over and over. Drop it and keep listening.
-        let lastAnswer = sessionStore.activeSession.turns
-            .last(where: { $0.role == .assistant })?.content ?? ""
-        if TranscriptFilter.echoesAnswer(transcription, answer: lastAnswer) {
-            NSLog("[AutoSend] dropped segment — reads as echo of the last answer")
-            transcription = ""
-            return
-        }
+        // No echo suppression: every meaningful segment is transcribed and
+        // sent. In real use the mic runs on System audio (interviewer only),
+        // so there's nothing to echo; during mic testing the user's own
+        // follow-up questions must go through too. Noise / filler is already
+        // dropped upstream by isMeaningful.
 
         // Never hijack a typed draft — force the transcript path through
         // sendToAI, then restore the draft flag.
@@ -1643,9 +1635,7 @@ final class OverlayViewModel {
     }
 
     private func sendQuickAskToAI(text: String) {
-        let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
-        if  isOpenAI && openAIApiKey.isEmpty { quickAskResponse = "No API key configured."; return }
-        if !isOpenAI && apiKey.isEmpty       { quickAskResponse = "No API key configured."; return }
+        if keyForSelectedModel.key.isEmpty { quickAskResponse = "No API key configured."; return }
 
         isQuickAskSending = true
         quickAskResponse  = ""
@@ -1671,12 +1661,13 @@ final class OverlayViewModel {
             do {
                 let stream = AIManager.shared.streamMessage(
                     text,
-                    apiKey:       self.apiKey,
-                    openAIApiKey: self.openAIApiKey,
-                    model:        self.selectedModel,
-                    screenshot:   nil,
-                    systemPrompt: resolvedPrompt,
-                    history:      []
+                    apiKey:         self.apiKey,
+                    openAIApiKey:   self.openAIApiKey,
+                    moonshotAPIKey: self.moonshotAPIKey,
+                    model:          self.selectedModel,
+                    screenshot:     nil,
+                    systemPrompt:   resolvedPrompt,
+                    history:        []
                 )
                 for try await event in stream {
                     switch event {
@@ -1978,15 +1969,22 @@ final class OverlayViewModel {
 
     // MARK: - Helpers
 
+    /// The API key + provider display name required by `selectedModel`.
+    /// Centralises the Anthropic / OpenAI / Kimi routing so every key check
+    /// and error message stays in sync with `AIManager`'s routing.
+    var keyForSelectedModel: (key: String, provider: String) {
+        if AIManager.shared.isMoonshotModel(selectedModel) { return (moonshotAPIKey, "Moonshot") }
+        if AIManager.shared.isOpenAIModel(selectedModel)   { return (openAIApiKey, "OpenAI") }
+        return (apiKey, "Anthropic")
+    }
+
     var canSend: Bool {
         let hasText = showManualInput ? !manualInput.isEmpty : !transcription.isEmpty
-        let isOpenAI = AIManager.shared.isOpenAIModel(selectedModel)
-        let hasKey   = isOpenAI ? !openAIApiKey.isEmpty : !apiKey.isEmpty
         let hasContent = hasText || pendingScreenshot != nil || !pendingAttachments.isEmpty
-        return hasContent && !isSendingToAI && hasKey
+        return hasContent && !isSendingToAI && !keyForSelectedModel.key.isEmpty
     }
 
     var needsKeyForCurrentModel: Bool {
-        AIManager.shared.isOpenAIModel(selectedModel) ? openAIApiKey.isEmpty : apiKey.isEmpty
+        keyForSelectedModel.key.isEmpty
     }
 }

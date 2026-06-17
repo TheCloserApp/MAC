@@ -13,14 +13,26 @@ class AIManager {
     static let shared = AIManager()
     private static let openAIPrefixes = ["gpt-", "o1", "o3", "o4"]
 
+    /// Moonshot / Kimi model ids. Moonshot's API is OpenAI-compatible (same
+    /// request/response shape) but lives on a different base URL and uses its
+    /// own key, so it gets its own routing branch.
+    private static let moonshotPrefixes = ["kimi", "moonshot-"]
+    static let openAIEndpoint   = "https://api.openai.com/v1/chat/completions"
+    static let moonshotEndpoint = "https://api.moonshot.ai/v1/chat/completions"
+
     func isOpenAIModel(_ model: String) -> Bool {
         AIManager.openAIPrefixes.contains { model.hasPrefix($0) }
+    }
+
+    func isMoonshotModel(_ model: String) -> Bool {
+        AIManager.moonshotPrefixes.contains { model.hasPrefix($0) }
     }
 
     func sendMessage(
         _ text: String,
         apiKey: String,
         openAIApiKey: String,
+        moonshotAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
@@ -28,7 +40,9 @@ class AIManager {
         maxTokens: Int = 1024,
         timeoutInterval: TimeInterval = 60
     ) async throws -> String {
-        if isOpenAIModel(model) {
+        if isMoonshotModel(model) {
+            return try await sendOpenAI(text, apiKey: moonshotAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.moonshotEndpoint, tokenField: "max_tokens")
+        } else if isOpenAIModel(model) {
             return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
         } else {
             return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
@@ -74,8 +88,8 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval) async throws -> String {
-        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens") async throws -> String {
+        guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = timeoutInterval
@@ -96,10 +110,12 @@ class AIManager {
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
 
-        // `max_completion_tokens` replaced `max_tokens` on Chat Completions —
-        // reasoning models (o1/o3/o4, GPT-5) reject the old field outright.
+        // `max_completion_tokens` replaced `max_tokens` on OpenAI Chat
+        // Completions — reasoning models (o1/o3/o4, GPT-5) reject the old
+        // field. Moonshot's OpenAI-compatible API still expects `max_tokens`,
+        // so the field name is passed in by the caller.
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_completion_tokens": maxTokens,
+            "model": model, tokenField: maxTokens,
             "messages": messages
         ])
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -421,6 +437,7 @@ class AIManager {
         _ text: String,
         apiKey: String,
         openAIApiKey: String,
+        moonshotAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
@@ -429,7 +446,15 @@ class AIManager {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    if isOpenAIModel(model) {
+                    if isMoonshotModel(model) {
+                        try await streamOpenAI(text, apiKey: moonshotAPIKey, model: model,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.moonshotEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isOpenAIModel(model) {
                         try await streamOpenAI(text, apiKey: openAIApiKey, model: model,
                                                screenshot: screenshot, systemPrompt: systemPrompt,
                                                history: history) { event in
@@ -575,8 +600,10 @@ class AIManager {
     private func streamOpenAI(_ text: String, apiKey: String, model: String,
                               screenshot: NSImage?, systemPrompt: String,
                               history: [(user: String, assistant: String)],
+                              baseURL: String = AIManager.openAIEndpoint,
+                              tokenField: String = "max_completion_tokens",
                               onEvent: (AIStreamEvent) -> Void) async throws {
-        guard let url = URL(string: "https://api.openai.com/v1/chat/completions") else { throw AIError.invalidURL }
+        guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         // Idle timeout — see streamAnthropic for rationale.
@@ -597,10 +624,10 @@ class AIManager {
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
 
-        // `max_completion_tokens` replaced `max_tokens` on Chat Completions —
-        // reasoning models (o1/o3/o4, GPT-5) reject the old field outright.
+        // `max_completion_tokens` for OpenAI; Moonshot's compatible API wants
+        // `max_tokens` (caller supplies the field name).
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model, "max_completion_tokens": 2048,
+            "model": model, tokenField: 2048,
             "messages": messages,
             "stream": true,
             "stream_options": ["include_usage": true]
