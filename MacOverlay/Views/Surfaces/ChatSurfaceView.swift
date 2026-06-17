@@ -313,8 +313,15 @@ struct ChatSurfaceView: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, maxHeight: Self.focusMaxHeight,
-               alignment: .topLeading)
+        // Hug the partial text and grow with it — start as a small card
+        // (just the typing indicator) and expand line by line as tokens
+        // land, rather than slamming open at full height immediately.
+        // `fixedSize` hugs WITHOUT the GeometryReader/preference feedback
+        // loop that made the old token-by-token focus card lag; the cap +
+        // clip keep a very long partial from overflowing the panel.
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxHeight: Self.focusMaxHeight, alignment: .top)
         .clipped()
     }
 
@@ -360,7 +367,7 @@ struct ChatSurfaceView: View {
                 // one switches the default AND regenerates immediately.
                 Menu {
                     let visibility = ModelVisibility.shared
-                    ForEach(["Anthropic", "OpenAI"], id: \.self) { provider in
+                    ForEach(["Anthropic", "OpenAI", "Kimi"], id: \.self) { provider in
                         let models = OverlayViewModel.availableModels
                             .filter { $0.provider == provider && visibility.isVisible($0.id) }
                         if !models.isEmpty {

@@ -2,10 +2,10 @@ import Foundation
 
 /// Build-time feature visibility flags.
 ///
-/// v1 ships with a deliberately narrow surface area: resume tailoring,
-/// interview chat, prompts, and account/settings. Everything else stays
-/// in the codebase but is hidden from the UI — flip the relevant flag in
-/// a future version to bring the feature back without re-implementing it.
+/// v1 ships with a deliberately narrow surface area: interview chat,
+/// prompts, and account/settings. Everything else stays in the codebase
+/// but is hidden from the UI — flip the relevant flag in a future version
+/// to bring the feature back without re-implementing it.
 ///
 /// Why hide instead of delete:
 /// - Less rework when bringing a feature back in v2/v3.
@@ -31,6 +31,15 @@ enum FeatureFlags {
     /// messages to the AI over LAN. Cool tech demo, near-zero real-world
     /// demand right now. Plan: re-enable in v2.
     static let peerControlEnabled = false
+
+    /// Résumé tailoring surface — import a résumé, paste a JD, and generate
+    /// a tailored DOCX with before/after scoring. Hidden for the first
+    /// public release so v1 stays focused on the live-interview copilot;
+    /// the generation pipeline (ResumeController, ResumeStore, DOCX
+    /// text_editor loop) still compiles and is exercised by the rest of the
+    /// app. Flip back on once the editor/output flow is polished. Re-enabling
+    /// this only restores UI entry points — no re-implementation needed.
+    static let resumesEnabled = false
 
     // MARK: - Hidden in v1, no current plans to bring back
 

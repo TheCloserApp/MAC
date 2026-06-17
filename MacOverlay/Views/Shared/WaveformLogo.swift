@@ -11,7 +11,16 @@ struct WaveformLogo: View {
     private let minH:     CGFloat = 4
     private let idleHeights: [CGFloat] = [5, 10, 16, 10, 5]
 
-    private var isActive: Bool { vm.isRecording || vm.isQuickAsking || vm.isDictating }
+    /// Whether the bars animate. We deliberately keep the logo *static*
+    /// during a live interview: the bar stays on screen the whole session
+    /// and the `.repeatForever` animation + 0.15s ticker drive continuous
+    /// re-renders, which adds avoidable jank exactly when answer latency
+    /// matters most. The logo still renders (idle heights) — it just doesn't
+    /// animate while the interview is running.
+    private var isActive: Bool {
+        guard !vm.isInterviewSession else { return false }
+        return vm.isRecording || vm.isQuickAsking || vm.isDictating
+    }
 
     private var barColor: Color {
         if vm.isDictating  { return .orange }

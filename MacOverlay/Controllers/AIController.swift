@@ -92,12 +92,13 @@ final class AIController {
             do {
                 let stream = AIManager.shared.streamMessage(
                     userText,
-                    apiKey:       vm.apiKey,
-                    openAIApiKey: vm.openAIApiKey,
-                    model:        vm.selectedModel,
-                    screenshot:   screenshot,
-                    systemPrompt: systemPrompt,
-                    history:      history
+                    apiKey:         vm.apiKey,
+                    openAIApiKey:   vm.openAIApiKey,
+                    moonshotAPIKey: vm.moonshotAPIKey,
+                    model:          vm.selectedModel,
+                    screenshot:     screenshot,
+                    systemPrompt:   systemPrompt,
+                    history:        history
                 )
                 for try await event in stream {
                     switch event {

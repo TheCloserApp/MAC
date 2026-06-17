@@ -189,14 +189,29 @@ struct OverlayView: View {
     private var upperLayer: some View {
         VStack(spacing: 0) {
             if vm.shellStage == .expanded && vm.primarySurface != nil {
-                topCard
-                    .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
-                    .padding(.leading, Self.panelInsetLeading)
-                    .padding(.trailing, Self.panelInsetTrailing)
-                    .frame(maxHeight: focusHugging ? nil : .infinity)
-                    .transition(.opacity)
                 if focusHugging {
+                    // Live Focus: the session-name header is a separate bar
+                    // that reveals on hover ABOVE the card. It reserves its
+                    // own slot (transparent when idle, so no empty bar
+                    // shows) so the card — transcript strip + answer — never
+                    // moves, and the header never overlaps the transcript.
+                    revealOnHover(floatingHeaderBar)
+                        .padding(.leading, Self.panelInsetLeading)
+                        .padding(.trailing, Self.panelInsetTrailing)
+                        .padding(.bottom, 6)
+                    topCard
+                        .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+                        .padding(.leading, Self.panelInsetLeading)
+                        .padding(.trailing, Self.panelInsetTrailing)
+                        .transition(.opacity)
                     Spacer(minLength: 0)
+                } else {
+                    topCard
+                        .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+                        .padding(.leading, Self.panelInsetLeading)
+                        .padding(.trailing, Self.panelInsetTrailing)
+                        .frame(maxHeight: .infinity)
+                        .transition(.opacity)
                 }
             } else if vm.shellStage == .expanded && vm.primarySurface == nil
                         && hasAmbientStatus {
@@ -220,39 +235,55 @@ struct OverlayView: View {
 
     /// Top card content — title + body. `.headed` (title-only) state is
     /// gone; if the user opens a surface, they see its body.
-    /// In Live Focus the session-name strip should leave NO trace when the
-    /// cursor is away — not just fade the title but collapse the whole bar
-    /// so the card hugs straight to the Q&A. Elsewhere we keep the strip's
-    /// reserved height (opacity-only reveal) so the surface body never
-    /// jumps as the cursor enters.
-    private var titleStripCollapsed: Bool {
-        focusHugging && !chromeHovering
+    /// Hover-reveal chrome content: editable session title, close,
+    /// compose, ⋯. Opacity / hit-testing are applied by `revealOnHover`
+    /// so the optional opaque backing fades together with the title.
+    private var titleStripContent: some View {
+        VStack(spacing: 0) {
+            TopStripView()
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 0.5)
+        }
+    }
+
+    /// Fade `view` in only while the cursor is over the panel.
+    private func revealOnHover(_ view: some View) -> some View {
+        view
+            .opacity(chromeHovering ? 1 : 0)
+            .allowsHitTesting(chromeHovering)
+            .animation(.easeInOut(duration: 0.18), value: chromeHovering)
+    }
+
+    /// Live Focus session-name header — a STANDALONE bar that floats above
+    /// the answer card (placed by `upperLayer`). Same glass surface as the
+    /// card so the two read as one stack, but kept separate so revealing it
+    /// on hover never overlaps the live-transcript strip at the card's top
+    /// nor shifts the answer.
+    private var floatingHeaderBar: some View {
+        TopStripView()
+            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
     }
 
     @ViewBuilder
     private var topCard: some View {
-        VStack(spacing: 0) {
-            // Title + compose + ⋯ + ✕ reveal on hover. In Live Focus the
-            // strip also collapses to zero height when not hovering (see
-            // titleStripCollapsed) so no empty bar lingers above the answer.
-            VStack(spacing: 0) {
-                TopStripView()
-                Rectangle()
-                    .fill(Color.white.opacity(0.06))
-                    .frame(height: 0.5)
-            }
-            .opacity(chromeHovering ? 1 : 0)
-            .allowsHitTesting(chromeHovering)
-            .frame(height: titleStripCollapsed ? 0 : nil, alignment: .top)
-            .clipped()
-            .animation(.easeInOut(duration: 0.18), value: chromeHovering)
+        if focusHugging {
+            // Live Focus: card body only. The session-name header lives in
+            // its own floating bar above the card (see upperLayer), so the
+            // card top is free for the transcript strip + answer.
             primarySurface
-                // alignment: .top — when the body is shorter than the
-                // card (focus mode, short answers) it pins to the top
-                // instead of centering vertically.
-                .frame(maxWidth: .infinity,
-                       maxHeight: focusHugging ? nil : .infinity,
-                       alignment: .top)
+                .frame(maxWidth: .infinity, alignment: .top)
+        } else {
+            VStack(spacing: 0) {
+                // Other surfaces keep the chrome IN the layout (opacity-
+                // only reveal) so the scrolled body never reflows as the
+                // cursor enters.
+                revealOnHover(titleStripContent)
+                primarySurface
+                    .frame(maxWidth: .infinity,
+                           maxHeight: .infinity,
+                           alignment: .top)
+            }
         }
     }
 
