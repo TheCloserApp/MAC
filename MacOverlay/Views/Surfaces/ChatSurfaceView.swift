@@ -203,7 +203,10 @@ struct ChatSurfaceView: View {
         let clamped = pairs.isEmpty ? 0 : min(focusPairOffset, pairs.count - 1)
         let pair    = pairs.isEmpty ? nil : pairs[pairs.count - 1 - clamped]
         let isLatest = clamped == 0
-        let streaming = vm.isSendingToAI && isLatest
+        // Per-answer streaming state: a non-latest pair can still be
+        // generating (answers now run concurrently), so key off the turn,
+        // not the global flag.
+        let streaming = (pair?.answer?.id).map { vm.isStreaming(turnID: $0) } ?? false
 
         return VStack(alignment: .leading, spacing: 0) {
             if let pair {
@@ -303,7 +306,9 @@ struct ChatSurfaceView: View {
                 TypingIndicatorView()
                 focusChip(icon: "stop.fill", label: "Stop",
                           help: "Stop generating") {
-                    vm.cancelStreaming()
+                    // Stop only THIS answer; any other concurrent answer keeps going.
+                    if let id = turn?.id { vm.cancelStream(turnID: id) }
+                    else { vm.cancelStreaming() }
                 }
                 Spacer()
             }

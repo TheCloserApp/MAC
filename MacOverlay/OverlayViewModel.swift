@@ -990,14 +990,11 @@ final class OverlayViewModel {
                         self.transcription = ""
                         return
                     }
-                    // A response is still streaming and a NEW question just
-                    // committed: the latest question wins. Cancel the
-                    // in-flight answer and let the debounced send pick up
-                    // the new one — waiting for the old answer to finish
-                    // made the app feel deaf mid-interview.
-                    if self.isSendingToAI {
-                        self.cancelStreaming()
-                    }
+                    // A new question committed while an earlier answer may
+                    // still be streaming — let it finish. We do NOT cancel
+                    // here: runStream caps concurrency at
+                    // AIController.maxConcurrentStreams and evicts the oldest
+                    // answer only when that cap is exceeded.
                     // Debounced: a VAD commit isn't proof the question is
                     // over. scheduleAutoSend waits a short grace window
                     // (longer when the text trails off mid-thought) and
@@ -1211,6 +1208,8 @@ final class OverlayViewModel {
         isInterviewTextOnly = false
         interviewRunningSince   = nil
         interviewElapsedSeconds = 0
+        // Stop any answers still generating — ending the interview means stop.
+        cancelStreaming()
         endCapture()
     }
 
@@ -1526,9 +1525,11 @@ final class OverlayViewModel {
         pendingAutoSendTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: grace)
             guard let self, !Task.isCancelled else { return }
+            // No longer gated on !isSendingToAI: a new question may be sent
+            // while an earlier answer is still streaming. runStream caps how
+            // many answers run at once.
             guard self.isInterviewSession, self.interviewAutoGenerate,
-                  !self.isInterviewPaused, self.isRecording,
-                  !self.isSendingToAI else { return }
+                  !self.isInterviewPaused, self.isRecording else { return }
             guard TranscriptFilter.isMeaningful(self.transcription) else { return }
             // Detach before sending — sendToAI cancels pendingAutoSendTask
             // (to supersede stale sends), and that must not self-cancel
@@ -1568,8 +1569,15 @@ final class OverlayViewModel {
         sessionStore.activeSession = s
     }
 
-    /// Cancel an in-flight streaming request.
+    /// Cancel ALL in-flight streaming requests (global Stop, session end).
     func cancelStreaming() { ai.cancel() }
+
+    /// Cancel one specific answer by its assistant-turn id (per-pair Stop).
+    func cancelStream(turnID: UUID) { ai.cancelStream(turnID: turnID) }
+
+    /// True while the given assistant turn is still streaming. Lets a pair
+    /// show its own typing indicator / Stop even when it isn't the latest.
+    func isStreaming(turnID: UUID) -> Bool { ai.isStreaming(turnID: turnID) }
 
     /// Resolves the current system prompt. Kept as a shim so existing
     /// call-sites don't have to change — delegates to the AI controller.
@@ -1756,6 +1764,9 @@ final class OverlayViewModel {
     }
 
     func continueSession(id: UUID, stayInPrimarySurface: Bool = false) {
+        // Leaving the current session — don't let its answers keep streaming
+        // into a session that's no longer in front.
+        cancelStreaming()
         sessionStore.continueSession(id: id)
         // Restore the mode for the reopened session so the right prompt kicks in.
         if let s = sessionStore.sessions.first(where: { $0.id == id }) {
@@ -1772,6 +1783,8 @@ final class OverlayViewModel {
 
     func startNewSession(kind: ChatSession.Kind = .normal,
                          stayInPrimarySurface: Bool = false) {
+        // Closing the current session — stop any answers still streaming into it.
+        cancelStreaming()
         // Before closing the current session, ask the AI to give it a nicer title.
         let closingID = sessionStore.activeSessionID
         let closing = sessionStore.activeSession
