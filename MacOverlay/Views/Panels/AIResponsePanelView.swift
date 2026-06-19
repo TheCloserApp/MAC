@@ -46,6 +46,7 @@ struct AIResponsePanelView: View {
                         .transition(.opacity)
                 }
             }
+            .hiddenScrollGutter()
             .frame(maxHeight: 300)
             .animation(.easeInOut(duration: 0.2), value: vm.isSendingToAI)
         }

@@ -99,6 +99,7 @@ struct PreferencesView: View {
                     .frame(maxWidth: 520, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .hiddenScrollGutter()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -372,6 +373,8 @@ private func tabRow(_ t: Tab) -> some View {
             KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
             KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
             KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
+            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
+            KeyFieldView(label: "DeepSeek",   placeholder: "sk-…",        text: $vm.deepSeekAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
 
@@ -513,7 +516,7 @@ private func tabRow(_ t: Tab) -> some View {
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
         let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI", "Kimi"]
+        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek"]
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in

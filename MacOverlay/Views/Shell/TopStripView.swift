@@ -27,7 +27,7 @@ struct TopStripView: View {
             TextField("Session title", text: $draftTitle, onCommit: commitTitle)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.primary)
+                .foregroundColor(Design.Ink.primary)
                 .frame(maxWidth: 320)
                 .onExitCommand(perform: cancelEdit)
         } else {
@@ -38,7 +38,7 @@ struct TopStripView: View {
                 Text(headerTitle)
                     .font(.system(size: 14, weight: .semibold))
                     .tracking(-0.2)
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
                     .lineLimit(1)
                     .help("Click to rename")
             }
@@ -85,10 +85,10 @@ struct TopStripView: View {
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .frame(width: 20, height: 20)
-                .background(Circle().fill(Color.white.opacity(0.06)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help("Close (Esc)")
@@ -116,10 +116,10 @@ struct TopStripView: View {
         } label: {
             Image(systemName: "square.and.pencil")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.white.opacity(0.06)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .keyboardShortcut("n", modifiers: .command)
@@ -156,7 +156,7 @@ struct TopStripView: View {
             // from the next answer.
             Menu {
                 let visibility = ModelVisibility.shared
-                ForEach(["Anthropic", "OpenAI", "Kimi"], id: \.self) { provider in
+                ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek"], id: \.self) { provider in
                     let models = OverlayViewModel.availableModels
                         .filter { $0.provider == provider && visibility.isVisible($0.id) }
                     if !models.isEmpty {
@@ -351,10 +351,10 @@ struct TopStripView: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.white.opacity(0.04)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)

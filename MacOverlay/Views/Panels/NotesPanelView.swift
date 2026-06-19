@@ -55,6 +55,7 @@ struct NotesPanelView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                 }
+                .hiddenScrollGutter()
                 .frame(maxHeight: 180)
             }
 

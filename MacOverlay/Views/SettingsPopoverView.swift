@@ -23,6 +23,7 @@ struct SettingsPopoverView: View {
             }
             .padding(14)
         }
+        .hiddenScrollGutter()
         .frame(minWidth: 280, maxHeight: 500)
     }
 

@@ -312,8 +312,23 @@ final class ResumeController {
         let basePreset = vm.resumeStore.activePreset
         guard !vm.resumeJD.isEmpty,
               !base.isEmpty,
-              !vm.apiKey.isEmpty,
               let preset = basePreset else { return }
+
+        // The generation model's provider key must be present. (Scoring uses
+        // Claude Haiku and degrades to "no score" if the Anthropic key is
+        // absent, so a GPT/Kimi-only user can still tailor without a Claude key.)
+        let genModelID = vm.resumeGenerationModel.rawValue
+        let (genKey, genProvider): (String, String) = {
+            if AIManager.shared.isMoonshotModel(genModelID) { return (vm.moonshotAPIKey, "Moonshot / Kimi") }
+            if AIManager.shared.isGrokModel(genModelID)     { return (vm.grokAPIKey, "xAI / Grok") }
+            if AIManager.shared.isDeepSeekModel(genModelID) { return (vm.deepSeekAPIKey, "DeepSeek") }
+            if AIManager.shared.isOpenAIModel(genModelID)   { return (vm.openAIApiKey, "OpenAI") }
+            return (vm.apiKey, "Anthropic")
+        }()
+        guard !genKey.isEmpty else {
+            vm.statusMessage = "Add your \(genProvider) API key in Settings to generate with \(vm.resumeGenerationModel.displayName)."
+            return
+        }
 
         // Free-tier quota gate. Premium users skip; free users hit the cap
         // after `EntitlementStore.freeResumesPerWeek` in any rolling 7-day
@@ -343,6 +358,9 @@ final class ResumeController {
 
         let apiKeyCopy = vm.apiKey
         let openAIKeyCopy = vm.openAIApiKey
+        let moonshotKeyCopy = vm.moonshotAPIKey
+        let grokKeyCopy = vm.grokAPIKey
+        let deepSeekKeyCopy = vm.deepSeekAPIKey
 
         let scoringSystemPrompt = vm.resumeScoringPromptResolved
         let generationSystemPrompt = vm.resumeGenerationPromptResolved
@@ -411,6 +429,9 @@ final class ResumeController {
                             model: generationModel,
                             apiKey: apiKeyCopy,
                             openAIKey: openAIKeyCopy,
+                            moonshotKey: moonshotKeyCopy,
+                            grokKey: grokKeyCopy,
+                            deepSeekKey: deepSeekKeyCopy,
                             generationSystemPrompt: generationSystemPrompt,
                             scoringSystemPrompt: scoringSystemPrompt,
                             preScore: capturedPreScore,
@@ -452,6 +473,9 @@ final class ResumeController {
                             model: generationModel,
                             apiKey: apiKeyCopy,
                             openAIKey: openAIKeyCopy,
+                            moonshotKey: moonshotKeyCopy,
+                            grokKey: grokKeyCopy,
+                            deepSeekKey: deepSeekKeyCopy,
                             systemPrompt: generationSystemPrompt
                         )
                         result = r; changelog = c; url = u
@@ -461,12 +485,15 @@ final class ResumeController {
                     let plainPrompt = Self.generationPrompt(jd: jd, base: base)
                     result = try await AIManager.shared.sendMessage(
                         plainPrompt,
-                        apiKey:       apiKeyCopy,
-                        openAIApiKey: openAIKeyCopy,
-                        model:        generationModel,
-                        screenshot:   nil,
-                        systemPrompt: generationSystemPrompt,
-                        maxTokens:    8192,
+                        apiKey:        apiKeyCopy,
+                        openAIApiKey:  openAIKeyCopy,
+                        moonshotAPIKey: moonshotKeyCopy,
+                        grokAPIKey:    grokKeyCopy,
+                        deepSeekAPIKey: deepSeekKeyCopy,
+                        model:         generationModel,
+                        screenshot:    nil,
+                        systemPrompt:  generationSystemPrompt,
+                        maxTokens:     8192,
                         timeoutInterval: 300
                     )
                     changelog = ""
@@ -662,6 +689,9 @@ final class ResumeController {
         model: String,
         apiKey: String,
         openAIKey: String,
+        moonshotKey: String,
+        grokKey: String,
+        deepSeekKey: String,
         generationSystemPrompt: String,
         scoringSystemPrompt: String,
         preScore: ResumeScore?,
@@ -689,6 +719,9 @@ final class ResumeController {
                 model: model,
                 apiKey: apiKey,
                 openAIKey: openAIKey,
+                moonshotKey: moonshotKey,
+                grokKey: grokKey,
+                deepSeekKey: deepSeekKey,
                 systemPrompt: generationSystemPrompt,
                 onStatus: onStatus,
                 priorScore: pass > 1 ? lastScoreForPrompt : nil,
@@ -755,6 +788,9 @@ final class ResumeController {
                                      model: String,
                                      apiKey: String,
                                      openAIKey: String,
+                                     moonshotKey: String,
+                                     grokKey: String,
+                                     deepSeekKey: String,
                                      systemPrompt: String,
                                      onStatus: @escaping (String) -> Void,
                                      priorScore: Int? = nil,
@@ -783,12 +819,15 @@ final class ResumeController {
             : Self.fastModeIndexedAppendix
         let raw = try await AIManager.shared.sendMessage(
             userMessage,
-            apiKey:       apiKey,
-            openAIApiKey: openAIKey,
-            model:        model,
-            screenshot:   nil,
-            systemPrompt: systemPrompt + "\n\n" + appendix,
-            maxTokens:    8192,
+            apiKey:        apiKey,
+            openAIApiKey:  openAIKey,
+            moonshotAPIKey: moonshotKey,
+            grokAPIKey:    grokKey,
+            deepSeekAPIKey: deepSeekKey,
+            model:         model,
+            screenshot:    nil,
+            systemPrompt:  systemPrompt + "\n\n" + appendix,
+            maxTokens:     8192,
             timeoutInterval: 240
         )
         guard let analysis = Self.decodeIndexedGapAnalysis(from: raw) else {
@@ -1414,61 +1453,110 @@ final class ResumeController {
                                        model: String,
                                        apiKey: String,
                                        openAIKey: String,
+                                       moonshotKey: String,
+                                       grokKey: String,
+                                       deepSeekKey: String,
                                        systemPrompt: String) async throws -> (String, String, URL) {
         let mountPath = "/document.xml"
         let fs = TextEditorFS(path: mountPath, initialContent: documentXML)
-
-        let tool = AIManager.Tool(
-            builtInType: "text_editor_20250728",
-            name: "str_replace_based_edit_tool"
-        )
-
         let userPrompt = Self.textEditorInitialPrompt(mountPath: mountPath, jd: jd)
 
-        // Surface progress on the main actor. Every tool call and every API
-        // turn funnels through `statusLine` inside AIManager — we mirror it
-        // into `vm.resumeGenerationStatus` so the Resume panel can display
-        // what Claude is doing right now.
+        // Surface progress on the main actor. Every tool call funnels through
+        // `statusLine` inside AIManager — we mirror it into
+        // `vm.resumeGenerationStatus` so the Resume panel shows live progress.
         let weakVM = self.vm
         let status: @Sendable (String) -> Void = { line in
             Task { @MainActor in weakVM?.resumeGenerationStatus = line }
         }
 
-        _ = try await AIManager.shared.sendWithTools(
-            initialUserMessage: userPrompt,
-            apiKey: apiKey,
-            model: model,
-            systemPrompt: systemPrompt,
-            tools: [tool],
-            maxIterations: 100,
-            maxTokens: 8192,
-            timeoutInterval: 600,   // 10 min — text_editor loops can take a while
-            onStatus: status,
-            handle: { _, input in
-                let command = input["command"] as? String ?? ""
-                let path    = input["path"]    as? String ?? ""
-                switch command {
-                case "view":
-                    let range = input["view_range"] as? [Int]
-                    return await fs.view(path: path, range: range)
-                case "str_replace":
-                    let old = input["old_str"] as? String ?? ""
-                    let new = input["new_str"] as? String ?? ""
-                    return await fs.strReplace(path: path, old: old, new: new)
-                case "insert":
-                    let line = input["insert_line"] as? Int ?? 0
-                    let text = input["new_str"] as? String ?? ""
-                    return await fs.insert(path: path, line: line, text: text)
-                case "create":
-                    let text = input["file_text"] as? String ?? ""
-                    return await fs.create(path: path, text: text)
-                case "undo_edit":
-                    return await fs.undoEdit(path: path)
-                default:
-                    return "Error: unsupported command \(command)"
-                }
+        // Identical handler regardless of provider — it just drives the
+        // in-memory virtual file (view / str_replace / insert / create).
+        let handler: (_ name: String, _ input: [String: Any]) async throws -> String = { _, input in
+            let command = input["command"] as? String ?? ""
+            let path    = input["path"]    as? String ?? ""
+            switch command {
+            case "view":
+                let range = input["view_range"] as? [Int]
+                return await fs.view(path: path, range: range)
+            case "str_replace":
+                let old = input["old_str"] as? String ?? ""
+                let new = input["new_str"] as? String ?? ""
+                return await fs.strReplace(path: path, old: old, new: new)
+            case "insert":
+                let line = input["insert_line"] as? Int ?? 0
+                let text = input["new_str"] as? String ?? ""
+                return await fs.insert(path: path, line: line, text: text)
+            case "create":
+                let text = input["file_text"] as? String ?? ""
+                return await fs.create(path: path, text: text)
+            case "undo_edit":
+                return await fs.undoEdit(path: path)
+            default:
+                return "Error: unsupported command \(command)"
             }
-        )
+        }
+
+        // When a model tries to stop, make sure it actually edited the
+        // EXPERIENCE section. Weaker tool-callers (Grok, DeepSeek) often edit
+        // only the summary + skills at the top and quit; if experience is
+        // untouched, send them back to it.
+        let originalXML = documentXML
+        let sectionCheck: () async -> String? = {
+            let current = await fs.content
+            guard Self.experienceSectionUnchanged(original: originalXML, current: current)
+            else { return nil }
+            return """
+            You have NOT edited the EXPERIENCE / work-history section yet — that \
+            is the most important part of tailoring a résumé, and editing only \
+            the summary and skills is a FAILURE. The experience section is the \
+            largest block, lower in the document. `view` it now (down to the end \
+            of the file) and reword at least 5 bullets across the jobs to weave \
+            in the job description's keywords. Keep each edit a tiny str_replace \
+            inside a single <w:t>; never touch tables or run/paragraph properties.
+            """
+        }
+
+        // Route by provider. Claude uses its native built-in text_editor tool;
+        // OpenAI / Moonshot / Grok / DeepSeek share the custom tool over Chat
+        // Completions function-calling (one code path — differs only by key,
+        // base URL, and the max-tokens field name).
+        var genTokensIn = 0
+        var genTokensOut = 0
+        let openAICompatible: (key: String, base: String)? = {
+            if AIManager.shared.isMoonshotModel(model) { return (moonshotKey, AIManager.moonshotEndpoint) }
+            if AIManager.shared.isGrokModel(model)     { return (grokKey, AIManager.grokEndpoint) }
+            if AIManager.shared.isDeepSeekModel(model) { return (deepSeekKey, AIManager.deepseekEndpoint) }
+            if AIManager.shared.isOpenAIModel(model)   { return (openAIKey, AIManager.openAIEndpoint) }
+            return nil
+        }()
+        if let oc = openAICompatible {
+            // OpenAI's Chat Completions wants `max_completion_tokens`; the
+            // compatible third parties (Moonshot/Grok/DeepSeek) want `max_tokens`.
+            let tokenField = AIManager.shared.isOpenAIModel(model)
+                ? "max_completion_tokens" : "max_tokens"
+            let usage = try await AIManager.shared.sendWithToolsOpenAI(
+                initialUserMessage: userPrompt, apiKey: oc.key, model: model,
+                baseURL: oc.base, tokenField: tokenField,
+                systemPrompt: systemPrompt,
+                tools: [AIManager.strReplaceEditorTool(mountPath: mountPath)],
+                maxIterations: 120, maxTokens: 8192, timeoutInterval: 900,
+                minToolEdits: 8, maxNudges: 10,
+                trimHistory: false,        // keep the WHOLE résumé in context the
+                                           // whole time so it can edit experience
+                sectionCheck: sectionCheck,
+                onStatus: status, handle: handler)
+            genTokensIn  = usage.inputTokens
+            genTokensOut = usage.outputTokens
+        } else {
+            _ = try await AIManager.shared.sendWithTools(
+                initialUserMessage: userPrompt, apiKey: apiKey, model: model,
+                systemPrompt: systemPrompt,
+                tools: [AIManager.Tool(builtInType: "text_editor_20250728",
+                                       name: "str_replace_based_edit_tool")],
+                maxIterations: 100, maxTokens: 8192,
+                timeoutInterval: 600,   // 10 min — text_editor loops can take a while
+                onStatus: status, handle: handler)
+        }
         status("Packaging your résumé…")
 
         let finalXML  = await fs.content
@@ -1476,7 +1564,7 @@ final class ResumeController {
 
         guard editCount > 0 else {
             let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
-            return ("Claude didn't make any edits. Original resume saved unchanged.", "", passthrough)
+            return ("The model didn't make any edits. Original résumé saved unchanged.", "", passthrough)
         }
 
         do {
@@ -1486,11 +1574,14 @@ final class ResumeController {
                 outputFilename: outputFilename
             )
             let previewText = (try? ResumeImporter.importFile(url: url)) ?? ""
-            let changelog = "- Claude applied \(editCount) str_replace edit(s) via the text_editor tool"
+            var changelog = "- Applied \(editCount) edit(s) via str_replace"
+            if genTokensIn + genTokensOut > 0 {
+                changelog += " · ~\(genTokensIn) in / \(genTokensOut) out tokens"
+            }
             return (previewText, changelog, url)
         } catch DOCXTemplateEditor.DOCXError.invalidXMLAfterEdits(let detail) {
             let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
-            let preview = "Claude's edits produced invalid XML and were rejected so your original DOCX stays intact.\n\nReason: \(detail)"
+            let preview = "The edits produced invalid XML and were rejected, so your original DOCX stays intact.\n\nReason: \(detail)"
             return (preview, "- ⚠️ Edits rejected (invalid XML); original DOCX saved unchanged", passthrough)
         }
     }
@@ -1506,34 +1597,91 @@ final class ResumeController {
         you are satisfied, return a brief plain-text summary of the changes
         and stop calling tools.
 
-        Rules for editing:
+        Two goals matter EQUALLY — don't sacrifice one for the other:
+
+        • LOOK: the document must look EXACTLY the same afterward — same fonts,
+          spacing, bullets, columns, and tables. Only the WORDS inside existing
+          text change (plus the occasional new bullet).
+        • COVERAGE: actually tailor the résumé. Editing only the summary, or
+          making just one or two changes, is a FAILURE. You revise content
+          across the WHOLE résumé.
+
+        COVERAGE you MUST achieve (this is the job — do not stop short):
+        - FIRST `view` the WHOLE document end to end (several view_range calls)
+          so you see every section — ESPECIALLY the EXPERIENCE / work-history
+          block lower down. Do NOT edit only what's at the top.
+        - The EXPERIENCE section is the MOST important. Revise MULTIPLE bullets
+          under EACH employer — not one or two. For every important
+          requirement/keyword in the JD, find the bullet that best fits the
+          candidate's real experience and reword it to surface that keyword.
+          Editing only the SUMMARY and SKILLS is a FAILURE.
+        - Update the SKILLS list to include every JD skill the candidate
+          plausibly already has (weave them into the existing skills text).
+        - Rewrite the professional SUMMARY to target this role.
+        - Make at least 8–14 edits total, the MAJORITY of them experience
+          bullets. Keep calling the tool until the experience section is
+          tailored end to end.
+
+        HOW to make each edit (this is what protects the look):
 
         1. Start by `view`-ing `\(mountPath)` to understand its structure
-           (sections, employers, roles, dates). Use `view_range` to zoom in
-           on specific regions; don't re-view the whole file every turn.
-        2. Make focused edits with `str_replace`. Keep `old_str` tiny — a
-           single `<w:t>…</w:t>` for tweaking bullet text, or a whole
-           `<w:p>…</w:p>` only when adding a new bullet.
-        3. To ADD a new bullet, str_replace an existing `<w:p>` with THAT
-           SAME `<w:p>` plus a new `<w:p>` whose structure you CLONED from a
-           nearby bullet (so bullet markers, indents, and `<w:rPr>` styling
-           match exactly).
-        4. Preserve every employer, job title, location, and date verbatim.
-        5. Never invent employers, titles, dates, degrees, certifications,
-           metrics, or technologies that aren't already somewhere in the
-           résumé.
-        6. Tech stack sanity: libraries/tools you add must be appropriate
-           for that client's industry AND have versions that fit the
-           timeframe of the role.
-        7. Don't rewrite section headings, names, or contact info.
-        8. Never invent `<w:pPr>` or `<w:rPr>` from scratch. Always copy
-           them from a nearby run when building a new paragraph.
-        9. Output must remain valid XML after every edit.
-        10. Aim for 4–10 focused edits. Don't carpet-rewrite.
+           (sections, employers, roles, dates, and any TABLES). Use
+           `view_range` to zoom in; don't re-view the whole file every turn.
+        2. Make each edit with `str_replace` on a TINY `old_str` — ideally just
+           the text inside a single `<w:t>…</w:t>`. Change only the words; never
+           touch the surrounding `<w:r>`, `<w:rPr>`, or `<w:pPr>`. (Small edits
+           describe HOW you edit — they are NOT a reason to make FEWER edits.
+           Make MANY small edits.)
+        3. PRESERVE TABLE STRUCTURE ABSOLUTELY. Many résumés lay out the
+           header or skills as a TABLE. NEVER alter any table tag —
+           `<w:tbl>`, `<w:tblPr>`, `<w:tblGrid>`, `<w:gridCol>`, `<w:tr>`,
+           `<w:tc>`, `<w:tcPr>`. Edit ONLY the `<w:t>` text inside cells. Do
+           not add, remove, merge, or resize rows, cells, or columns.
+        4. KEEP each bullet's metrics and numbers; reword AROUND them to weave
+           in JD-relevant keywords. Don't replace a bullet with unrelated
+           content, and don't reorder or delete bullets.
+        5. To add a SKILL, edit the text inside the existing skills cell/line
+           (e.g. "Java, SQL" → "Java, SQL, Python"). Never restructure the
+           skills section to do it.
+        6. To ADD a new bullet, str_replace an existing `<w:p>` with THAT SAME
+           `<w:p>` plus a new `<w:p>` whose structure you CLONED from a nearby
+           bullet (so markers, indents, and `<w:rPr>` match exactly).
+        7. Preserve every employer, job title, location, and date verbatim.
+           Don't rewrite section headings, the name, or contact info.
+        8. Never invent employers, titles, dates, degrees, certifications,
+           metrics, or technologies that aren't already in the résumé. Tech
+           you add must fit the client's industry AND the role's timeframe.
+        9. Never invent `<w:pPr>` or `<w:rPr>` from scratch — always clone
+           from a nearby run. Output must remain valid XML after every edit.
 
         Job Description:
         \(jd)
         """
+    }
+
+    /// True when the EXPERIENCE / work-history block (from its heading to the
+    /// end of the document) has identical plain text in `original` and
+    /// `current` — i.e. the model never touched it. Used to force weaker
+    /// tool-callers back to the experience bullets when they edit only the top.
+    /// Returns false when no experience heading is found (can't locate it, so
+    /// we don't force).
+    private static func experienceSectionUnchanged(original: String, current: String) -> Bool {
+        func tail(_ xml: String) -> String? {
+            let plain = xml
+                .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            // Most specific headings first so we anchor on the section title,
+            // not a stray "experience" mention in the summary.
+            for marker in ["work experience", "professional experience",
+                           "employment history", "work history", "experience"] {
+                if let r = plain.range(of: marker, options: .caseInsensitive) {
+                    return String(plain[r.lowerBound...])
+                }
+            }
+            return nil
+        }
+        guard let a = tail(original), let b = tail(current) else { return false }
+        return a == b
     }
 
     /// Write the original DOCX bytes to a new temp URL so we can present it

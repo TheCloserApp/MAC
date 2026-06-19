@@ -54,18 +54,18 @@ private struct InterviewModeBar: View {
                         Text(mode.displayName)
                             .font(.system(size: 12, weight: .semibold))
                     }
-                    .foregroundColor(vm.interviewSurfaceMode == mode ? .white : .primary)
+                    .foregroundColor(vm.interviewSurfaceMode == mode ? Design.Ink.inverse : Design.Ink.primary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .background(Capsule().fill(
                         vm.interviewSurfaceMode == mode
-                        ? Design.Accent.blue
-                        : Color.white.opacity(0.04)
+                        ? Design.Ink.primary
+                        : Design.Surface.controlFill
                     ))
                     .overlay(Capsule().strokeBorder(
                         vm.interviewSurfaceMode == mode
-                        ? Design.Accent.blue.opacity(0.40)
-                        : Color.white.opacity(0.10),
+                        ? Color.white.opacity(0.22)
+                        : Design.Surface.hairline,
                         lineWidth: 0.5
                     ))
                 }
@@ -100,6 +100,7 @@ private struct InterviewSetupForm: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
+        .hiddenScrollGutter()
         .sheet(isPresented: $showCreatePrompt) {
             createPromptSheet
         }
@@ -116,13 +117,13 @@ private struct InterviewSetupForm: View {
                 HStack(spacing: 6) {
                     Image(systemName: "wand.and.sparkles")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Auto-generate responses")
                             .font(.system(size: 12, weight: .semibold))
                         Text("Off → hit the Send button to ask. On → AI streams as you go.")
                             .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                     }
                 }
             }
@@ -140,7 +141,7 @@ private struct InterviewSetupForm: View {
                 .font(.system(size: 18, weight: .semibold))
             Text("Pick a session, attach an optional resume + context, choose a system prompt, then hit Start.")
                 .font(.system(size: 12))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -180,19 +181,19 @@ private struct InterviewSetupForm: View {
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
                     .background(Capsule().fill(
                         vm.interviewResumeSessionID == nil
-                        ? Color.white.opacity(0.04)
-                        : Design.Accent.blue.opacity(0.18)
+                        ? Design.Surface.controlFill
+                        : Design.Surface.raisedFill
                     ))
                     .overlay(Capsule().strokeBorder(
                         vm.interviewResumeSessionID == nil
-                        ? Color.white.opacity(0.10)
-                        : Design.Accent.blue.opacity(0.35),
+                        ? Design.Surface.hairline
+                        : Color.white.opacity(0.22),
                         lineWidth: 0.5
                     ))
                 }
@@ -218,7 +219,7 @@ private struct InterviewSetupForm: View {
                     HStack(spacing: 6) {
                         Image(systemName: "doc.fill")
                             .font(.system(size: 10))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                         Text(url.lastPathComponent)
                             .font(.system(size: 12))
                             .lineLimit(1)
@@ -228,16 +229,16 @@ private struct InterviewSetupForm: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Design.Ink.tertiary)
                         }
                         .buttonStyle(.plain)
                         .help("Remove resume")
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Design.Surface.controlFill))
                     .overlay(RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                        .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
 
                 Button {
@@ -251,8 +252,8 @@ private struct InterviewSetupForm: View {
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
                 .help("PDF · DOCX · RTF · TXT · MD")
@@ -266,7 +267,7 @@ private struct InterviewSetupForm: View {
                                 .controlSize(.mini)
                             Text("Reading…")
                                 .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Design.Ink.secondary)
                         }
                     } else if !vm.interviewResumeText.isEmpty {
                         HStack(spacing: 4) {
@@ -275,7 +276,7 @@ private struct InterviewSetupForm: View {
                                 .foregroundColor(.green)
                             Text("Ready")
                                 .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Design.Ink.secondary)
                         }
                     }
                 }
@@ -291,9 +292,9 @@ private struct InterviewSetupForm: View {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .topLeading) {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.04))
+                        .fill(Design.Surface.inputFill)
                         .overlay(RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                     TextEditor(text: $vm.interviewContext)
                         .scrollContentBackground(.hidden)
                         .font(.system(size: 12))
@@ -302,7 +303,7 @@ private struct InterviewSetupForm: View {
                     if vm.interviewContext.isEmpty {
                         Text("Role, company, JD, talking points…")
                             .font(.system(size: 12))
-                            .foregroundColor(.secondary.opacity(0.5))
+                            .foregroundColor(Design.Ink.muted)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 14)
                             .allowsHitTesting(false)
@@ -332,8 +333,8 @@ private struct InterviewSetupForm: View {
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 6)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
                 .help("PDF · DOCX · RTF · TXT · MD — text is extracted and sent as context.")
@@ -406,18 +407,18 @@ private struct InterviewSetupForm: View {
                     HStack(spacing: 4) {
                         Image(systemName: "text.bubble.fill")
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                         Text(activePromptName)
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -436,8 +437,8 @@ private struct InterviewSetupForm: View {
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
                 .help("Save a new system prompt and use it")
@@ -467,11 +468,11 @@ private struct InterviewSetupForm: View {
                         Text("Start interview")
                             .font(.system(size: 13, weight: .semibold))
                     }
-                    .foregroundColor(.white)
+                    .foregroundColor(Design.Ink.inverse)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 9)
-                    .background(Capsule().fill(Design.Accent.blue))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Ink.primary))
+                    .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.return, modifiers: .command)
@@ -488,12 +489,12 @@ private struct InterviewSetupForm: View {
                 .font(.system(size: 15, weight: .semibold))
             TextField("Name", text: $newPromptName)
                 .textFieldStyle(.roundedBorder)
-            Text("Prompt").font(.caption).foregroundColor(.secondary)
+            Text("Prompt").font(.caption).foregroundColor(Design.Ink.secondary)
             TextEditor(text: $newPromptContent)
                 .font(.system(size: 12))
                 .frame(minHeight: 160)
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
             HStack {
                 Spacer()
                 Button("Cancel") { showCreatePrompt = false }
@@ -551,17 +552,17 @@ private struct InterviewSetupForm: View {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
                 if optional {
                     Text("Optional")
                         .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.06)))
+                        .background(Capsule().fill(Design.Surface.controlFill))
                 }
             }
             content()
@@ -576,12 +577,12 @@ private struct InterviewSetupForm: View {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(selected ? .white : .primary)
+            .foregroundColor(selected ? Design.Ink.inverse : Design.Ink.primary)
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
-            .background(Capsule().fill(selected ? Design.Accent.blue : Color.white.opacity(0.04)))
+            .background(Capsule().fill(selected ? Design.Ink.primary : Design.Surface.controlFill))
             .overlay(Capsule().strokeBorder(
-                selected ? Design.Accent.blue.opacity(0.40) : Color.white.opacity(0.10),
+                selected ? Color.white.opacity(0.22) : Design.Surface.hairline,
                 lineWidth: 0.5
             ))
         }
@@ -615,6 +616,7 @@ private struct RegularCallSetupForm: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
+        .hiddenScrollGutter()
         .sheet(isPresented: $showCreatePrompt) {
             createPromptSheet
         }
@@ -626,7 +628,7 @@ private struct RegularCallSetupForm: View {
                 .font(.system(size: 18, weight: .semibold))
             Text("Lighter than an interview — just a system prompt and some context. Pick Call for live mic, or Chat for text-only.")
                 .font(.system(size: 12))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -640,9 +642,9 @@ private struct RegularCallSetupForm: View {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .topLeading) {
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.04))
+                        .fill(Design.Surface.inputFill)
                         .overlay(RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                     TextEditor(text: $vm.interviewContext)
                         .scrollContentBackground(.hidden)
                         .font(.system(size: 12))
@@ -651,7 +653,7 @@ private struct RegularCallSetupForm: View {
                     if vm.interviewContext.isEmpty {
                         Text("Who is the call with? What's the goal? Any background…")
                             .font(.system(size: 12))
-                            .foregroundColor(.secondary.opacity(0.5))
+                            .foregroundColor(Design.Ink.muted)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 14)
                             .allowsHitTesting(false)
@@ -668,8 +670,8 @@ private struct RegularCallSetupForm: View {
                         }
                         .padding(.horizontal, 11)
                         .padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.04)))
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                        .background(Capsule().fill(Design.Surface.controlFill))
+                        .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                     }
                     .buttonStyle(.plain)
                     .help("PDF · DOCX · RTF · TXT · MD — text extracted into context.")
@@ -719,18 +721,18 @@ private struct RegularCallSetupForm: View {
                     HStack(spacing: 4) {
                         Image(systemName: "text.bubble.fill")
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                         Text(vm.promptStore.activePreset?.name ?? "Default (Call)")
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(Design.Ink.secondary)
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -749,8 +751,8 @@ private struct RegularCallSetupForm: View {
                     }
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Capsule().fill(Color.white.opacity(0.04)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
 
@@ -802,11 +804,11 @@ private struct RegularCallSetupForm: View {
                     Text(vm.regularCallAsCall ? "Start call" : "Start chat")
                         .font(.system(size: 13, weight: .semibold))
                 }
-                .foregroundColor(.white)
+                .foregroundColor(Design.Ink.inverse)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 9)
-                .background(Capsule().fill(Design.Accent.blue))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                .background(Capsule().fill(Design.Ink.primary))
+                .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.return, modifiers: .command)
@@ -820,12 +822,12 @@ private struct RegularCallSetupForm: View {
                 .font(.system(size: 15, weight: .semibold))
             TextField("Name", text: $newPromptName)
                 .textFieldStyle(.roundedBorder)
-            Text("Prompt").font(.caption).foregroundColor(.secondary)
+            Text("Prompt").font(.caption).foregroundColor(Design.Ink.secondary)
             TextEditor(text: $newPromptContent)
                 .font(.system(size: 12))
                 .frame(minHeight: 160)
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
             HStack {
                 Spacer()
                 Button("Cancel") { showCreatePrompt = false }
@@ -885,17 +887,17 @@ private struct RegularCallSetupForm: View {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
                 if optional {
                     Text("Optional")
                         .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.white.opacity(0.06)))
+                        .background(Capsule().fill(Design.Surface.controlFill))
                 }
             }
             content()
@@ -910,12 +912,12 @@ private struct RegularCallSetupForm: View {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(selected ? .white : .primary)
+            .foregroundColor(selected ? Design.Ink.inverse : Design.Ink.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .background(Capsule().fill(selected ? Design.Accent.blue : Color.white.opacity(0.04)))
+            .background(Capsule().fill(selected ? Design.Ink.primary : Design.Surface.controlFill))
             .overlay(Capsule().strokeBorder(
-                selected ? Design.Accent.blue.opacity(0.40) : Color.white.opacity(0.10),
+                selected ? Color.white.opacity(0.22) : Design.Surface.hairline,
                 lineWidth: 0.5
             ))
         }
@@ -942,7 +944,7 @@ private struct MissingKeyWarning: View {
                     .foregroundColor(Design.Accent.amber)
                 Text("No API key for the selected model — answers won't generate. Click to add one.")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.primary.opacity(0.9))
+                    .foregroundColor(Design.Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
@@ -988,10 +990,10 @@ private struct FlowChipList: View {
         HStack(spacing: 5) {
             Image(systemName: iconFor(f.name))
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
             Text(f.name)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.primary.opacity(0.85))
+                .foregroundColor(Design.Ink.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Button {
@@ -999,7 +1001,7 @@ private struct FlowChipList: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Design.Ink.tertiary)
             }
             .buttonStyle(.plain)
         }
@@ -1007,11 +1009,11 @@ private struct FlowChipList: View {
         .padding(.vertical, 4)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(Design.Surface.controlFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
         )
     }
 

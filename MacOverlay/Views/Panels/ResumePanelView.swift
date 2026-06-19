@@ -34,8 +34,8 @@ struct ResumePanelView: View {
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [5]))
-                    .background(Color.accentColor.opacity(0.08))
+                    .stroke(Design.Accent.chatGPT, style: StrokeStyle(lineWidth: 2, dash: [5]))
+                    .background(Design.Accent.chatGPT.opacity(0.08))
                     .overlay {
                         VStack(spacing: 6) {
                             Image(systemName: "doc.badge.arrow.up")
@@ -43,7 +43,7 @@ struct ResumePanelView: View {
                             Text("Drop PDF / DOCX / RTF / TXT to import")
                                 .font(.system(size: 11, weight: .semibold))
                         }
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(Design.Accent.chatGPT)
                     }
                     .allowsHitTesting(false)
                     .padding(4)
@@ -66,7 +66,7 @@ struct ResumePanelView: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button { importError = nil } label: {
-                Image(systemName: "xmark").font(.system(size: 8)).foregroundColor(.secondary)
+                Image(systemName: "xmark").font(.system(size: 8)).foregroundColor(Design.Ink.secondary)
             }
             .buttonStyle(.plain)
         }
@@ -141,7 +141,7 @@ struct ResumePanelView: View {
                 Button("Save") { finishRename(p) }
                     .font(.caption2.weight(.semibold))
                     .buttonStyle(.plain)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Design.Accent.chatGPT)
             } else {
                 Button {
                     vm.resumeStore.activePresetID = p.id
@@ -149,10 +149,10 @@ struct ResumePanelView: View {
                     HStack {
                         Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
                             .font(.system(size: 11))
-                            .foregroundColor(isActive ? .accentColor : .secondary)
+                            .foregroundColor(isActive ? Design.Accent.chatGPT : Design.Ink.secondary)
                         Text(p.name)
                             .font(.system(size: 11, weight: isActive ? .semibold : .regular))
-                            .foregroundColor(.primary)
+                            .foregroundColor(Design.Ink.primary)
                         Spacer()
                     }
                     .contentShape(Rectangle())
@@ -165,7 +165,7 @@ struct ResumePanelView: View {
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                 }
                 .buttonStyle(.plain)
 
@@ -174,7 +174,7 @@ struct ResumePanelView: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary.opacity(0.6))
+                        .foregroundColor(Design.Ink.muted)
                 }
                 .buttonStyle(.plain)
                 .disabled(vm.resumeStore.presets.count <= 1)
@@ -182,7 +182,7 @@ struct ResumePanelView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(isActive ? Color.accentColor.opacity(0.08) : Color.clear)
+        .background(isActive ? Design.Accent.chatGPT.opacity(0.08) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
@@ -200,10 +200,10 @@ struct ResumePanelView: View {
             Text("Resume")
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(-0.2)
-                .foregroundColor(.primary)
+                .foregroundColor(Design.Ink.primary)
             Text("Tailor a resume to any job description")
                 .font(.system(size: 11))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
@@ -223,7 +223,7 @@ struct ResumePanelView: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 8)
             Rectangle()
-                .fill(Color.white.opacity(0.06))
+                .fill(Design.Surface.separator)
                 .frame(height: 0.5)
         }
     }
@@ -232,14 +232,14 @@ struct ResumePanelView: View {
         Button(action: { withAnimation(Design.Motion.fast) { action() } }) {
             Text(label)
                 .font(.system(size: 11, weight: isActive ? .semibold : .medium))
-                .foregroundColor(isActive ? .primary : .secondary.opacity(0.85))
+                .foregroundColor(isActive ? Design.Ink.primary : Design.Ink.secondary)
                 .padding(.horizontal, 10).padding(.vertical, 4)
                 .background(
-                    Capsule().fill(isActive ? Color.white.opacity(0.10) : .clear)
+                    Capsule().fill(isActive ? Design.Surface.controlFill : .clear)
                 )
                 .overlay(
                     Capsule().strokeBorder(
-                        isActive ? Color.white.opacity(0.18) : Color.white.opacity(0.08),
+                        isActive ? Design.Surface.strongHairline : Design.Surface.hairline,
                         lineWidth: 0.5
                     )
                 )
@@ -306,18 +306,18 @@ struct ResumePanelView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "doc.text")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                     Text(store.activePreset?.name ?? "Select résumé")
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                 }
                 .padding(.horizontal, 11)
                 .padding(.vertical, 7)
-                .background(Capsule().fill(Color.white.opacity(0.04)))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Capsule().fill(Design.Surface.controlFill))
+                .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -357,15 +357,15 @@ struct ResumePanelView: View {
                 Text(label)
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(disabled ? .secondary.opacity(0.5)
-                             : (highlighted ? .white : .primary))
+            .foregroundColor(disabled ? Design.Ink.muted
+                             : (highlighted ? Design.Ink.inverse : Design.Ink.primary))
             .padding(.horizontal, 11)
             .padding(.vertical, 7)
             .background(Capsule().fill(
-                highlighted ? Design.Accent.blue : Color.white.opacity(0.04)
+                highlighted ? Design.Ink.primary : Design.Surface.controlFill
             ))
             .overlay(Capsule().strokeBorder(
-                highlighted ? Design.Accent.blue.opacity(0.40) : Color.white.opacity(0.10),
+                highlighted ? Color.white.opacity(0.22) : Design.Surface.hairline,
                 lineWidth: 0.5
             ))
         }
@@ -418,10 +418,10 @@ struct ResumePanelView: View {
                     Text("Create your first résumé")
                         .font(.system(size: 12, weight: .medium))
                 }
-                .foregroundColor(.white)
+                .foregroundColor(Design.Ink.inverse)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .background(Capsule().fill(Design.Accent.blue))
+                .background(Capsule().fill(Design.Ink.primary))
             }
             .buttonStyle(.plain)
         }
@@ -439,14 +439,14 @@ struct ResumePanelView: View {
         return HStack(spacing: 10) {
             Image(systemName: "doc.text.fill")
                 .font(.system(size: 14))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(preset.originalFilename ?? preset.name)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Text("\(words) words · \(chars) chars — text hidden by default")
                     .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
             }
             Spacer()
             showTextToggle(open: false,
@@ -454,9 +454,9 @@ struct ResumePanelView: View {
                            label: "extracted text")
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Design.Surface.previewFill))
         .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
     }
 
     /// "Show extracted text" / "Hide extracted text" pill button.
@@ -470,11 +470,11 @@ struct ResumePanelView: View {
                 Text(open ? "Hide \(label)" : "Show \(label)")
                     .font(.system(size: 11, weight: .medium))
             }
-            .foregroundColor(.secondary)
+            .foregroundColor(Design.Ink.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(0.04)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            .background(Capsule().fill(Design.Surface.controlFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
     }
@@ -488,7 +488,7 @@ struct ResumePanelView: View {
             HStack {
                 Text("Saved résumés")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                 Spacer()
                 Button {
                     let fresh = store.add(name: "Untitled Résumé", content: "")
@@ -500,7 +500,7 @@ struct ResumePanelView: View {
                         Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
                         Text("Add").font(.system(size: 10, weight: .medium))
                     }
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Design.Accent.chatGPT)
                 }
                 .buttonStyle(.plain)
             }
@@ -510,7 +510,7 @@ struct ResumePanelView: View {
                 if store.presets.isEmpty {
                     Text("No saved résumés yet — drop a file on this panel or hit Upload.")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .padding(.vertical, 6)
                 } else {
                     ForEach(store.presets) { p in
@@ -520,9 +520,9 @@ struct ResumePanelView: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.03)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(Design.Surface.previewFill))
         .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
     }
 
     /// Job-description card — single multi-line text area + the
@@ -540,7 +540,7 @@ struct ResumePanelView: View {
                 )
                 Text("Tip: Ctrl+Opt+R pastes the clipboard JD and generates in one shot.")
                     .font(.caption2)
-                    .foregroundColor(.secondary.opacity(0.7))
+                    .foregroundColor(Design.Ink.tertiary)
             }
         }
     }
@@ -596,10 +596,10 @@ struct ResumePanelView: View {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
             }
             content()
         }
@@ -611,9 +611,9 @@ struct ResumePanelView: View {
                                 maxHeight: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(0.04))
+                .fill(Design.Surface.inputFill)
                 .overlay(RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
             TextEditor(text: text)
                 .scrollContentBackground(.hidden)
                 .font(.system(size: 12))
@@ -622,7 +622,7 @@ struct ResumePanelView: View {
             if text.wrappedValue.isEmpty {
                 Text(placeholder)
                     .font(.system(size: 12))
-                    .foregroundColor(.secondary.opacity(0.5))
+                    .foregroundColor(Design.Ink.muted)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 14)
                     .allowsHitTesting(false)
@@ -690,13 +690,13 @@ struct ResumePanelView: View {
         VStack(spacing: 10) {
             Image(systemName: "doc.on.doc")
                 .font(.system(size: 26, weight: .light))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Design.Ink.tertiary)
             Text("No generations yet")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.primary)
+                .foregroundColor(Design.Ink.primary)
             Text("Generate a tailored résumé from the Build tab — every run lands here with a before/after score.")
                 .font(.system(size: 11))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 320)
@@ -704,9 +704,9 @@ struct ResumePanelView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 22)
         .padding(.horizontal, 14)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Design.Surface.previewFill))
         .overlay(RoundedRectangle(cornerRadius: 10)
-            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
+            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
     }
 
     @ViewBuilder
@@ -810,6 +810,7 @@ struct ResumePanelView: View {
                                 .textSelection(.enabled)
                                 .padding(10)
                         }
+                        .hiddenScrollGutter()
                         .frame(minHeight: 100, maxHeight: 200)
                     }
 
@@ -1385,22 +1386,27 @@ private struct GenerationDetailView: View {
                         monoText(generation.baseText)
                             .padding(10)
                     }
+                    .hiddenScrollGutter()
                     Divider()
                     ScrollView {
                         monoText(generation.generatedText)
                             .padding(10)
                     }
+                    .hiddenScrollGutter()
                 }
             } else {
                 ScrollView {
                     DiffView(before: generation.baseText, after: generation.generatedText)
                         .padding(12)
                 }
+                .hiddenScrollGutter()
             }
         case .before:
             ScrollView { monoText(generation.baseText).padding(12) }
+                .hiddenScrollGutter()
         case .after:
             ScrollView { monoText(generation.generatedText).padding(12) }
+                .hiddenScrollGutter()
         }
     }
 

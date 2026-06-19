@@ -120,6 +120,8 @@ final class AIController {
                     apiKey:         vm.apiKey,
                     openAIApiKey:   vm.openAIApiKey,
                     moonshotAPIKey: vm.moonshotAPIKey,
+                    grokAPIKey:     vm.grokAPIKey,
+                    deepSeekAPIKey: vm.deepSeekAPIKey,
                     model:          vm.selectedModel,
                     screenshot:     screenshot,
                     systemPrompt:   systemPrompt,

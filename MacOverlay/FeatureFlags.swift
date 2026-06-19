@@ -39,7 +39,7 @@ enum FeatureFlags {
     /// text_editor loop) still compiles and is exercised by the rest of the
     /// app. Flip back on once the editor/output flow is polished. Re-enabling
     /// this only restores UI entry points — no re-implementation needed.
-    static let resumesEnabled = false
+    static let resumesEnabled = true
 
     // MARK: - Hidden in v1, no current plans to bring back
 

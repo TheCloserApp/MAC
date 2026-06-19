@@ -48,6 +48,7 @@ struct PromptLibraryView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 8)
                 }
+                .hiddenScrollGutter()
             }
         }
     }

@@ -34,6 +34,9 @@ struct OverlayView: View {
                    maxHeight: .infinity,
                    alignment: .topLeading)
             .padding(Design.Space.sm)
+            .preferredColorScheme(.dark)
+            .tint(Design.Accent.chatGPT)
+            .foregroundStyle(Design.Ink.primary)
             .sheet(isPresented: $vm.showPaywall) {
                 PaywallSheet()
             }
@@ -242,7 +245,7 @@ struct OverlayView: View {
         VStack(spacing: 0) {
             TopStripView()
             Rectangle()
-                .fill(Color.white.opacity(0.06))
+                .fill(Design.Surface.separator)
                 .frame(height: 0.5)
         }
     }
@@ -350,6 +353,7 @@ struct OverlayView: View {
                 HistoryPanelView()
             case .resumes:
                 ScrollView { ResumePanelView() }
+                    .hiddenScrollGutter()
             case .prompts:
                 PromptLibraryView()
             case .calendar:
@@ -398,13 +402,13 @@ private struct BrowserShellSurface: View {
             VStack(spacing: 8) {
                 Image(systemName: "globe")
                     .font(.system(size: 32, weight: .light))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Design.Ink.tertiary)
                 Text("No tabs open")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
                 Text("Pick a quick start, or type a custom URL to open it in a new tab.")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 340)
@@ -429,17 +433,17 @@ private struct BrowserShellSurface: View {
         HStack(spacing: 6) {
             Image(systemName: "link")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
             TextField("Enter a URL (e.g. example.com)", text: $customURL)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11))
-                .foregroundColor(.primary)
+                .foregroundColor(Design.Ink.primary)
                 .onSubmit { openCustomURL() }
             Button { openCustomURL() } label: {
                 Image(systemName: "arrow.right.circle.fill")
                     .font(.system(size: 14))
                     .foregroundColor(customURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                     ? .secondary.opacity(0.4) : .accentColor)
+                                     ? Design.Ink.muted : Design.Accent.chatGPT)
             }
             .buttonStyle(.plain)
             .disabled(customURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -447,8 +451,8 @@ private struct BrowserShellSurface: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(Capsule().fill(Color.white.opacity(0.06)))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+        .background(Capsule().fill(Design.Surface.inputFill))
+        .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
         .frame(maxWidth: 340)
     }
 
@@ -477,11 +481,11 @@ private struct BrowserShellSurface: View {
                 Text(title)
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(.primary)
+            .foregroundColor(Design.Ink.primary)
             .padding(.horizontal, 13)
             .padding(.vertical, 8)
-            .background(Capsule().fill(Color.white.opacity(0.06)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+            .background(Capsule().fill(Design.Surface.controlFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help("Open \(title)")

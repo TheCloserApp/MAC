@@ -67,7 +67,7 @@ struct InputBarView: View {
                 .padding(.horizontal, 4)
                 .padding(.vertical, 4)
                 .background(barShape.fill(Design.Surface.shellFill).opacity(vm.backgroundOpacity))
-                .overlay(barShape.stroke(Color.white.opacity(0.10), lineWidth: 0.75))
+                .overlay(barShape.stroke(Design.Surface.hairline, lineWidth: 0.75))
                 // Clip transitioning content (inner HStack sliding in from
                 // the leading edge) to the capsule outline so the controls
                 // visibly emerge from inside the bar.
@@ -241,7 +241,7 @@ struct InputBarView: View {
         return TextField("Ask anything", text: $vm.manualInput, axis: .vertical)
             .textFieldStyle(.plain)
             .font(.system(size: CGFloat(vm.barCustomization.fontSize)))
-            .foregroundColor(.primary)
+            .foregroundColor(Design.Ink.primary)
             .lineLimit(1...3)
             .focused($inputFocused)
             .onSubmit { send() }
@@ -250,11 +250,11 @@ struct InputBarView: View {
             .frame(minWidth: 140, maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.04))
+                    .fill(Design.Surface.inputFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+                    .strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5)
             )
     }
 
@@ -269,7 +269,7 @@ struct InputBarView: View {
     /// rest of the row when the bar is expanded.
     private var divider: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.06))
+            .fill(Design.Surface.separator)
             .frame(width: 0.5, height: 20)
             .padding(.horizontal, 4)
     }
@@ -339,7 +339,7 @@ struct InputBarView: View {
                 if vm.shellStage == .pill { vm.shellStage = .expanded }
             }
         } label: {
-            iconCircle(systemName: "plus", tint: .secondary, weight: .semibold)
+            iconCircle(systemName: "plus", tint: Design.Ink.secondary, weight: .semibold)
         }
         .buttonStyle(.plain)
         .keyboardShortcut("n", modifiers: .command)
@@ -358,7 +358,7 @@ struct InputBarView: View {
         } label: {
             iconCircle(systemName: "clock.arrow.circlepath",
                        tint: vm.primarySurface == .sessions
-                             ? Design.Accent.purple : .secondary)
+                             ? Design.Ink.primary : Design.Ink.secondary)
         }
         .buttonStyle(.plain)
         .help("History")
@@ -387,7 +387,7 @@ struct InputBarView: View {
                                attention: Bool = false) -> some View {
         let active = vm.primarySurface == surface && vm.shellStage != .pill
         let tint = attention ? Design.Accent.amber
-                  : (active ? Design.Accent.blue : Color.primary.opacity(0.78))
+                  : (active ? Design.Ink.primary : Design.Ink.secondary)
         return Button {
             // Use `.expand` (easeOut 0.32s) so the SwiftUI state change
             // animates with the exact same curve as the AppKit panel
@@ -438,16 +438,16 @@ struct InputBarView: View {
                 HStack(spacing: 4) {
                     Text(activeModeLabel)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.85))
+                        .foregroundColor(Design.Ink.tertiary)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(Capsule().fill(Color.white.opacity(0.04)))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Capsule().fill(Design.Surface.controlFill))
+                .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 .contentShape(Capsule())
             }
         )
@@ -503,11 +503,11 @@ struct InputBarView: View {
                 HStack(spacing: 4) {
                     Text(currentModelName)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.secondary.opacity(0.85))
+                        .foregroundColor(Design.Ink.tertiary)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 5)
@@ -522,7 +522,7 @@ struct InputBarView: View {
     private func modelMenuItems() -> [PopUpItem] {
         var items: [PopUpItem] = []
         let visibility = ModelVisibility.shared
-        let providers = ["Anthropic", "OpenAI", "Kimi"]
+        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek"]
         for provider in providers {
             let models = OverlayViewModel.availableModels
                 .filter { $0.provider == provider && visibility.isVisible($0.id) }
@@ -556,15 +556,14 @@ struct InputBarView: View {
 
         return Button { primaryAction() } label: {
             ZStack {
-                Circle().fill(active ? Design.Accent.red.opacity(0.20) : Color.white.opacity(0.04))
+                Circle().fill(active ? Design.Accent.red.opacity(0.20) : Design.Surface.controlFill)
                 Circle().strokeBorder(
-                    active ? Design.Accent.red.opacity(0.45) : Color.white.opacity(0.10),
+                    active ? Design.Accent.red.opacity(0.45) : Design.Surface.hairline,
                     lineWidth: 0.5
                 )
                 Image(systemName: active ? "stop.fill" : idleIcon)
                     .font(.system(size: active ? 10 : idleSize, weight: .semibold))
-                    .foregroundColor(active ? Design.Accent.red : .secondary)
-                    .symbolEffect(.pulse, options: active ? .repeating : .nonRepeating, value: active)
+                    .foregroundColor(active ? Design.Accent.red : Design.Ink.secondary)
             }
             .frame(width: 30, height: 30)
         }
@@ -593,14 +592,14 @@ struct InputBarView: View {
         let enabled = vm.canSend || !vm.manualInput.isEmpty
         return Button { send() } label: {
             ZStack {
-                Circle().fill(enabled ? Design.Accent.blue : Color.white.opacity(0.04))
+                Circle().fill(enabled ? Design.Ink.primary : Design.Surface.controlFill)
                 Circle().strokeBorder(
-                    enabled ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
+                    enabled ? Color.white.opacity(0.22) : Design.Surface.hairline,
                     lineWidth: 0.5
                 )
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(enabled ? .white : .secondary.opacity(0.5))
+                    .foregroundColor(enabled ? Design.Ink.inverse : Design.Ink.muted)
             }
             .frame(width: 30, height: 30)
         }
@@ -620,14 +619,14 @@ struct InputBarView: View {
             && !vm.isSendingToAI
         return Button { vm.sendTranscriptManually() } label: {
             ZStack {
-                Circle().fill(enabled ? Design.Accent.blue : Color.white.opacity(0.04))
+                Circle().fill(enabled ? Design.Ink.primary : Design.Surface.controlFill)
                 Circle().strokeBorder(
-                    enabled ? Color.white.opacity(0.22) : Color.white.opacity(0.10),
+                    enabled ? Color.white.opacity(0.22) : Design.Surface.hairline,
                     lineWidth: 0.5
                 )
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(enabled ? .white : .secondary.opacity(0.5))
+                    .foregroundColor(enabled ? Design.Ink.inverse : Design.Ink.muted)
             }
             .frame(width: 30, height: 30)
         }
@@ -643,10 +642,10 @@ struct InputBarView: View {
                             tint: Color,
                             weight: Font.Weight = .regular,
                             size: CGFloat = 12,
-                            fill: Color = Color.white.opacity(0.04)) -> some View {
+                            fill: Color = Design.Surface.controlFill) -> some View {
         ZStack {
             Circle().fill(fill)
-            Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+            Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
             Image(systemName: systemName)
                 .font(.system(size: size, weight: weight))
                 .foregroundColor(tint)
@@ -676,7 +675,7 @@ struct InputBarView: View {
                                 .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.5))
                         Text("Screenshot")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.primary.opacity(0.85))
+                            .foregroundColor(Design.Ink.primary)
                     }
                 }
                 ForEach(vm.pendingAttachments) { att in
@@ -691,7 +690,7 @@ struct InputBarView: View {
                                 .fill(Design.Accent.blue.opacity(0.14)))
                         Text(att.name)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.primary.opacity(0.85))
+                            .foregroundColor(Design.Ink.primary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .frame(maxWidth: 150, alignment: .leading)
@@ -719,9 +718,9 @@ struct InputBarView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .fill(Color.white.opacity(0.05)))
+            .fill(Design.Surface.controlFill))
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
     }
 
     private func iconFor(_ name: String) -> String {
@@ -780,21 +779,21 @@ private struct SurfaceIcon: View {
 
     private var fillColor: Color {
         if active {
-            return Design.Accent.blue.opacity(0.22)
+            return Color.white.opacity(0.12)
         }
         if attention {
             return Design.Accent.amber.opacity(0.14)
         }
-        return Color.white.opacity(hovering ? 0.08 : 0.04)
+        return hovering ? Design.Surface.controlHoverFill : Design.Surface.controlFill
     }
 
     private var strokeColor: Color {
         if active {
-            return Design.Accent.blue.opacity(0.50)
+            return Color.white.opacity(0.22)
         }
         if attention {
             return Design.Accent.amber.opacity(0.40)
         }
-        return Color.white.opacity(0.12)
+        return Design.Surface.hairline
     }
 }

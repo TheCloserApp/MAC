@@ -37,6 +37,11 @@ final class OverlayViewModel {
         ("kimi-k2.7-code",            "Kimi 2.7 Code",   "Kimi"),
         ("kimi-k2.6",                 "Kimi 2.6",        "Kimi"),
         ("kimi-k2.5",                 "Kimi 2.5",        "Kimi"),
+        // Grok (xAI) — OpenAI-compatible, https://api.x.ai/v1
+        ("grok-4.3",                  "Grok 4.3",        "Grok"),
+        // DeepSeek — OpenAI-compatible, https://api.deepseek.com
+        ("deepseek-v4-pro",           "DeepSeek V4 Pro", "DeepSeek"),
+        ("deepseek-v4-flash",         "DeepSeek V4 Flash","DeepSeek"),
     ]
 
     // MARK: - Session
@@ -408,6 +413,16 @@ final class OverlayViewModel {
     var moonshotAPIKey: String {
         didSet { UserDefaults.standard.set(moonshotAPIKey, forKey: "moonshotAPIKey") }
     }
+    /// xAI / Grok API key. Grok models route through xAI's OpenAI-compatible
+    /// endpoint (https://api.x.ai/v1) with this key — see AIManager.
+    var grokAPIKey: String {
+        didSet { UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey") }
+    }
+    /// DeepSeek API key. DeepSeek models route through its OpenAI-compatible
+    /// endpoint (https://api.deepseek.com) with this key — see AIManager.
+    var deepSeekAPIKey: String {
+        didSet { UserDefaults.standard.set(deepSeekAPIKey, forKey: "deepSeekAPIKey") }
+    }
     var elevenLabsAPIKey: String {
         didSet {
             UserDefaults.standard.set(elevenLabsAPIKey, forKey: "elevenLabsAPIKey")
@@ -449,12 +464,29 @@ final class OverlayViewModel {
         case sonnet46 = "claude-sonnet-4-6"
         case sonnet45 = "claude-sonnet-4-5"
         case haiku45  = "claude-haiku-4-5-20251001"
+        // Non-Claude options. These edit the DOCX through the provider-agnostic
+        // str_replace tool loop (Chat Completions function-calling). Claude is
+        // still the most reliable at this exact task, but the choice is yours.
+        case gpt55    = "gpt-5.5"
+        case gpt41    = "gpt-4.1"
+        case kimiK27c = "kimi-k2.7-code"
+        case kimiK26  = "kimi-k2.6"
+        case grok43   = "grok-4.3"
+        case dsV4pro  = "deepseek-v4-pro"
+        case dsV4flash = "deepseek-v4-flash"
         var id: String { rawValue }
         var displayName: String {
             switch self {
-            case .sonnet46: return "Claude Sonnet 4.6 — newest, top quality"
+            case .sonnet46: return "Claude Sonnet 4.6 — newest, best for résumés"
             case .sonnet45: return "Claude Sonnet 4.5 — strong quality"
             case .haiku45:  return "Claude Haiku 4.5 — best value (~3× cheaper)"
+            case .gpt55:    return "GPT-5.5 (OpenAI) — needs OpenAI key"
+            case .gpt41:    return "GPT-4.1 (OpenAI) — cheaper, needs OpenAI key"
+            case .kimiK27c: return "Kimi 2.7 Code (Moonshot) — needs Kimi key"
+            case .kimiK26:  return "Kimi 2.6 (Moonshot) — needs Kimi key"
+            case .grok43:   return "Grok 4.3 (xAI) — cheaper, needs xAI key"
+            case .dsV4pro:  return "DeepSeek V4 Pro — needs DeepSeek key"
+            case .dsV4flash: return "DeepSeek V4 Flash — cheapest, needs DeepSeek key"
             }
         }
     }
@@ -795,6 +827,8 @@ final class OverlayViewModel {
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
         moonshotAPIKey     = UserDefaults.standard.string(forKey: "moonshotAPIKey") ?? ""
+        grokAPIKey         = UserDefaults.standard.string(forKey: "grokAPIKey") ?? ""
+        deepSeekAPIKey     = UserDefaults.standard.string(forKey: "deepSeekAPIKey") ?? ""
         elevenLabsAPIKey   = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
@@ -804,10 +838,14 @@ final class OverlayViewModel {
         resumeGenerationModel = ResumeGenerationModel(
             rawValue: UserDefaults.standard.string(forKey: "resumeGenerationModel") ?? ""
         ) ?? .haiku45
-        // Default to fast mode — real-time, ~15× cheaper than agent loop.
+        // Default to Quality: the model edits the real word/document.xml via
+        // the text_editor (str_replace) tool — the same mechanism the docx
+        // skill uses in chat — so tables, fonts, and layout survive. Fast
+        // mode's Swift-side regex surgery broke table structure and
+        // over-rewrote bullets. Quality is slower / pricier but correct.
         resumeMode = ResumeMode(
             rawValue: UserDefaults.standard.string(forKey: "resumeMode") ?? ""
-        ) ?? .fast
+        ) ?? .quality
         resumeSkipScoring = UserDefaults.standard.bool(forKey: "resumeSkipScoring")
         // Migration: if the persisted model was dropped from the catalogue
         // (e.g. an OpenAI model we no longer list, or Sonnet 4.5), fall back
@@ -1672,6 +1710,8 @@ final class OverlayViewModel {
                     apiKey:         self.apiKey,
                     openAIApiKey:   self.openAIApiKey,
                     moonshotAPIKey: self.moonshotAPIKey,
+                    grokAPIKey:     self.grokAPIKey,
+                    deepSeekAPIKey: self.deepSeekAPIKey,
                     model:          self.selectedModel,
                     screenshot:     nil,
                     systemPrompt:   resolvedPrompt,
@@ -1987,6 +2027,8 @@ final class OverlayViewModel {
     /// and error message stays in sync with `AIManager`'s routing.
     var keyForSelectedModel: (key: String, provider: String) {
         if AIManager.shared.isMoonshotModel(selectedModel) { return (moonshotAPIKey, "Moonshot") }
+        if AIManager.shared.isGrokModel(selectedModel)     { return (grokAPIKey, "Grok") }
+        if AIManager.shared.isDeepSeekModel(selectedModel) { return (deepSeekAPIKey, "DeepSeek") }
         if AIManager.shared.isOpenAIModel(selectedModel)   { return (openAIApiKey, "OpenAI") }
         return (apiKey, "Anthropic")
     }

@@ -24,6 +24,7 @@ struct CalendarPanelView: View {
                         }
                         .padding(.vertical, 6)
                     }
+                    .hiddenScrollGutter()
                 }
             } else {
                 accessGate
