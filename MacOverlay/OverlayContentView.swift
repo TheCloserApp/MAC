@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Top-level overlay view. Two states:
 ///   - `.pill`     — collapsed brand pill, full ambient state shown via the
@@ -37,21 +38,12 @@ struct OverlayView: View {
             .preferredColorScheme(.dark)
             .tint(Design.Accent.chatGPT)
             .foregroundStyle(Design.Ink.primary)
-            .sheet(isPresented: $vm.showPaywall) {
-                PaywallSheet()
-            }
             .onChange(of: vm.showOnboarding) { wasShowing, isShowing in
                 if wasShowing && !isShowing {
                     // Land the just-onboarded user on a bar-only expanded
                     // shell — the chat surface is empty so opening the
                     // body would feel hollow. Surface stays nil; user
                     // promotes to a real surface by clicking a button.
-                    vm.shellStage = .expanded
-                    vm.primarySurface = nil
-                }
-            }
-            .onChange(of: vm.auth.isSignedIn) { wasSignedIn, isSignedIn in
-                if !wasSignedIn && isSignedIn {
                     vm.shellStage = .expanded
                     vm.primarySurface = nil
                 }
@@ -74,7 +66,7 @@ struct OverlayView: View {
     }
 
     private var isShowingOnboarding: Bool {
-        vm.showOnboarding || !vm.auth.isSignedIn
+        vm.showOnboarding || !vm.hasCompletedOnboarding
     }
 
     @ViewBuilder
@@ -124,6 +116,19 @@ struct OverlayView: View {
                     .padding(.leading, Self.panelInsetLeading + 4)
                     .padding(.bottom, 60)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        // Drag grip on the trailing edge — lets the user widen / narrow the
+        // panel on screen. Only shown with a surface open (where extra room
+        // matters and the shell is committed-open, so it can't auto-collapse
+        // mid-drag). Revealed on hover like the rest of the chrome; kept
+        // hit-testable even when faded so an in-flight drag is never dropped
+        // if the cursor briefly leaves the panel bounds.
+        .overlay(alignment: .trailing) {
+            if vm.shellStage == .expanded && vm.primarySurface != nil {
+                ResizeGrip { dx, ended in vm.onWidthResize?(dx, ended) }
+                    .opacity(chromeHovering ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.18), value: chromeHovering)
             }
         }
         .animation(Design.Motion.standard, value: vm.shellStage)
@@ -375,6 +380,52 @@ struct OverlayView: View {
                maxHeight: focusHugging ? nil : .infinity,
                alignment: .top)
         .id(vm.primarySurface)
+    }
+}
+
+// MARK: - Resize grip
+
+/// Slim vertical grip that sits in the panel's right margin. Dragging it
+/// horizontally reports the cumulative translation back through `onResize`
+/// so AppDelegate can resize the host NSPanel's width. Shows an
+/// east-west resize cursor on hover.
+private struct ResizeGrip: View {
+    /// `(cumulativeTranslationX, isEnded)` — matches AppDelegate's
+    /// `handleWidthResize`, which captures the base frame on the first
+    /// change and resets on `isEnded`.
+    let onResize: (CGFloat, Bool) -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 3) {
+            ForEach(0..<3, id: \.self) { _ in
+                Circle()
+                    .fill(Design.Ink.tertiary)
+                    .frame(width: 2.5, height: 2.5)
+            }
+        }
+        .frame(width: 12, height: 46)
+        .background(
+            Capsule(style: .continuous)
+                .fill(hovering ? Design.Surface.controlHoverFill
+                               : Design.Surface.controlFill)
+        )
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
+        )
+        .contentShape(Rectangle())
+        .onHover { h in
+            hovering = h
+            if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { onResize($0.translation.width, false) }
+                .onEnded   { onResize($0.translation.width, true) }
+        )
+        .help("Drag to resize")
+        .padding(.trailing, 1)
     }
 }
 

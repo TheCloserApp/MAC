@@ -216,9 +216,10 @@ extension View {
     }
 }
 
-/// SwiftUI's hidden scroll indicators can still leave AppKit's scroller gutter
-/// in narrow overlay panels. This keeps wheel/trackpad scrolling but removes
-/// the visible scroller and its reserved width.
+/// SwiftUI's hidden scroll indicators can still leave AppKit's scroller
+/// gutter in narrow overlay panels. Keep wheel/trackpad scrolling, but make
+/// AppKit use overlay scrollers with zero insets so no invisible strip takes
+/// layout or visual space.
 private struct ScrollGutterHider: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -239,6 +240,8 @@ private struct ScrollGutterHider: NSViewRepresentable {
                 scrollView.autohidesScrollers = true
                 scrollView.scrollerStyle = .overlay
                 scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+                scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+                scrollView.automaticallyAdjustsContentInsets = false
                 return
             }
             current = candidate.superview
@@ -251,12 +254,6 @@ extension View {
         self
             .scrollIndicators(.hidden)
             .background(ScrollGutterHider().frame(width: 0, height: 0))
-            .overlay(alignment: .trailing) {
-                Rectangle()
-                    .fill(Design.Surface.shellFill)
-                    .frame(width: 16)
-                    .allowsHitTesting(false)
-            }
     }
 }
 

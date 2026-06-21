@@ -5,7 +5,19 @@ struct QuickAskPillView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !vm.quickAskResponse.isEmpty {
+            if vm.isQuickAskSending && vm.quickAskResponse.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.72)
+                    Text("Thinking...")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(Design.Ink.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            } else if !vm.quickAskResponse.isEmpty {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "sparkle")
                         .font(.system(size: 11))

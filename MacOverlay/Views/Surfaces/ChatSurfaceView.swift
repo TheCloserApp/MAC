@@ -322,10 +322,12 @@ struct ChatSurfaceView: View {
         VStack(alignment: .leading, spacing: 0) {
             if let turn, !turn.content.isEmpty {
                 MarkdownResponseView(text: turn.content, baseSize: 13.5)
+            } else {
+                StreamingPlaceholderRow()
             }
         }
         .padding(.horizontal, 22)
-        .padding(.vertical, (turn?.content.isEmpty == false) ? 14 : 0)
+        .padding(.vertical, 14)
         // Hug the partial text and grow with it line by line as tokens
         // land, without a separate animated loading row.
         // `fixedSize` hugs WITHOUT the GeometryReader/preference feedback
@@ -380,7 +382,7 @@ struct ChatSurfaceView: View {
                 // one switches the default AND regenerates immediately.
                 Menu {
                     let visibility = ModelVisibility.shared
-                    ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek"], id: \.self) { provider in
+                    ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"], id: \.self) { provider in
                         let models = OverlayViewModel.availableModels
                             .filter { $0.provider == provider && visibility.isVisible($0.id) }
                         if !models.isEmpty {
@@ -746,6 +748,7 @@ struct ChatSurfaceView: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(session.turns) { turn in
                         TurnBubble(turn: turn,
+                                   isStreaming: vm.isStreaming(turnID: turn.id),
                                    onRetry: { vm.retryLastResponse() })
                             .id(turn.id)
                     }
@@ -863,6 +866,7 @@ struct ChatSurfaceView: View {
 
 private struct TurnBubble: View {
     let turn: ChatTurn
+    var isStreaming = false
     var onRetry: () -> Void = {}
     @State private var copied = false
 
@@ -912,7 +916,9 @@ private struct TurnBubble: View {
     private var assistantContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             if turn.content.isEmpty {
-                EmptyView()
+                if isStreaming {
+                    StreamingPlaceholderRow()
+                }
             } else {
                 MarkdownResponseView(text: turn.content)
                 actionRow
@@ -955,6 +961,20 @@ private struct TurnBubble: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             withAnimation(Design.Motion.fast) { copied = false }
         }
+    }
+}
+
+private struct StreamingPlaceholderRow: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.72)
+            Text("Thinking...")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(Design.Ink.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

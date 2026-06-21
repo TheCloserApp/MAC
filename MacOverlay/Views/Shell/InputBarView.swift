@@ -522,7 +522,7 @@ struct InputBarView: View {
     private func modelMenuItems() -> [PopUpItem] {
         var items: [PopUpItem] = []
         let visibility = ModelVisibility.shared
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek"]
+        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
         for provider in providers {
             let models = OverlayViewModel.availableModels
                 .filter { $0.provider == provider && visibility.isVisible($0.id) }

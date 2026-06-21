@@ -193,6 +193,16 @@ private struct IndexedRowAdditionDTO: Decodable {
     let cells: [String]
 }
 
+/// One section of a résumé, located by 1-based paragraph index range, as
+/// returned by the segmentation call in chunked ("Fast") mode.
+private struct ResumeSection: Decodable {
+    let name: String
+    let start: Int
+    let end: Int
+    let tailor: Bool
+}
+private struct ResumeSegmentation: Decodable { let sections: [ResumeSection] }
+
 /// Owns resume generation + ATS scoring + DOCX export. The VM still holds the
 /// per-run state (resumeJD, resumeOutput, resumeScore, etc.) but all logic to
 /// drive it lives here.
@@ -319,6 +329,8 @@ final class ResumeController {
         // absent, so a GPT/Kimi-only user can still tailor without a Claude key.)
         let genModelID = vm.resumeGenerationModel.rawValue
         let (genKey, genProvider): (String, String) = {
+            if AIManager.shared.isOpenRouterModel(genModelID) { return (vm.openRouterAPIKey, "OpenRouter") }
+            if AIManager.shared.isNVIDIAModel(genModelID)   { return (vm.nvidiaAPIKey, "NVIDIA") }
             if AIManager.shared.isMoonshotModel(genModelID) { return (vm.moonshotAPIKey, "Moonshot / Kimi") }
             if AIManager.shared.isGrokModel(genModelID)     { return (vm.grokAPIKey, "xAI / Grok") }
             if AIManager.shared.isDeepSeekModel(genModelID) { return (vm.deepSeekAPIKey, "DeepSeek") }
@@ -327,17 +339,6 @@ final class ResumeController {
         }()
         guard !genKey.isEmpty else {
             vm.statusMessage = "Add your \(genProvider) API key in Settings to generate with \(vm.resumeGenerationModel.displayName)."
-            return
-        }
-
-        // Free-tier quota gate. Premium users skip; free users hit the cap
-        // after `EntitlementStore.freeResumesPerWeek` in any rolling 7-day
-        // window. Surface the reason + open the paywall so the user has a
-        // clear next step instead of a silent no-op.
-        let isPremium = vm.entitlement.isPremium
-        if let reason = vm.quota.blockReason(isPremium: isPremium) {
-            vm.statusMessage   = reason
-            vm.showPaywall     = true
             return
         }
 
@@ -361,6 +362,8 @@ final class ResumeController {
         let moonshotKeyCopy = vm.moonshotAPIKey
         let grokKeyCopy = vm.grokAPIKey
         let deepSeekKeyCopy = vm.deepSeekAPIKey
+        let nvidiaKeyCopy = vm.nvidiaAPIKey
+        let openRouterKeyCopy = vm.openRouterAPIKey
 
         let scoringSystemPrompt = vm.resumeScoringPromptResolved
         let generationSystemPrompt = vm.resumeGenerationPromptResolved
@@ -411,20 +414,17 @@ final class ResumeController {
                 let result: String
                 let changelog: String
                 let url: URL
-                // Fast mode pre-computes its own post-score because the
-                // refinement loop has to score after every pass to decide
-                // whether to keep going. Everyone else uses the post-score
-                // block below.
-                var fastModePostScore: ResumeScore? = nil
-                var fastModeScoredAlready = false
                 if let originalBytes = preset.originalDOCX,
                    !base.isEmpty {
                     switch mode {
                     case .fast:
-                        let outcome = try await self.runFastModeWithRefinement(
+                        // Plan-then-apply, section by section: segment the
+                        // résumé once, then edit ONE section at a time so the
+                        // experience section always gets its own pass and each
+                        // request only carries that section (not the whole doc).
+                        let (r, c, u) = try await self.generateViaChunked(
                             originalBytes: originalBytes,
                             outputFilename: preset.originalFilename,
-                            baseText: base,
                             jd: jd,
                             model: generationModel,
                             apiKey: apiKeyCopy,
@@ -432,30 +432,8 @@ final class ResumeController {
                             moonshotKey: moonshotKeyCopy,
                             grokKey: grokKeyCopy,
                             deepSeekKey: deepSeekKeyCopy,
-                            generationSystemPrompt: generationSystemPrompt,
-                            scoringSystemPrompt: scoringSystemPrompt,
-                            preScore: capturedPreScore,
-                            skipScoring: skipScoring,
-                            onStatus: status
-                        )
-                        result = outcome.result
-                        changelog = outcome.changelog
-                        url = outcome.url
-                        fastModePostScore = outcome.postScore
-                        fastModeScoredAlready = !skipScoring
-                    case .hybrid:
-                        guard let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
-                              !xml.isEmpty else {
-                            throw DOCXTemplateEditor.DOCXError.missingDocumentXML
-                        }
-                        let (r, c, u) = try await self.generateViaHybrid(
-                            documentXML: xml,
-                            originalBytes: originalBytes,
-                            outputFilename: preset.originalFilename,
-                            resumeText: base,
-                            jd: jd,
-                            apiKey: apiKeyCopy,
-                            openAIKey: openAIKeyCopy,
+                            nvidiaKey: nvidiaKeyCopy,
+                            openRouterKey: openRouterKeyCopy,
                             systemPrompt: generationSystemPrompt,
                             onStatus: status
                         )
@@ -476,6 +454,8 @@ final class ResumeController {
                             moonshotKey: moonshotKeyCopy,
                             grokKey: grokKeyCopy,
                             deepSeekKey: deepSeekKeyCopy,
+                            nvidiaKey: nvidiaKeyCopy,
+                            openRouterKey: openRouterKeyCopy,
                             systemPrompt: generationSystemPrompt
                         )
                         result = r; changelog = c; url = u
@@ -490,6 +470,8 @@ final class ResumeController {
                         moonshotAPIKey: moonshotKeyCopy,
                         grokAPIKey:    grokKeyCopy,
                         deepSeekAPIKey: deepSeekKeyCopy,
+                        nvidiaAPIKey:  nvidiaKeyCopy,
+                        openRouterAPIKey: openRouterKeyCopy,
                         model:         generationModel,
                         screenshot:    nil,
                         systemPrompt:  generationSystemPrompt,
@@ -503,24 +485,13 @@ final class ResumeController {
                 vm?.resumeOutput  = previewText
                 vm?.resumeFileURL = url
 
-                // Quota tick. Recorded only once per successful generation —
-                // not on the no-edits / passthrough paths above (those write
-                // the original DOCX unchanged so they're not "real" runs).
-                if let vm {
-                    vm.quota.recordGeneration(isPremium: vm.entitlement.isPremium)
-                }
-
-                // 3. Post-score — optional. Fast mode scores inside its
-                //    refinement loop so we just reuse what came back from
-                //    there. Other modes score here against the final text;
-                //    the passthrough guard keeps us from scoring the
+                // 3. Post-score — optional. Scored here against the final
+                //    text; the passthrough guard keeps us from scoring the
                 //    "No changes suggested." placeholder instead of the
                 //    actual unchanged résumé.
                 let postScore: ResumeScore?
                 if skipScoring {
                     postScore = nil
-                } else if fastModeScoredAlready {
-                    postScore = fastModePostScore
                 } else if Self.isUnchangedPassthrough(result) {
                     postScore = capturedPreScore
                 } else {
@@ -1044,6 +1015,13 @@ final class ResumeController {
       prefer it for keyword swaps, verb upgrades, JD-vocabulary insertions \
       anywhere the bullet structure is fine and you only need to change a \
       phrase or two. Hits more bullets at lower formatting risk.
+      COVERAGE IS MANDATORY: at LEAST HALF of your surgical_replacements MUST \
+      target EXPERIENCE bullets — the bullet points under the job titles — \
+      and they must be SPREAD across EVERY employer, not bunched on one job. \
+      You can see every numbered paragraph here, so there is no excuse to \
+      skip the experience section. Editing only the summary and the skills \
+      list is a FAILURE: the experience bullets are where a recruiter looks, \
+      and an untailored experience section is the #1 reason these miss.
     - `rewrites`: 2–5 entries. Reserve these for paragraphs that need \
       structural changes (e.g. the summary, a heavily mis-pitched bullet). \
       Always include a rewrite for the summary.
@@ -1456,6 +1434,8 @@ final class ResumeController {
                                        moonshotKey: String,
                                        grokKey: String,
                                        deepSeekKey: String,
+                                       nvidiaKey: String,
+                                       openRouterKey: String,
                                        systemPrompt: String) async throws -> (String, String, URL) {
         let mountPath = "/document.xml"
         let fs = TextEditorFS(path: mountPath, initialContent: documentXML)
@@ -1523,6 +1503,10 @@ final class ResumeController {
         var genTokensIn = 0
         var genTokensOut = 0
         let openAICompatible: (key: String, base: String)? = {
+            // OpenRouter first — its ids are `openrouter/<vendor>/<model>`, which
+            // would also match NVIDIA's `vendor/model` rule.
+            if AIManager.shared.isOpenRouterModel(model) { return (openRouterKey, AIManager.openRouterEndpoint) }
+            if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaKey, AIManager.nvidiaEndpoint) }
             if AIManager.shared.isMoonshotModel(model) { return (moonshotKey, AIManager.moonshotEndpoint) }
             if AIManager.shared.isGrokModel(model)     { return (grokKey, AIManager.grokEndpoint) }
             if AIManager.shared.isDeepSeekModel(model) { return (deepSeekKey, AIManager.deepseekEndpoint) }
@@ -1531,11 +1515,15 @@ final class ResumeController {
         }()
         if let oc = openAICompatible {
             // OpenAI's Chat Completions wants `max_completion_tokens`; the
-            // compatible third parties (Moonshot/Grok/DeepSeek) want `max_tokens`.
+            // compatible third parties (Moonshot/Grok/DeepSeek/NVIDIA/OpenRouter)
+            // want `max_tokens`.
             let tokenField = AIManager.shared.isOpenAIModel(model)
                 ? "max_completion_tokens" : "max_tokens"
+            // OpenRouter ids carry an `openrouter/` prefix we strip before sending.
+            let modelForCall = AIManager.shared.isOpenRouterModel(model)
+                ? String(model.dropFirst(AIManager.openRouterPrefix.count)) : model
             let usage = try await AIManager.shared.sendWithToolsOpenAI(
-                initialUserMessage: userPrompt, apiKey: oc.key, model: model,
+                initialUserMessage: userPrompt, apiKey: oc.key, model: modelForCall,
                 baseURL: oc.base, tokenField: tokenField,
                 systemPrompt: systemPrompt,
                 tools: [AIManager.strReplaceEditorTool(mountPath: mountPath)],
@@ -1584,6 +1572,225 @@ final class ResumeController {
             let preview = "The edits produced invalid XML and were rejected, so your original DOCX stays intact.\n\nReason: \(detail)"
             return (preview, "- ⚠️ Edits rejected (invalid XML); original DOCX saved unchanged", passthrough)
         }
+    }
+
+    // MARK: - Chunked generation ("Fast" mode): segment, then edit per section
+
+    /// Plan-then-apply with section chunking:
+    ///  1. ONE call segments the résumé into sections (summary, skills, and one
+    ///     per employer in experience). The model sees the whole résumé once.
+    ///  2. We then edit ONE section at a time — each call carries only that
+    ///     section's paragraphs, so cost stays low AND every section (crucially
+    ///     the experience entries) gets its own dedicated pass; nothing is
+    ///     skipped because the loop is driven in code, not by the model.
+    ///  3. All edits apply together via the deterministic cross-run matcher, so
+    ///     formatting / tables are preserved.
+    private func generateViaChunked(
+        originalBytes: Data,
+        outputFilename: String?,
+        jd: String,
+        model: String,
+        apiKey: String,
+        openAIKey: String,
+        moonshotKey: String,
+        grokKey: String,
+        deepSeekKey: String,
+        nvidiaKey: String,
+        openRouterKey: String,
+        systemPrompt: String,
+        onStatus: @escaping (String) -> Void
+    ) async throws -> (String, String, URL) {
+        onStatus("Reading résumé structure…")
+        let paragraphs = try DOCXTemplateEditor.extractIndexedParagraphs(from: originalBytes)
+        guard !paragraphs.isEmpty else {
+            let pt = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            return ("Couldn't parse the DOCX. Original saved unchanged.", "", pt)
+        }
+        Self.dbg("=== CHUNKED RUN — model=\(model), paragraphs=\(paragraphs.count) ===", reset: true)
+
+        // Plain (marker-free) numbered list so the model's `old` strings are the
+        // literal run text and match cleanly.
+        func numbered(_ paras: [DOCXTemplateEditor.IndexedParagraph]) -> String {
+            paras.map { p in
+                let t = p.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(p.index). \(t.isEmpty ? "(blank)" : t)"
+            }.joined(separator: "\n")
+        }
+
+        // ── 1. Segment ────────────────────────────────────────────────
+        onStatus("Mapping résumé sections…")
+        let segPrompt = """
+        Here is a résumé as numbered paragraphs (1-based). Identify its sections.
+        Return STRICT JSON only — no prose, no markdown fences:
+        { "sections": [ { "name": "string", "start": N, "end": M, "tailor": true } ] }
+        - start/end are inclusive 1-based paragraph numbers covering the section body.
+        - Split WORK EXPERIENCE into ONE section PER employer/role, named
+          "Experience — <Employer>".
+        - tailor=true for sections worth tailoring to a job description:
+          the professional summary/profile, the skills list, and EVERY
+          experience/work entry. tailor=false for the name/contact header,
+          education, certifications, references, and pure heading/blank lines.
+        - Ranges must not overlap.
+
+        Paragraphs:
+        \(numbered(paragraphs))
+        """
+        let segRaw = try await AIManager.shared.sendMessage(
+            segPrompt,
+            apiKey: apiKey, openAIApiKey: openAIKey,
+            moonshotAPIKey: moonshotKey, grokAPIKey: grokKey, deepSeekAPIKey: deepSeekKey,
+            nvidiaAPIKey: nvidiaKey, openRouterAPIKey: openRouterKey,
+            model: model, screenshot: nil,
+            systemPrompt: "You segment résumés into sections. Output strict JSON only.",
+            maxTokens: 4096, timeoutInterval: 120, jsonMode: true)
+        Self.dbg("--- SEGMENTATION RAW ---\n\(segRaw)")
+
+        var diag: [String] = []
+        let parsedSeg = Self.decodeSegmentation(from: segRaw)
+        let sections: [ResumeSection]
+        if let parsed = parsedSeg {
+            sections = parsed.sections
+        } else {
+            // Fallback: fixed-size paragraph windows so we STILL chunk (small,
+            // truncation-safe calls) when segmentation fails — never one giant
+            // whole-résumé request.
+            diag.append("segmentation JSON did not parse — using fixed-size windows")
+            NSLog("[Chunked] segmentation raw: %@", String(segRaw.prefix(800)))
+            let window = 20
+            var built: [ResumeSection] = []
+            var start = (paragraphs.first?.index ?? 1)
+            let lastIdx = paragraphs.last?.index ?? paragraphs.count
+            while start <= lastIdx {
+                let end = min(start + window - 1, lastIdx)
+                built.append(ResumeSection(name: "Part \(built.count + 1)", start: start, end: end, tailor: true))
+                start = end + 1
+            }
+            sections = built
+        }
+        let editable = sections.filter { $0.tailor && $0.end >= $0.start }
+        diag.append("paragraphs=\(paragraphs.count), sections=\(sections.count), editable=\(editable.count)")
+
+        // ── 2. Edit each section (only its own paragraphs travel each call) ──
+        var allEdits: [DOCXTemplateEditor.IndexedEdit] = []
+        var surgicalCount = 0
+        var rewriteCount  = 0
+        var lastRaw = ""
+        for (i, sec) in editable.enumerated() {
+            let secParas = paragraphs.filter { $0.index >= sec.start && $0.index <= sec.end }
+            guard !secParas.isEmpty else {
+                diag.append("• \(sec.name): no paragraphs in range \(sec.start)–\(sec.end)")
+                continue
+            }
+            onStatus("Tailoring \(sec.name) (\(i + 1)/\(editable.count))…")
+            let editPrompt = """
+            You are tailoring ONE section of a résumé — "\(sec.name)" — to the job
+            description below. Here are that section's numbered paragraphs (use the
+            SAME numbers when referring to them):
+            \(numbered(secParas))
+
+            Return STRICT JSON only — no prose, no markdown fences:
+            { "surgical_replacements": [ {"index": N, "old": "exact text", "new": "replacement"} ],
+              "rewrites": [ {"index": N, "new_text": "full new paragraph text"} ] }
+
+            Rules:
+            - You MUST tailor this section — returning empty arrays is NOT
+              allowed. Every section can be aligned to the JD:
+                • SUMMARY: rewrite it to target this exact role and its top
+                  keywords (1–3 edits).
+                • SKILLS: weave the JD's must-have skills the candidate
+                  plausibly has into the existing skills text.
+                • EXPERIENCE: revise MOST of its bullets, not just one — surface
+                  JD keywords and outcomes in each.
+            - Reword to weave in the job description's keywords; KEEP every metric
+              and number exactly. Make the change MEANINGFUL — don't just bolt a
+              generic phrase onto the end; improve the verb and the framing so it
+              reads as written for this JD.
+            - "old" must be text copied EXACTLY from a shown paragraph. Prefer
+              surgical_replacements (focused phrase swaps) over whole rewrites.
+            - NEVER invent employers, titles, dates, degrees, or technologies not
+              already present. Keep new text plain (no markdown, no bullet glyphs).
+            - Only use indices shown above.
+
+            Job Description:
+            \(jd)
+            """
+            let raw = try await AIManager.shared.sendMessage(
+                editPrompt,
+                apiKey: apiKey, openAIApiKey: openAIKey,
+                moonshotAPIKey: moonshotKey, grokAPIKey: grokKey, deepSeekAPIKey: deepSeekKey,
+                nvidiaAPIKey: nvidiaKey, openRouterAPIKey: openRouterKey,
+                model: model, screenshot: nil,
+                systemPrompt: systemPrompt + "\n\nOutput strict JSON only, matching the requested schema.",
+                maxTokens: 8192, timeoutInterval: 180, jsonMode: true)
+            lastRaw = raw
+            Self.dbg("--- SECTION \"\(sec.name)\" (paras \(sec.start)-\(sec.end)) RAW ---\n\(raw)")
+            NSLog("[Chunked] %@ response: %@", sec.name, String(raw.prefix(400)))
+            guard let analysis = Self.decodeIndexedGapAnalysis(from: raw) else {
+                diag.append("• \(sec.name): response was not valid JSON")
+                continue
+            }
+
+            var byIdx: [Int: [(old: String, new: String)]] = [:]
+            for s in analysis.surgical_replacements ?? [] {
+                let t = s.old.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { continue }
+                byIdx[s.index, default: []].append((old: s.old, new: s.new))
+            }
+            let secSurgical = byIdx.values.reduce(0) { $0 + $1.count }
+            let secRewrites = analysis.rewrites?.count ?? 0
+            diag.append("• \(sec.name): \(secSurgical) surgical, \(secRewrites) rewrite")
+            for (idx, reps) in byIdx {
+                allEdits.append(.substringReplace(index: idx, replacements: reps))
+                surgicalCount += reps.count
+            }
+            for r in analysis.rewrites ?? [] {
+                allEdits.append(.rewrite(index: r.index, newText: r.new_text))
+                rewriteCount += 1
+            }
+        }
+
+        guard !allEdits.isEmpty else {
+            let pt = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let msg = "No edits were produced.\n\nDiagnostics:\n"
+                + diag.joined(separator: "\n")
+                + "\n\nLast model response:\n" + String(lastRaw.prefix(900))
+            return (msg, "", pt)
+        }
+
+        // ── 3. Apply everything at once (deterministic, formatting-safe) ──
+        onStatus("Applying \(surgicalCount) surgical · \(rewriteCount) rewrite edit(s)…")
+        let outcome = try DOCXTemplateEditor.applyIndexedEdits(
+            to: originalBytes, edits: allEdits, outputFilename: outputFilename)
+        Self.dbg("--- APPLY OUTCOME: surgicalApplied=\(outcome.surgicalApplied) surgicalMissed=\(outcome.surgicalMissed) rewritesApplied=\(outcome.rewritesApplied) rewritesMissed=\(outcome.rewritesMissed.count) layoutPreserved=\(outcome.layoutPreserved.count) headingsProtected=\(outcome.headingsProtected.count) ---")
+        let previewText = (try? ResumeImporter.importFile(url: outcome.url)) ?? ""
+        var changelog = "- Tailored \(editable.count) section(s): \(outcome.surgicalApplied) surgical swap(s), \(outcome.rewritesApplied) rewrite(s)"
+        if outcome.surgicalMissed > 0 {
+            changelog += " · ⚠️ \(outcome.surgicalMissed) edit(s) didn't match"
+        }
+        return (previewText, changelog, outcome.url)
+    }
+
+    /// Append-only debug dump of the chunked run's raw model responses to a
+    /// fixed temp path, so the raw JSON can be inspected without the user
+    /// transcribing it. `reset` truncates first (start of a run).
+    private static func dbg(_ s: String, reset: Bool = false) {
+        let url = URL(fileURLWithPath: "/tmp/macoverlay-resume-debug.log")
+        let data = (s + "\n\n").data(using: .utf8) ?? Data()
+        if reset {
+            try? data.write(to: url)
+        } else if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    private static func decodeSegmentation(from raw: String) -> ResumeSegmentation? {
+        var c = raw
+        for f in ["```json", "```JSON", "```"] { c = c.replacingOccurrences(of: f, with: "") }
+        guard let a = c.firstIndex(of: "{"), let b = c.lastIndex(of: "}") else { return nil }
+        guard let d = String(c[a...b]).data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ResumeSegmentation.self, from: d)
     }
 
     /// Framing message that kicks off the text_editor loop. Describes the

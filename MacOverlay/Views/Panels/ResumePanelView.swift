@@ -343,34 +343,29 @@ struct ResumePanelView: View {
         }
     }
 
-    /// Standard chip button used in the card toolbars — keeps every action
-    /// chip visually identical regardless of which icon/label it carries.
+    /// Compact icon button used in the resume toolbar.
     private func cardChipButton(systemImage: String,
                                 label: String,
                                 disabled: Bool = false,
                                 highlighted: Bool = false,
                                 action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 11, weight: .medium))
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-            }
+            Image(systemName: systemImage)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: 28)
             .foregroundColor(disabled ? Design.Ink.muted
                              : (highlighted ? Design.Ink.inverse : Design.Ink.primary))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 7)
-            .background(Capsule().fill(
+            .background(RoundedRectangle(cornerRadius: 8).fill(
                 highlighted ? Design.Ink.primary : Design.Surface.controlFill
             ))
-            .overlay(Capsule().strokeBorder(
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(
                 highlighted ? Color.white.opacity(0.22) : Design.Surface.hairline,
                 lineWidth: 0.5
             ))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
+        .accessibilityLabel(Text(label))
     }
 
     /// The active résumé's editable text body. Hidden by default once
@@ -550,17 +545,12 @@ struct ResumePanelView: View {
     /// users see how much of the weekly quota is left BEFORE hitting the
     /// cap — previously the limit only surfaced as a block after the fact.
     private var generateRow: some View {
+        // The generate() guard surfaces a clear "add your <provider> key"
+        // message for whichever model is selected, so we don't pre-disable on
+        // any single provider's key here.
         let disabled = vm.resumeJD.isEmpty || vm.currentResumeText.isEmpty
-            || vm.isGeneratingResume || vm.apiKey.isEmpty
+            || vm.isGeneratingResume
         return HStack(spacing: 10) {
-            if !vm.entitlement.isPremium {
-                let remaining = vm.quota.remainingThisWeek()
-                Text(remaining > 0
-                     ? "\(remaining) free résumé\(remaining == 1 ? "" : "s") left this week"
-                     : "Weekly free limit reached")
-                    .font(.caption2)
-                    .foregroundColor(remaining > 0 ? .secondary : .orange)
-            }
             Spacer()
             Button { vm.generateResume() } label: {
                 HStack(spacing: 6) {

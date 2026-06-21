@@ -122,6 +122,8 @@ final class AIController {
                     moonshotAPIKey: vm.moonshotAPIKey,
                     grokAPIKey:     vm.grokAPIKey,
                     deepSeekAPIKey: vm.deepSeekAPIKey,
+                    nvidiaAPIKey:   vm.nvidiaAPIKey,
+                    openRouterAPIKey: vm.openRouterAPIKey,
                     model:          vm.selectedModel,
                     screenshot:     screenshot,
                     systemPrompt:   systemPrompt,

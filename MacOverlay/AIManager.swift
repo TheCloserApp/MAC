@@ -26,6 +26,15 @@ class AIManager {
     static let moonshotEndpoint = "https://api.moonshot.ai/v1/chat/completions"
     static let grokEndpoint     = "https://api.x.ai/v1/chat/completions"
     static let deepseekEndpoint = "https://api.deepseek.com/chat/completions"
+    /// NVIDIA-hosted NIM endpoint (OpenAI-compatible). Models are namespaced
+    /// `vendor/model` (e.g. `deepseek-ai/deepseek-v4-flash`), which is how we
+    /// route to it — the slash never appears in any other provider's id.
+    static let nvidiaEndpoint   = "https://integrate.api.nvidia.com/v1/chat/completions"
+    /// OpenRouter (OpenAI-compatible). One key → any model. Catalogue ids carry
+    /// an `openrouter/` prefix so they're distinguishable from NVIDIA's
+    /// `vendor/model`; the prefix is stripped before the request.
+    static let openRouterPrefix = "openrouter/"
+    static let openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
     func isOpenAIModel(_ model: String) -> Bool {
         AIManager.openAIPrefixes.contains { model.hasPrefix($0) }
@@ -43,6 +52,14 @@ class AIManager {
         AIManager.deepseekPrefixes.contains { model.hasPrefix($0) }
     }
 
+    /// OpenRouter ids carry the explicit `openrouter/` prefix (checked BEFORE
+    /// NVIDIA, since the stripped id is itself `vendor/model`).
+    func isOpenRouterModel(_ model: String) -> Bool { model.hasPrefix(AIManager.openRouterPrefix) }
+
+    /// NVIDIA NIM models are `vendor/model` namespaced — the slash is unique to
+    /// them across our catalogue, so it doubles as the routing signal.
+    func isNVIDIAModel(_ model: String) -> Bool { model.contains("/") }
+
     func sendMessage(
         _ text: String,
         apiKey: String,
@@ -50,21 +67,37 @@ class AIManager {
         moonshotAPIKey: String = "",
         grokAPIKey: String = "",
         deepSeekAPIKey: String = "",
+        nvidiaAPIKey: String = "",
+        openRouterAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
         history: [(user: String, assistant: String)] = [],
         maxTokens: Int = 1024,
-        timeoutInterval: TimeInterval = 60
+        timeoutInterval: TimeInterval = 60,
+        // Request strict JSON output (OpenAI-compatible `response_format`).
+        // Ignored on the Anthropic path. Use for prompts that must return JSON.
+        jsonMode: Bool = false
     ) async throws -> String {
-        if isMoonshotModel(model) {
-            return try await sendOpenAI(text, apiKey: moonshotAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.moonshotEndpoint, tokenField: "max_tokens")
+        // OpenRouter first — its ids carry the explicit `openrouter/` prefix,
+        // which would otherwise match NVIDIA's `vendor/model` rule. Strip the
+        // prefix before sending the real model id.
+        if isOpenRouterModel(model) {
+            let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+            return try await sendOpenAI(text, apiKey: openRouterAPIKey, model: real, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.openRouterEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        }
+        // NVIDIA next — its `vendor/model` ids (e.g. deepseek-ai/…) would also
+        // match the plain DeepSeek prefix, so it must win over DeepSeek.
+        if isNVIDIAModel(model) {
+            return try await sendOpenAI(text, apiKey: nvidiaAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.nvidiaEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        } else if isMoonshotModel(model) {
+            return try await sendOpenAI(text, apiKey: moonshotAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.moonshotEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
         } else if isGrokModel(model) {
-            return try await sendOpenAI(text, apiKey: grokAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.grokEndpoint, tokenField: "max_tokens")
+            return try await sendOpenAI(text, apiKey: grokAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.grokEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
         } else if isDeepSeekModel(model) {
-            return try await sendOpenAI(text, apiKey: deepSeekAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.deepseekEndpoint, tokenField: "max_tokens")
+            return try await sendOpenAI(text, apiKey: deepSeekAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.deepseekEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
         } else if isOpenAIModel(model) {
-            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
+            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, jsonMode: jsonMode)
         } else {
             return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
         }
@@ -109,7 +142,7 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens") async throws -> String {
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens", jsonMode: Bool = false) async throws -> String {
         guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -135,19 +168,44 @@ class AIManager {
         // Completions — reasoning models (o1/o3/o4, GPT-5) reject the old
         // field. Moonshot's OpenAI-compatible API still expects `max_tokens`,
         // so the field name is passed in by the caller.
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "model": model, tokenField: maxTokens,
             "messages": messages
-        ])
+        ]
+        // Strict JSON output — supported by OpenAI / DeepSeek / Moonshot / Grok.
+        // Forces a parseable JSON object instead of prose/markdown-wrapped text.
+        if jsonMode { body["response_format"] = ["type": "json_object"] }
+        // DeepSeek's reasoning models spend the whole token budget on hidden
+        // `reasoning_content`, leaving `content` empty/truncated. For mechanical
+        // JSON extraction we don't want reasoning — turn it off so the JSON
+        // answer is emitted directly (and far cheaper).
+        if jsonMode, baseURL == AIManager.deepseekEndpoint {
+            body["thinking"] = ["type": "disabled"]
+        }
+        // NVIDIA-hosted reasoning models (e.g. deepseek-ai/*) gate thinking via
+        // chat_template_kwargs — turn it off for JSON extraction so `content`
+        // isn't swallowed by reasoning.
+        if jsonMode, baseURL == AIManager.nvidiaEndpoint, model.contains("deepseek") {
+            body["chat_template_kwargs"] = ["thinking": false]
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
-        guard http.statusCode == 200 else { throw AIError.apiError(http.statusCode, String(data: data, encoding: .utf8) ?? "") }
-        guard
-            let json    = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = json["choices"] as? [[String: Any]],
-            let result  = choices.first?["message"] as? [String: Any],
-            let text    = result["content"] as? String
-        else { throw AIError.parseError }
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        guard http.statusCode == 200 else { throw AIError.apiError(http.statusCode, bodyString) }
+        // Use try? so a non-JSON 200 body (gateway page, empty body, SSE, …)
+        // surfaces the actual text instead of propagating Foundation's opaque
+        // "data couldn't be read because it isn't in the correct format".
+        guard let obj = try? JSONSerialization.jsonObject(with: data),
+              let json = obj as? [String: Any] else {
+            throw AIError.apiError(http.statusCode, "Non-JSON response: \(String(bodyString.prefix(600)))")
+        }
+        guard let choices = json["choices"] as? [[String: Any]],
+              let result  = choices.first?["message"] as? [String: Any],
+              let text    = result["content"] as? String
+        else {
+            throw AIError.apiError(http.statusCode, "Unexpected response shape: \(String(bodyString.prefix(600)))")
+        }
         return text
     }
 
@@ -698,6 +756,8 @@ class AIManager {
         moonshotAPIKey: String = "",
         grokAPIKey: String = "",
         deepSeekAPIKey: String = "",
+        nvidiaAPIKey: String = "",
+        openRouterAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
@@ -706,7 +766,24 @@ class AIManager {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    if isMoonshotModel(model) {
+                    if isOpenRouterModel(model) {
+                        let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+                        try await streamOpenAI(text, apiKey: openRouterAPIKey, model: real,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.openRouterEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isNVIDIAModel(model) {
+                        try await streamOpenAI(text, apiKey: nvidiaAPIKey, model: model,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.nvidiaEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isMoonshotModel(model) {
                         try await streamOpenAI(text, apiKey: moonshotAPIKey, model: model,
                                                screenshot: screenshot, systemPrompt: systemPrompt,
                                                history: history,
