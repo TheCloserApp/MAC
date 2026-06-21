@@ -5,9 +5,9 @@ struct PreferencesView: View {
     @Environment(OverlayViewModel.self) private var vm
     @State private var tab: Tab = .general
     @State private var showNewWorkspaceSheet = false
+    @State private var isSidebarCollapsed = true
 
     enum Tab: String, CaseIterable, Identifiable {
-        case account    = "Account"
         case general    = "General"
         case panel      = "Panel"
         case profile    = "Profile"
@@ -20,7 +20,6 @@ struct PreferencesView: View {
         var id: String { rawValue }
         var icon: String {
             switch self {
-            case .account:    return "person.crop.circle.badge.checkmark"
             case .general:    return "gearshape.fill"
             case .panel:      return "rectangle.bottomthird.inset.filled"
             case .profile:    return "person.crop.circle.fill"
@@ -37,6 +36,8 @@ struct PreferencesView: View {
         /// flipping the corresponding FeatureFlag is a one-line change.
         var isVisible: Bool {
             switch self {
+            case .panel, .profile:
+                return false
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
             default:          return true
@@ -44,17 +45,13 @@ struct PreferencesView: View {
         }
     }
 
+    private var sidebarWidth: CGFloat { isSidebarCollapsed ? 52 : 124 }
+
     var body: some View {
         HStack(spacing: 0) {
             // Left tab rail.
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Preferences")
-                    .font(.system(size: 13, weight: .semibold))
-                    .tracking(-0.2)
-                    .foregroundColor(.primary)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 12)
-                    .padding(.bottom, 8)
+            VStack(alignment: isSidebarCollapsed ? .center : .leading, spacing: 0) {
+                sidebarHeader
 
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(Tab.allCases.filter(\.isVisible)) { t in
@@ -65,8 +62,9 @@ struct PreferencesView: View {
 
                 Spacer()
             }
-            .frame(width: 140)
+            .frame(width: sidebarWidth)
             .background(Color.white.opacity(0.03))
+            .animation(Design.Motion.fast, value: isSidebarCollapsed)
 
             Rectangle()
                 .fill(Color.white.opacity(0.06))
@@ -81,7 +79,6 @@ struct PreferencesView: View {
                 ScrollView {
                     Group {
                         switch tab {
-                        case .account:    accountTab
                         case .general:    generalTab
                         case .panel:      panelTab
                         case .profile:    profileTab
@@ -99,6 +96,7 @@ struct PreferencesView: View {
                     .frame(maxWidth: 520, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
+                .hiddenScrollGutter()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -108,25 +106,67 @@ struct PreferencesView: View {
         }
     }
 
-private func tabRow(_ t: Tab) -> some View {
+    private var sidebarHeader: some View {
+        HStack(spacing: 8) {
+            if !isSidebarCollapsed {
+                Text("Preferences")
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(-0.2)
+                    .foregroundColor(.primary)
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                withAnimation(Design.Motion.fast) {
+                    isSidebarCollapsed.toggle()
+                }
+            } label: {
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Design.Ink.secondary)
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Design.Surface.controlFill)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar")
+            .accessibilityLabel(Text(isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"))
+        }
+        .padding(.horizontal, isSidebarCollapsed ? 0 : 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, alignment: isSidebarCollapsed ? .center : .leading)
+    }
+
+    private func tabRow(_ t: Tab) -> some View {
         let active = tab == t
         return Button {
             withAnimation(Design.Motion.fast) { tab = t }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: isSidebarCollapsed ? 0 : 8) {
                 // Plain SF Symbol — same monochrome treatment as the bar
                 // icons. No colored tile, no dark background.
                 Image(systemName: t.icon)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(active ? .primary : .secondary)
-                    .frame(width: 20, height: 20)
+                    .frame(width: 18, height: 20)
 
-                Text(t.rawValue)
-                    .font(.system(size: 13, weight: active ? .semibold : .regular))
-                    .foregroundColor(active ? .primary : .primary.opacity(0.85))
-                Spacer()
+                if !isSidebarCollapsed {
+                    Text(t.rawValue)
+                        .font(.system(size: 13, weight: active ? .semibold : .regular))
+                        .foregroundColor(active ? .primary : .primary.opacity(0.85))
+                        .lineLimit(1)
+                    Spacer()
+                }
             }
-            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: isSidebarCollapsed ? .center : .leading)
+            .padding(.horizontal, isSidebarCollapsed ? 0 : 6)
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -135,115 +175,12 @@ private func tabRow(_ t: Tab) -> some View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(t.rawValue)
+        .accessibilityLabel(Text(t.rawValue))
     }
 
     // MARK: - Tabs
 
-    @ViewBuilder
-    private var accountTab: some View {
-        @Bindable var vm = vm
-        let user        = vm.auth.currentUser
-        let isPremium   = vm.entitlement.isPremium
-        let used        = vm.quota.generationsInWindow()
-        let total       = EntitlementStore.freeResumesPerWeek
-        let remaining   = vm.quota.remainingThisWeek()
-
-        section(title: "Identity") {
-            if let user {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: user.provider == .google
-                          ? "g.circle.fill" : "person.crop.circle")
-                        .font(.system(size: 22))
-                        .foregroundColor(.secondary)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(user.displayName)
-                            .font(.system(size: 12, weight: .semibold))
-                        if let email = user.email, !email.isEmpty {
-                            Text(email)
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
-                        }
-                        Text(user.provider == .google
-                             ? "Signed in with Google"
-                             : "Guest session (no account)")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary.opacity(0.7))
-                    }
-                    Spacer()
-                    Button("Sign out", role: .destructive) { vm.signOut() }
-                        .controlSize(.small)
-                }
-            } else {
-                Text("Not signed in.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-            }
-        }
-
-        section(title: "Plan",
-                subtitle: isPremium
-                    ? "You're on Premium — unlimited résumé generations."
-                    : "You're on the Free plan. Upgrade for unlimited résumé generations.") {
-            HStack(spacing: 10) {
-                Image(systemName: isPremium ? "sparkles" : "leaf")
-                    .font(.system(size: 18))
-                    .foregroundColor(isPremium ? .accentColor : .secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(isPremium ? "Premium" : "Free")
-                        .font(.system(size: 13, weight: .semibold))
-                    if let exp = vm.entitlement.premiumExpiresAt, isPremium {
-                        Text("Renews \(exp.formatted(date: .abbreviated, time: .omitted))")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if isPremium {
-                    Button("Cancel Premium", role: .destructive) {
-                        vm.entitlement.downgradeToFree()
-                    }
-                    .controlSize(.small)
-                } else {
-                    Button {
-                        vm.showPaywall = true
-                    } label: {
-                        Label("Upgrade", systemImage: "sparkles")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-            }
-        }
-
-        if !isPremium {
-            section(title: "Résumé usage",
-                    subtitle: "Free plan caps résumé generations at \(total) per rolling 7-day window.") {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("This week")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("\(used) / \(total) used  ·  \(remaining) left")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(remaining == 0 ? .orange : .secondary)
-                    }
-                    ProgressView(value: min(1.0, Double(used) / Double(max(1, total))))
-                        .tint(remaining == 0 ? .orange : .accentColor)
-                    if let reset = vm.quota.nextResetDate() {
-                        Text("Next slot opens \(reset.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Embeds the full PromptLibraryView inside Preferences so users can
-    /// manage their prompt presets without leaving Settings. Replaces the
-    /// hidden "Manage…" button that used to be tucked into the AI tab.
     @ViewBuilder
     private var promptsTab: some View {
         PromptLibraryView()
@@ -372,6 +309,10 @@ private func tabRow(_ t: Tab) -> some View {
             KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
             KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
             KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
+            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
+            KeyFieldView(label: "DeepSeek",   placeholder: "sk-…",        text: $vm.deepSeekAPIKey)
+            KeyFieldView(label: "NVIDIA",     placeholder: "nvapi-…",     text: $vm.nvidiaAPIKey)
+            KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
 
@@ -513,7 +454,7 @@ private func tabRow(_ t: Tab) -> some View {
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
         let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI", "Kimi"]
+        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in

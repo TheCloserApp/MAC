@@ -33,6 +33,7 @@ struct MarkdownResponseView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .foregroundStyle(Design.Ink.primary)
     }
 
     @ViewBuilder
@@ -50,7 +51,7 @@ struct MarkdownResponseView: View {
             HStack(alignment: .top, spacing: 5) {
                 Text("•")
                     .font(.system(size: baseSize))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                     .frame(width: 10, alignment: .center)
                 inlineText(text)
                     .font(.system(size: baseSize))
@@ -191,17 +192,17 @@ private struct CodeBlockView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Rectangle()
-                .fill(Color.white.opacity(0.06))
+                .fill(Design.Surface.separator)
                 .frame(height: 0.5)
             codeBody
         }
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.black.opacity(0.28))
+                .fill(Design.Surface.codeFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.5)
+                .stroke(Design.Surface.hairline, lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
@@ -210,7 +211,7 @@ private struct CodeBlockView: View {
         HStack(spacing: 4) {
             Text(language.isEmpty ? "code" : language.lowercased())
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .textCase(.uppercase)
                 .kerning(0.4)
             Spacer()
@@ -221,7 +222,7 @@ private struct CodeBlockView: View {
                     Text(copied ? "Copied" : "Copy")
                         .font(.system(size: 9, weight: .medium))
                 }
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
             }
             .buttonStyle(.plain)
         }
@@ -238,7 +239,7 @@ private struct CodeBlockView: View {
     private var codeBody: some View {
         Text(normalize(code))
             .font(.system(size: 11, design: .monospaced))
-            .foregroundColor(.primary.opacity(0.95))
+            .foregroundColor(Design.Ink.primary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)

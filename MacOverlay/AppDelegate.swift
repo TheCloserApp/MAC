@@ -93,13 +93,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let stage = self.vm?.shellStage else { return }
             self.animateShellFrame(stage: stage)
         }
-
         // The expanded panel adapts to whether a surface is open
         // (compact bar-only vs. full body). Surface changes need to
         // re-fire the same resize so the panel matches.
         vm.onPrimarySurfaceChange = { [weak self] _ in
             guard let self, let stage = self.vm?.shellStage else { return }
             self.animateShellFrame(stage: stage)
+        }
+
+        // Drag-to-resize from the trailing-edge grip inside the shell.
+        vm.onWidthResize = { [weak self] dx, ended in
+            self?.handleWidthResize(translationX: dx, ended: ended)
         }
 
         // Watch the panel's position so the shell can flip the sidebar to the
@@ -167,6 +171,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// `.expanded` with a `primarySurface` set — full shell: top header
     /// + body + InputBar. Narrow + tall ChatGPT-companion proportions.
     static let expandedSize  = NSSize(width: 440, height: 600)
+    /// `.expanded` while showing chat/interview answers. Fixed compact
+    /// height keeps streaming stable; long answers scroll inside the card
+    /// instead of resizing the native window on every token.
+    static let responseExpandedSize = NSSize(width: 440, height: 360)
 
     /// Last-known full-state size. Captured whenever the user transitions
     /// from full → mini so we can restore exactly what they had on expand,
@@ -180,7 +188,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // (360×80) leaves the content clipped out the bottom of the
         // window. Decide the initial stage + size BEFORE the panel goes
         // on screen so there's no visible resize jump.
-        let needsHeroLayout = !vm.auth.isSignedIn || vm.showOnboarding
+        let needsHeroLayout = !vm.hasCompletedOnboarding || vm.showOnboarding
         if needsHeroLayout {
             vm.shellStage = .expanded
         }
@@ -459,6 +467,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Drag-to-resize (trailing grip)
+
+    /// Frame captured at the start of a grip drag. Each `DragGesture`
+    /// translation is cumulative from the drag's start, so we apply it
+    /// against this stable base rather than compounding per-event deltas.
+    private var widthResizeBaseFrame: NSRect?
+
+    /// Live width resize driven by the SwiftUI trailing grip. The leading
+    /// (left) edge stays pinned and the width grows / shrinks to the right;
+    /// `constrainFrameRect` nudges the panel left if it would otherwise run
+    /// off the right screen edge. Records the user's width in `lastFullSize`
+    /// so pill ↔ expanded transitions restore it instead of snapping back.
+    @MainActor
+    private func handleWidthResize(translationX dx: CGFloat, ended: Bool) {
+        guard let panel = overlayPanel else { return }
+        if ended {
+            widthResizeBaseFrame = nil
+            persistPanelOrigin()
+            return
+        }
+        let base: NSRect
+        if let b = widthResizeBaseFrame {
+            base = b
+        } else {
+            base = panel.frame
+            widthResizeBaseFrame = base
+        }
+        let newW = max(panel.minSize.width, base.width + dx)
+        let frame = NSRect(x: base.origin.x, y: base.origin.y,
+                           width: newW, height: base.height)
+        panel.setFrame(frame, display: true)
+        // Read back the (possibly screen-clamped) width so the remembered
+        // size matches what's actually on screen.
+        lastFullSize.width = panel.frame.width
+    }
+
     // MARK: - Clipboard explain
 
     func explainClipboard() {
@@ -602,13 +646,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func animateShellFrame(stage: OverlayViewModel.ShellStage) {
         guard let panel = overlayPanel else { return }
         let cur = panel.frame
+        let surfaceOpen = vm.primarySurface != nil
+        let responseHugging = stage == .expanded && surfaceOpen && vm.usesResponseHuggingPanel
 
         // Capture the user's manual size whenever the panel is currently
         // wider than the pill width. Without this, any drag-resize would
         // be lost on the first pill collapse — and re-expanding would
         // snap back to the default width.
         let curIsExpandedLayout = cur.size.width >= Self.expandedCompactMinSize.width
-        if curIsExpandedLayout { lastFullSize = cur.size }
+        if curIsExpandedLayout && !responseHugging { lastFullSize = cur.size }
 
         let preservedWidth: CGFloat
         if stage == .pill {
@@ -619,17 +665,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             preservedWidth = lastFullSize.width
         }
 
-        let surfaceOpen = vm.primarySurface != nil
         let target: NSSize
         switch stage {
         case .pill:
             target = vm.hasPillPopup ? Self.pillWithPopupSize : Self.collapsedSize
         case .expanded:
             if surfaceOpen {
-                target = NSSize(
-                    width:  preservedWidth,
-                    height: max(lastFullSize.height, Self.expandedSize.height)
-                )
+                if responseHugging {
+                    target = NSSize(width: preservedWidth, height: Self.responseExpandedSize.height)
+                } else {
+                    target = NSSize(
+                        width:  preservedWidth,
+                        height: max(lastFullSize.height, Self.expandedSize.height)
+                    )
+                }
             } else {
                 target = NSSize(width: preservedWidth, height: Self.expandedCompactSize.height)
             }
@@ -638,19 +687,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let minForStage: NSSize
         switch stage {
         case .pill:     minForStage = Self.pillMinSize
-        case .expanded: minForStage = surfaceOpen ? Self.expandedMinSize : Self.expandedCompactMinSize
+        case .expanded:
+            if responseHugging {
+                minForStage = Self.expandedCompactMinSize
+            } else {
+                minForStage = surfaceOpen ? Self.expandedMinSize : Self.expandedCompactMinSize
+            }
         }
         panel.minSize = minForStage
 
-        // Always bottom-anchor. The bar lives at the bottom of every
-        // non-pill stage, and the pill itself is the same physical
-        // affordance — so keeping the panel's bottom edge fixed means
-        // the brand icon stays in the same vertical spot whether you
-        // expand the shell or collapse it back down. The previous
-        // top-anchor for `.pill` made the icon visibly jump up to the
-        // top edge of where the expanded panel used to be.
+        // Response-sized panels are fixed-height and top-anchored: the
+        // answer card's top edge stays visually locked, and streamed text
+        // scrolls inside the card instead of resizing the native window.
+        // The rest of the shell keeps the original bottom anchor so the
+        // compact bar/pill still expands from its resting affordance.
         let newX = cur.origin.x
-        let newY: CGFloat = cur.origin.y
+        let newY: CGFloat = responseHugging
+            ? cur.maxY - target.height
+            : cur.origin.y
+        if abs(cur.width - target.width) < 1,
+           abs(cur.height - target.height) < 1,
+           abs(cur.origin.y - newY) < 1 {
+            return
+        }
 
         // Drive the panel resize through NSAnimationContext so the
         // duration / curve match the SwiftUI spring inside the panel.

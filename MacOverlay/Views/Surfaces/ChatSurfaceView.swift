@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import AVFoundation
 import UniformTypeIdentifiers
 
 /// Default primary surface. Shows the active session as chat bubbles with
@@ -35,10 +34,10 @@ struct ChatSurfaceView: View {
 
     private var dropOverlay: some View {
         RoundedRectangle(cornerRadius: Design.Radius.lg)
-            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
+            .stroke(Design.Accent.chatGPT, style: StrokeStyle(lineWidth: 2, dash: [6]))
             .background(
                 RoundedRectangle(cornerRadius: Design.Radius.lg)
-                    .fill(Color.accentColor.opacity(0.08))
+                    .fill(Design.Accent.chatGPT.opacity(0.08))
             )
             .overlay {
                 VStack(spacing: Design.Space.sm) {
@@ -48,9 +47,9 @@ struct ChatSurfaceView: View {
                         .font(Design.Font.title)
                     Text("PDF · DOCX · RTF · TXT · MD · image")
                         .font(Design.Font.small)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                 }
-                .foregroundColor(.accentColor)
+                .foregroundColor(Design.Accent.chatGPT)
             }
             .padding(Design.Space.sm)
             .allowsHitTesting(false)
@@ -193,17 +192,18 @@ struct ChatSurfaceView: View {
     }
 
     /// Focused live-interview layout: one Q&A at a time, with ‹ › arrows
-    /// to flip through earlier questions. While generating it shows ONLY
-    /// the typing indicator — the full answer lands in one paint when the
-    /// stream completes. Rendering the text token-by-token re-measured
-    /// and re-laid-out the card ~30×/sec, which SwiftUI eventually
-    /// throttled — the "stuck after two lines, then laggy" symptom.
+    /// to flip through earlier questions. While generating, streamed text
+    /// renders directly; the animated loading row is intentionally omitted
+    /// in this compact view so the answer stays calm once it starts moving.
     private func liveFocusView(session: ChatSession) -> some View {
         let pairs   = qaPairs(in: session)
         let clamped = pairs.isEmpty ? 0 : min(focusPairOffset, pairs.count - 1)
         let pair    = pairs.isEmpty ? nil : pairs[pairs.count - 1 - clamped]
         let isLatest = clamped == 0
-        let streaming = vm.isSendingToAI && isLatest
+        // Per-answer streaming state: a non-latest pair can still be
+        // generating (answers now run concurrently), so key off the turn,
+        // not the global flag.
+        let streaming = (pair?.answer?.id).map { vm.isStreaming(turnID: $0) } ?? false
 
         return VStack(alignment: .leading, spacing: 0) {
             if let pair {
@@ -211,7 +211,8 @@ struct ChatSurfaceView: View {
                             position: pairs.count - clamped,
                             total: pairs.count,
                             offset: clamped,
-                            maxOffset: pairs.count - 1)
+                            maxOffset: pairs.count - 1,
+                            streamingTurnID: streaming ? pair.answer?.id : nil)
                 Divider().opacity(0.25)
 
                 if streaming {
@@ -221,7 +222,7 @@ struct ChatSurfaceView: View {
                 } else {
                     Text("No answer for this question.")
                         .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 12)
                 }
@@ -237,33 +238,39 @@ struct ChatSurfaceView: View {
     /// Question line + ‹ › pair navigation. Arrows only appear once
     /// there's more than one exchange.
     private func focusHeader(pair: QAPair, position: Int, total: Int,
-                             offset: Int, maxOffset: Int) -> some View {
+                             offset: Int, maxOffset: Int,
+                             streamingTurnID: UUID?) -> some View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: "questionmark.bubble")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(Design.Accent.blue)
+                .foregroundColor(Design.Ink.secondary)
                 .padding(.top, 2)
             Text(pair.question.content)
                 .font(.system(size: 11.5, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .lineLimit(2)
                 .textSelection(.enabled)
             Spacer(minLength: 6)
-            if total > 1 {
+            if total > 1 || streamingTurnID != nil {
                 HStack(spacing: 3) {
-                    focusArrow(icon: "chevron.left",
-                               enabled: offset < maxOffset,
-                               help: "Previous question") {
-                        focusPairOffset = min(offset + 1, maxOffset)
+                    if total > 1 {
+                        focusArrow(icon: "chevron.left",
+                                   enabled: offset < maxOffset,
+                                   help: "Previous question") {
+                            focusPairOffset = min(offset + 1, maxOffset)
+                        }
+                        Text("\(position)/\(total)")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Design.Ink.tertiary)
+                            .monospacedDigit()
+                        focusArrow(icon: "chevron.right",
+                                   enabled: offset > 0,
+                                   help: "Next question") {
+                            focusPairOffset = max(offset - 1, 0)
+                        }
                     }
-                    Text("\(position)/\(total)")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                    focusArrow(icon: "chevron.right",
-                               enabled: offset > 0,
-                               help: "Next question") {
-                        focusPairOffset = max(offset - 1, 0)
+                    if let streamingTurnID {
+                        focusHeaderStopButton(turnID: streamingTurnID)
                     }
                 }
             }
@@ -278,13 +285,27 @@ struct ChatSurfaceView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .bold))
-                .foregroundColor(enabled ? .secondary : .secondary.opacity(0.3))
+                .foregroundColor(enabled ? Design.Ink.secondary : Design.Ink.muted)
                 .frame(width: 18, height: 18)
-                .background(Circle().fill(Color.white.opacity(enabled ? 0.06 : 0.02)))
+                .background(Circle().fill(enabled ? Design.Surface.controlFill : Design.Surface.shellFill))
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
         .help(help)
+    }
+
+    private func focusHeaderStopButton(turnID: UUID) -> some View {
+        Button {
+            vm.cancelStream(turnID: turnID)
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(Design.Accent.red)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Design.Accent.red.opacity(0.14)))
+        }
+        .buttonStyle(.plain)
+        .help("Stop generating")
     }
 
     /// The answer while it streams. The user is mid-interview — they need
@@ -298,24 +319,17 @@ struct ChatSurfaceView: View {
     /// focus card lag came from re-measuring the card per token, not from
     /// laying out the text.
     private func streamingAnswer(_ turn: ChatTurn?) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                TypingIndicatorView()
-                focusChip(icon: "stop.fill", label: "Stop",
-                          help: "Stop generating") {
-                    vm.cancelStreaming()
-                }
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: 0) {
             if let turn, !turn.content.isEmpty {
                 MarkdownResponseView(text: turn.content, baseSize: 13.5)
+            } else {
+                StreamingPlaceholderRow()
             }
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
-        // Hug the partial text and grow with it — start as a small card
-        // (just the typing indicator) and expand line by line as tokens
-        // land, rather than slamming open at full height immediately.
+        // Hug the partial text and grow with it line by line as tokens
+        // land, without a separate animated loading row.
         // `fixedSize` hugs WITHOUT the GeometryReader/preference feedback
         // loop that made the old token-by-token focus card lag; the cap +
         // clip keep a very long partial from overflowing the panel.
@@ -341,6 +355,7 @@ struct ChatSurfaceView: View {
                 Color.clear.preference(key: FocusHeightKey.self, value: g.size.height)
             })
         }
+        .hiddenScrollGutter()
         .onPreferenceChange(FocusHeightKey.self) { focusContentHeight = $0 }
         .frame(height: min(max(focusContentHeight, 56), Self.focusMaxHeight),
                alignment: .top)
@@ -367,7 +382,7 @@ struct ChatSurfaceView: View {
                 // one switches the default AND regenerates immediately.
                 Menu {
                     let visibility = ModelVisibility.shared
-                    ForEach(["Anthropic", "OpenAI", "Kimi"], id: \.self) { provider in
+                    ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"], id: \.self) { provider in
                         let models = OverlayViewModel.availableModels
                             .filter { $0.provider == provider && visibility.isVisible($0.id) }
                         if !models.isEmpty {
@@ -397,11 +412,11 @@ struct ChatSurfaceView: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 7, weight: .bold))
                     }
-                    .foregroundColor(.secondary)
+                    .foregroundColor(Design.Ink.secondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.white.opacity(0.06)))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                    .background(Capsule().fill(Design.Surface.controlFill))
+                    .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -428,11 +443,11 @@ struct ChatSurfaceView: View {
                 Text(label)
                     .font(.system(size: 10, weight: .semibold))
             }
-            .foregroundColor(.secondary)
+            .foregroundColor(Design.Ink.secondary)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(0.06)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            .background(Capsule().fill(Design.Surface.controlFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help(help)
@@ -442,13 +457,13 @@ struct ChatSurfaceView: View {
         VStack(spacing: 6) {
             Image(systemName: "waveform.and.mic")
                 .font(.system(size: 22, weight: .light))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Design.Ink.tertiary)
             Text("Waiting for the first question")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
             Text("The answer appears here the moment the interviewer finishes asking.")
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
@@ -473,13 +488,7 @@ struct ChatSurfaceView: View {
     // MARK: - Live transcript
 
     private var liveTranscriptStrip: some View {
-        HStack(alignment: .top, spacing: Design.Space.md) {
-            Image(systemName: "waveform")
-                .font(.system(size: 11))
-                .foregroundColor(vm.isInterviewSession ? .green : .red)
-                .symbolEffect(.variableColor.iterative, options: .repeating)
-                .padding(.top, 2)
-
+        HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     // Inline timer sits flush against the transcription
@@ -495,8 +504,8 @@ struct ChatSurfaceView: View {
                     Text(placeholderOrTranscription)
                         .font(Design.Font.body)
                         .foregroundStyle(vm.transcription.isEmpty
-                                         ? AnyShapeStyle(.tertiary)
-                                         : AnyShapeStyle(.primary))
+                                         ? AnyShapeStyle(Design.Ink.tertiary)
+                                         : AnyShapeStyle(Design.Ink.primary))
                         .lineLimit(vm.isInterviewSession ? 1 : 4)
                         .truncationMode(vm.isInterviewSession ? .head : .tail)
                         .fixedSize(horizontal: false, vertical: true)
@@ -512,25 +521,14 @@ struct ChatSurfaceView: View {
                     }
                 }
 
-                if vm.isSendingToAI {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 8))
-                        Text(vm.transcription.isEmpty
-                             ? "Mic still on — keep speaking and it'll transcribe in the background."
-                             : "Queued — sends automatically when this answer finishes.")
-                            .font(Design.Font.micro)
-                    }
-                    .foregroundColor(.secondary)
-                }
             }
         }
         .padding(.horizontal, Design.Space.lg)
         .padding(.vertical, Design.Space.md)
         .background(
             (vm.isRecording || vm.isInterviewSession)
-                ? Color.red.opacity(0.03)
-                : Color.primary.opacity(0.03)
+                ? Design.Surface.previewFill.opacity(0.65)
+                : Design.Surface.previewFill.opacity(0.45)
         )
     }
 
@@ -544,10 +542,10 @@ struct ChatSurfaceView: View {
                   ? "list.bullet"
                   : "rectangle.compress.vertical")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.06)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help(vm.interviewFocusMode
@@ -563,10 +561,10 @@ struct ChatSurfaceView: View {
         } label: {
             Image(systemName: "eye.slash")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.white.opacity(0.06)))
-                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help("Hide the transcript — bring it back from the ⋯ menu")
@@ -580,10 +578,10 @@ struct ChatSurfaceView: View {
             Text(vm.transcriptionBackend.rawValue)
                 .font(.system(size: 9, weight: .semibold))
         }
-        .foregroundColor(isEleven ? .accentColor : .secondary)
+        .foregroundColor(isEleven ? Design.Accent.chatGPT : Design.Ink.secondary)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background((isEleven ? Color.accentColor : Color.secondary).opacity(0.12))
+        .background((isEleven ? Design.Accent.chatGPT : Design.Ink.secondary).opacity(0.12))
         .clipShape(Capsule())
         .help(isEleven
               ? "Using ElevenLabs scribe for live transcription."
@@ -613,16 +611,16 @@ struct ChatSurfaceView: View {
         VStack(spacing: Design.Space.xs) {
             Image(systemName: "sparkles")
                 .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.linearGradient(colors: [.accentColor, .purple],
-                                                 startPoint: .top, endPoint: .bottom))
+                .foregroundStyle(Design.Ink.secondary)
                 .symbolEffect(.variableColor.iterative, options: .repeating)
                 .padding(.bottom, 2)
 
             Text(modeHeadline)
                 .font(Design.Font.hero)
+                .foregroundColor(Design.Ink.primary)
             Text(modeSubtitle)
                 .font(Design.Font.small)
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -647,23 +645,23 @@ struct ChatSurfaceView: View {
             HStack(alignment: .top, spacing: Design.Space.md) {
                 Image(systemName: "arrow.up.forward.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(Design.Ink.secondary)
                     .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(Design.Font.bodyBold).foregroundColor(.primary)
-                    Text(subtitle).font(Design.Font.small).foregroundColor(.secondary)
+                    Text(title).font(Design.Font.bodyBold).foregroundColor(Design.Ink.primary)
+                    Text(subtitle).font(Design.Font.small).foregroundColor(Design.Ink.secondary)
                         .lineLimit(1)
                 }
                 Spacer()
             }
             .padding(.horizontal, Design.Space.md)
             .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.05))
+            .background(Design.Surface.controlFill)
             .clipShape(RoundedRectangle(cornerRadius: Design.Radius.md))
             .overlay(
                 RoundedRectangle(cornerRadius: Design.Radius.md)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+                    .stroke(Design.Surface.hairline, lineWidth: 0.5)
             )
             .contentShape(Rectangle())
         }
@@ -750,8 +748,7 @@ struct ChatSurfaceView: View {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     ForEach(session.turns) { turn in
                         TurnBubble(turn: turn,
-                                   canRetry: turn.id == session.turns.last?.id
-                                             && vm.canRetryLastResponse,
+                                   isStreaming: vm.isStreaming(turnID: turn.id),
                                    onRetry: { vm.retryLastResponse() })
                             .id(turn.id)
                     }
@@ -767,6 +764,7 @@ struct ChatSurfaceView: View {
                 .padding(.horizontal, 22)
                 .padding(.vertical, 18)
             }
+            .hiddenScrollGutter()
             .onChange(of: session.turns.count) { _, _ in
                 proxy.scrollTo("bottom-anchor", anchor: .bottom)
             }
@@ -777,20 +775,14 @@ struct ChatSurfaceView: View {
             .onChange(of: (session.turns.last?.content.count ?? 0) / 32) { _, _ in
                 proxy.scrollTo("bottom-anchor", anchor: .bottom)
             }
-            // Floating controls while a reply streams: Stop was previously
-            // only reachable in the input bar's mic slot, invisible when
-            // scrolled mid-conversation; ↓ snaps back to the live tail.
+            // Floating control while a reply streams: ↓ snaps back to the
+            // live tail. Stop lives in the compact bar/header so the answer
+            // area stays quiet while text is moving.
             .overlay(alignment: .bottomTrailing) {
                 if vm.isSendingToAI {
-                    HStack(spacing: 6) {
-                        streamChipButton(icon: "stop.fill", label: "Stop",
-                                         help: "Stop generating") {
-                            vm.cancelStreaming()
-                        }
-                        streamChipButton(icon: "arrow.down", label: nil,
-                                         help: "Jump to latest") {
-                            proxy.scrollTo("bottom-anchor", anchor: .bottom)
-                        }
+                    streamChipButton(icon: "arrow.down", label: nil,
+                                     help: "Jump to latest") {
+                        proxy.scrollTo("bottom-anchor", anchor: .bottom)
                     }
                     .padding(10)
                     .transition(.opacity)
@@ -810,11 +802,11 @@ struct ChatSurfaceView: View {
                     Text(label).font(.system(size: 10, weight: .semibold))
                 }
             }
-            .foregroundColor(.primary.opacity(0.85))
+            .foregroundColor(Design.Ink.primary)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .background(Capsule().fill(Color.black.opacity(0.55)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+            .background(Capsule().fill(Design.Surface.raisedFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help(help)
@@ -856,11 +848,11 @@ struct ChatSurfaceView: View {
                     Text(label)
                         .font(.system(size: 12, weight: .semibold))
                 }
-                .foregroundColor(.white)
+                .foregroundColor(Design.Ink.inverse)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(Capsule().fill(Design.Accent.blue))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 0.5))
+                .background(Capsule().fill(Design.Ink.primary))
+                .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
             .help("Reopen the call controls in the bar — the mic stays off until you hit play.")
@@ -874,13 +866,9 @@ struct ChatSurfaceView: View {
 
 private struct TurnBubble: View {
     let turn: ChatTurn
-    var canRetry: Bool = false
+    var isStreaming = false
     var onRetry: () -> Void = {}
     @State private var copied = false
-    @State private var isSpeaking = false
-    @State private var feedback: Feedback = .none
-
-    private enum Feedback { case none, up, down }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -905,18 +893,18 @@ private struct TurnBubble: View {
             if !turn.content.isEmpty {
                 Text(turn.content)
                     .font(Design.Font.body)
-                    .foregroundColor(.primary)
+                    .foregroundColor(Design.Ink.primary)
                     .textSelection(.enabled)
                     .multilineTextAlignment(.leading)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
                     .background(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color.white.opacity(0.07))
+                            .fill(Design.Surface.userBubbleFill)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+                            .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
                     )
             }
         }
@@ -928,8 +916,9 @@ private struct TurnBubble: View {
     private var assistantContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             if turn.content.isEmpty {
-                TypingIndicatorView()
-                    .padding(.vertical, 4)
+                if isStreaming {
+                    StreamingPlaceholderRow()
+                }
             } else {
                 MarkdownResponseView(text: turn.content)
                 actionRow
@@ -942,35 +931,10 @@ private struct TurnBubble: View {
             actionButton(copied ? "checkmark" : "square.on.square",
                          help: copied ? "Copied" : "Copy",
                          active: copied) { copy() }
-            actionButton(isSpeaking ? "speaker.wave.2.fill" : "speaker.wave.2",
-                         help: "Read aloud",
-                         active: isSpeaking) { toggleSpeak() }
-            actionButton(feedback == .up ? "hand.thumbsup.fill" : "hand.thumbsup",
-                         help: "Good response",
-                         active: feedback == .up) {
-                feedback = feedback == .up ? .none : .up
-            }
-            actionButton(feedback == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown",
-                         help: "Bad response",
-                         active: feedback == .down) {
-                feedback = feedback == .down ? .none : .down
-            }
             actionButton("arrow.clockwise", help: "Regenerate") { onRetry() }
-            Text(Self.timeFormatter.string(from: turn.timestamp))
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 4)
         }
         .animation(Design.Motion.fast, value: copied)
-        .animation(Design.Motion.fast, value: isSpeaking)
-        .animation(Design.Motion.fast, value: feedback)
     }
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
-        return f
-    }()
 
     /// One icon in the assistant action row. Hover brightens; `active`
     /// paints it in the primary tint (e.g. while reading aloud).
@@ -981,25 +945,13 @@ private struct TurnBubble: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .regular))
-                .foregroundColor(active ? .primary : .secondary)
+                .foregroundColor(active ? Design.Ink.primary : Design.Ink.secondary)
                 .frame(width: 26, height: 26)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .hoverHighlight(Color.white.opacity(0.06))
+        .hoverHighlight(Design.Surface.controlHoverFill)
         .help(help)
-    }
-
-    private func toggleSpeak() {
-        if isSpeaking {
-            SpeechReader.shared.stop()
-            isSpeaking = false
-        } else {
-            isSpeaking = true
-            SpeechReader.shared.speak(turn.content) {
-                isSpeaking = false
-            }
-        }
     }
 
     private func copy() {
@@ -1009,6 +961,20 @@ private struct TurnBubble: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
             withAnimation(Design.Motion.fast) { copied = false }
         }
+    }
+}
+
+private struct StreamingPlaceholderRow: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.72)
+            Text("Thinking...")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundColor(Design.Ink.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1042,57 +1008,14 @@ private struct FocusCopyButton: View {
                 Text(copied ? "Copied" : "Copy")
                     .font(.system(size: 10, weight: .semibold))
             }
-            .foregroundColor(.secondary)
+            .foregroundColor(Design.Ink.secondary)
             .padding(.horizontal, 9)
             .padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(0.06)))
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+            .background(Capsule().fill(Design.Surface.controlFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
         .help("Copy answer")
-    }
-}
-
-// MARK: - Read-aloud
-
-/// Thin wrapper around `AVSpeechSynthesizer` so any assistant bubble can
-/// speak its text. Single shared instance — starting a new utterance stops
-/// whatever was playing. The `onFinish` callback lets the calling bubble
-/// reset its speaker icon when playback ends or is cancelled.
-final class SpeechReader: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
-    static let shared = SpeechReader()
-
-    // Synth + callback are only ever touched from the main thread (button
-    // taps + AVSpeechSynthesizer's main-queue delegate callbacks), so the
-    // non-Sendable synth is safe behind @unchecked Sendable.
-    private let synth = AVSpeechSynthesizer()
-    private var onFinish: (() -> Void)?
-
-    override init() {
-        super.init()
-        synth.delegate = self
-    }
-
-    func speak(_ text: String, onFinish: @escaping () -> Void) {
-        // Clear the previous callback before cancelling so the incoming
-        // utterance's didCancel doesn't fire the new bubble's reset.
-        self.onFinish = nil
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
-        self.onFinish = onFinish
-        let utterance = AVSpeechUtterance(string: text)
-        synth.speak(utterance)
-    }
-
-    func stop() {
-        onFinish = nil
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
-    }
-
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
-                           didFinish utterance: AVSpeechUtterance) {
-        let cb = onFinish
-        onFinish = nil
-        cb?()
     }
 }
 
@@ -1112,10 +1035,10 @@ struct FlowAttachmentRow: View {
                 HStack(spacing: 5) {
                     Image(systemName: iconFor(name))
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(Design.Ink.secondary)
                     Text(name)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.primary.opacity(0.85))
+                        .foregroundColor(Design.Ink.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -1123,11 +1046,11 @@ struct FlowAttachmentRow: View {
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
+                        .fill(Design.Surface.controlFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                        .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
                 )
             }
             if alignment == .leading { Spacer(minLength: 0) }
@@ -1161,16 +1084,16 @@ private struct LiveSessionTimer: View {
         let paused = vm.isInterviewPaused
         return HStack(spacing: 4) {
             Circle()
-                .fill(paused ? Color.secondary : Color.red)
+                .fill(paused ? Design.Ink.secondary : Design.Accent.red)
                 .frame(width: 5, height: 5)
                 .opacity(0.9)
             Text(formatted)
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                .foregroundColor(.secondary)
+                .foregroundColor(Design.Ink.secondary)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background((paused ? Color.secondary : Color.red).opacity(0.10))
+        .background((paused ? Design.Ink.secondary : Design.Accent.red).opacity(0.10))
         .clipShape(Capsule())
         .onReceive(ticker) { d in tick = d }
     }
@@ -1189,4 +1112,3 @@ private struct LiveSessionTimer: View {
             : String(format: "%02d:%02d", m, s)
     }
 }
-

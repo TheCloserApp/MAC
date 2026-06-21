@@ -96,6 +96,7 @@ struct HistoryPanelView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                 }
+                .hiddenScrollGutter()
             }
         }
     }

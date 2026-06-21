@@ -193,6 +193,16 @@ private struct IndexedRowAdditionDTO: Decodable {
     let cells: [String]
 }
 
+/// One section of a résumé, located by 1-based paragraph index range, as
+/// returned by the segmentation call in chunked ("Fast") mode.
+private struct ResumeSection: Decodable {
+    let name: String
+    let start: Int
+    let end: Int
+    let tailor: Bool
+}
+private struct ResumeSegmentation: Decodable { let sections: [ResumeSection] }
+
 /// Owns resume generation + ATS scoring + DOCX export. The VM still holds the
 /// per-run state (resumeJD, resumeOutput, resumeScore, etc.) but all logic to
 /// drive it lives here.
@@ -312,17 +322,23 @@ final class ResumeController {
         let basePreset = vm.resumeStore.activePreset
         guard !vm.resumeJD.isEmpty,
               !base.isEmpty,
-              !vm.apiKey.isEmpty,
               let preset = basePreset else { return }
 
-        // Free-tier quota gate. Premium users skip; free users hit the cap
-        // after `EntitlementStore.freeResumesPerWeek` in any rolling 7-day
-        // window. Surface the reason + open the paywall so the user has a
-        // clear next step instead of a silent no-op.
-        let isPremium = vm.entitlement.isPremium
-        if let reason = vm.quota.blockReason(isPremium: isPremium) {
-            vm.statusMessage   = reason
-            vm.showPaywall     = true
+        // The generation model's provider key must be present. (Scoring uses
+        // Claude Haiku and degrades to "no score" if the Anthropic key is
+        // absent, so a GPT/Kimi-only user can still tailor without a Claude key.)
+        let genModelID = vm.resumeGenerationModel.rawValue
+        let (genKey, genProvider): (String, String) = {
+            if AIManager.shared.isOpenRouterModel(genModelID) { return (vm.openRouterAPIKey, "OpenRouter") }
+            if AIManager.shared.isNVIDIAModel(genModelID)   { return (vm.nvidiaAPIKey, "NVIDIA") }
+            if AIManager.shared.isMoonshotModel(genModelID) { return (vm.moonshotAPIKey, "Moonshot / Kimi") }
+            if AIManager.shared.isGrokModel(genModelID)     { return (vm.grokAPIKey, "xAI / Grok") }
+            if AIManager.shared.isDeepSeekModel(genModelID) { return (vm.deepSeekAPIKey, "DeepSeek") }
+            if AIManager.shared.isOpenAIModel(genModelID)   { return (vm.openAIApiKey, "OpenAI") }
+            return (vm.apiKey, "Anthropic")
+        }()
+        guard !genKey.isEmpty else {
+            vm.statusMessage = "Add your \(genProvider) API key in Settings to generate with \(vm.resumeGenerationModel.displayName)."
             return
         }
 
@@ -343,6 +359,11 @@ final class ResumeController {
 
         let apiKeyCopy = vm.apiKey
         let openAIKeyCopy = vm.openAIApiKey
+        let moonshotKeyCopy = vm.moonshotAPIKey
+        let grokKeyCopy = vm.grokAPIKey
+        let deepSeekKeyCopy = vm.deepSeekAPIKey
+        let nvidiaKeyCopy = vm.nvidiaAPIKey
+        let openRouterKeyCopy = vm.openRouterAPIKey
 
         let scoringSystemPrompt = vm.resumeScoringPromptResolved
         let generationSystemPrompt = vm.resumeGenerationPromptResolved
@@ -393,48 +414,26 @@ final class ResumeController {
                 let result: String
                 let changelog: String
                 let url: URL
-                // Fast mode pre-computes its own post-score because the
-                // refinement loop has to score after every pass to decide
-                // whether to keep going. Everyone else uses the post-score
-                // block below.
-                var fastModePostScore: ResumeScore? = nil
-                var fastModeScoredAlready = false
                 if let originalBytes = preset.originalDOCX,
                    !base.isEmpty {
                     switch mode {
                     case .fast:
-                        let outcome = try await self.runFastModeWithRefinement(
+                        // Plan-then-apply, section by section: segment the
+                        // résumé once, then edit ONE section at a time so the
+                        // experience section always gets its own pass and each
+                        // request only carries that section (not the whole doc).
+                        let (r, c, u) = try await self.generateViaChunked(
                             originalBytes: originalBytes,
                             outputFilename: preset.originalFilename,
-                            baseText: base,
                             jd: jd,
                             model: generationModel,
                             apiKey: apiKeyCopy,
                             openAIKey: openAIKeyCopy,
-                            generationSystemPrompt: generationSystemPrompt,
-                            scoringSystemPrompt: scoringSystemPrompt,
-                            preScore: capturedPreScore,
-                            skipScoring: skipScoring,
-                            onStatus: status
-                        )
-                        result = outcome.result
-                        changelog = outcome.changelog
-                        url = outcome.url
-                        fastModePostScore = outcome.postScore
-                        fastModeScoredAlready = !skipScoring
-                    case .hybrid:
-                        guard let xml = try? DOCXTemplateEditor.extractDocumentXML(from: originalBytes),
-                              !xml.isEmpty else {
-                            throw DOCXTemplateEditor.DOCXError.missingDocumentXML
-                        }
-                        let (r, c, u) = try await self.generateViaHybrid(
-                            documentXML: xml,
-                            originalBytes: originalBytes,
-                            outputFilename: preset.originalFilename,
-                            resumeText: base,
-                            jd: jd,
-                            apiKey: apiKeyCopy,
-                            openAIKey: openAIKeyCopy,
+                            moonshotKey: moonshotKeyCopy,
+                            grokKey: grokKeyCopy,
+                            deepSeekKey: deepSeekKeyCopy,
+                            nvidiaKey: nvidiaKeyCopy,
+                            openRouterKey: openRouterKeyCopy,
                             systemPrompt: generationSystemPrompt,
                             onStatus: status
                         )
@@ -452,6 +451,11 @@ final class ResumeController {
                             model: generationModel,
                             apiKey: apiKeyCopy,
                             openAIKey: openAIKeyCopy,
+                            moonshotKey: moonshotKeyCopy,
+                            grokKey: grokKeyCopy,
+                            deepSeekKey: deepSeekKeyCopy,
+                            nvidiaKey: nvidiaKeyCopy,
+                            openRouterKey: openRouterKeyCopy,
                             systemPrompt: generationSystemPrompt
                         )
                         result = r; changelog = c; url = u
@@ -461,12 +465,17 @@ final class ResumeController {
                     let plainPrompt = Self.generationPrompt(jd: jd, base: base)
                     result = try await AIManager.shared.sendMessage(
                         plainPrompt,
-                        apiKey:       apiKeyCopy,
-                        openAIApiKey: openAIKeyCopy,
-                        model:        generationModel,
-                        screenshot:   nil,
-                        systemPrompt: generationSystemPrompt,
-                        maxTokens:    8192,
+                        apiKey:        apiKeyCopy,
+                        openAIApiKey:  openAIKeyCopy,
+                        moonshotAPIKey: moonshotKeyCopy,
+                        grokAPIKey:    grokKeyCopy,
+                        deepSeekAPIKey: deepSeekKeyCopy,
+                        nvidiaAPIKey:  nvidiaKeyCopy,
+                        openRouterAPIKey: openRouterKeyCopy,
+                        model:         generationModel,
+                        screenshot:    nil,
+                        systemPrompt:  generationSystemPrompt,
+                        maxTokens:     8192,
                         timeoutInterval: 300
                     )
                     changelog = ""
@@ -476,24 +485,13 @@ final class ResumeController {
                 vm?.resumeOutput  = previewText
                 vm?.resumeFileURL = url
 
-                // Quota tick. Recorded only once per successful generation —
-                // not on the no-edits / passthrough paths above (those write
-                // the original DOCX unchanged so they're not "real" runs).
-                if let vm {
-                    vm.quota.recordGeneration(isPremium: vm.entitlement.isPremium)
-                }
-
-                // 3. Post-score — optional. Fast mode scores inside its
-                //    refinement loop so we just reuse what came back from
-                //    there. Other modes score here against the final text;
-                //    the passthrough guard keeps us from scoring the
+                // 3. Post-score — optional. Scored here against the final
+                //    text; the passthrough guard keeps us from scoring the
                 //    "No changes suggested." placeholder instead of the
                 //    actual unchanged résumé.
                 let postScore: ResumeScore?
                 if skipScoring {
                     postScore = nil
-                } else if fastModeScoredAlready {
-                    postScore = fastModePostScore
                 } else if Self.isUnchangedPassthrough(result) {
                     postScore = capturedPreScore
                 } else {
@@ -662,6 +660,9 @@ final class ResumeController {
         model: String,
         apiKey: String,
         openAIKey: String,
+        moonshotKey: String,
+        grokKey: String,
+        deepSeekKey: String,
         generationSystemPrompt: String,
         scoringSystemPrompt: String,
         preScore: ResumeScore?,
@@ -689,6 +690,9 @@ final class ResumeController {
                 model: model,
                 apiKey: apiKey,
                 openAIKey: openAIKey,
+                moonshotKey: moonshotKey,
+                grokKey: grokKey,
+                deepSeekKey: deepSeekKey,
                 systemPrompt: generationSystemPrompt,
                 onStatus: onStatus,
                 priorScore: pass > 1 ? lastScoreForPrompt : nil,
@@ -755,6 +759,9 @@ final class ResumeController {
                                      model: String,
                                      apiKey: String,
                                      openAIKey: String,
+                                     moonshotKey: String,
+                                     grokKey: String,
+                                     deepSeekKey: String,
                                      systemPrompt: String,
                                      onStatus: @escaping (String) -> Void,
                                      priorScore: Int? = nil,
@@ -783,12 +790,15 @@ final class ResumeController {
             : Self.fastModeIndexedAppendix
         let raw = try await AIManager.shared.sendMessage(
             userMessage,
-            apiKey:       apiKey,
-            openAIApiKey: openAIKey,
-            model:        model,
-            screenshot:   nil,
-            systemPrompt: systemPrompt + "\n\n" + appendix,
-            maxTokens:    8192,
+            apiKey:        apiKey,
+            openAIApiKey:  openAIKey,
+            moonshotAPIKey: moonshotKey,
+            grokAPIKey:    grokKey,
+            deepSeekAPIKey: deepSeekKey,
+            model:         model,
+            screenshot:    nil,
+            systemPrompt:  systemPrompt + "\n\n" + appendix,
+            maxTokens:     8192,
             timeoutInterval: 240
         )
         guard let analysis = Self.decodeIndexedGapAnalysis(from: raw) else {
@@ -1005,6 +1015,13 @@ final class ResumeController {
       prefer it for keyword swaps, verb upgrades, JD-vocabulary insertions \
       anywhere the bullet structure is fine and you only need to change a \
       phrase or two. Hits more bullets at lower formatting risk.
+      COVERAGE IS MANDATORY: at LEAST HALF of your surgical_replacements MUST \
+      target EXPERIENCE bullets — the bullet points under the job titles — \
+      and they must be SPREAD across EVERY employer, not bunched on one job. \
+      You can see every numbered paragraph here, so there is no excuse to \
+      skip the experience section. Editing only the summary and the skills \
+      list is a FAILURE: the experience bullets are where a recruiter looks, \
+      and an untailored experience section is the #1 reason these miss.
     - `rewrites`: 2–5 entries. Reserve these for paragraphs that need \
       structural changes (e.g. the summary, a heavily mis-pitched bullet). \
       Always include a rewrite for the summary.
@@ -1414,61 +1431,120 @@ final class ResumeController {
                                        model: String,
                                        apiKey: String,
                                        openAIKey: String,
+                                       moonshotKey: String,
+                                       grokKey: String,
+                                       deepSeekKey: String,
+                                       nvidiaKey: String,
+                                       openRouterKey: String,
                                        systemPrompt: String) async throws -> (String, String, URL) {
         let mountPath = "/document.xml"
         let fs = TextEditorFS(path: mountPath, initialContent: documentXML)
-
-        let tool = AIManager.Tool(
-            builtInType: "text_editor_20250728",
-            name: "str_replace_based_edit_tool"
-        )
-
         let userPrompt = Self.textEditorInitialPrompt(mountPath: mountPath, jd: jd)
 
-        // Surface progress on the main actor. Every tool call and every API
-        // turn funnels through `statusLine` inside AIManager — we mirror it
-        // into `vm.resumeGenerationStatus` so the Resume panel can display
-        // what Claude is doing right now.
+        // Surface progress on the main actor. Every tool call funnels through
+        // `statusLine` inside AIManager — we mirror it into
+        // `vm.resumeGenerationStatus` so the Resume panel shows live progress.
         let weakVM = self.vm
         let status: @Sendable (String) -> Void = { line in
             Task { @MainActor in weakVM?.resumeGenerationStatus = line }
         }
 
-        _ = try await AIManager.shared.sendWithTools(
-            initialUserMessage: userPrompt,
-            apiKey: apiKey,
-            model: model,
-            systemPrompt: systemPrompt,
-            tools: [tool],
-            maxIterations: 100,
-            maxTokens: 8192,
-            timeoutInterval: 600,   // 10 min — text_editor loops can take a while
-            onStatus: status,
-            handle: { _, input in
-                let command = input["command"] as? String ?? ""
-                let path    = input["path"]    as? String ?? ""
-                switch command {
-                case "view":
-                    let range = input["view_range"] as? [Int]
-                    return await fs.view(path: path, range: range)
-                case "str_replace":
-                    let old = input["old_str"] as? String ?? ""
-                    let new = input["new_str"] as? String ?? ""
-                    return await fs.strReplace(path: path, old: old, new: new)
-                case "insert":
-                    let line = input["insert_line"] as? Int ?? 0
-                    let text = input["new_str"] as? String ?? ""
-                    return await fs.insert(path: path, line: line, text: text)
-                case "create":
-                    let text = input["file_text"] as? String ?? ""
-                    return await fs.create(path: path, text: text)
-                case "undo_edit":
-                    return await fs.undoEdit(path: path)
-                default:
-                    return "Error: unsupported command \(command)"
-                }
+        // Identical handler regardless of provider — it just drives the
+        // in-memory virtual file (view / str_replace / insert / create).
+        let handler: (_ name: String, _ input: [String: Any]) async throws -> String = { _, input in
+            let command = input["command"] as? String ?? ""
+            let path    = input["path"]    as? String ?? ""
+            switch command {
+            case "view":
+                let range = input["view_range"] as? [Int]
+                return await fs.view(path: path, range: range)
+            case "str_replace":
+                let old = input["old_str"] as? String ?? ""
+                let new = input["new_str"] as? String ?? ""
+                return await fs.strReplace(path: path, old: old, new: new)
+            case "insert":
+                let line = input["insert_line"] as? Int ?? 0
+                let text = input["new_str"] as? String ?? ""
+                return await fs.insert(path: path, line: line, text: text)
+            case "create":
+                let text = input["file_text"] as? String ?? ""
+                return await fs.create(path: path, text: text)
+            case "undo_edit":
+                return await fs.undoEdit(path: path)
+            default:
+                return "Error: unsupported command \(command)"
             }
-        )
+        }
+
+        // When a model tries to stop, make sure it actually edited the
+        // EXPERIENCE section. Weaker tool-callers (Grok, DeepSeek) often edit
+        // only the summary + skills at the top and quit; if experience is
+        // untouched, send them back to it.
+        let originalXML = documentXML
+        let sectionCheck: () async -> String? = {
+            let current = await fs.content
+            guard Self.experienceSectionUnchanged(original: originalXML, current: current)
+            else { return nil }
+            return """
+            You have NOT edited the EXPERIENCE / work-history section yet — that \
+            is the most important part of tailoring a résumé, and editing only \
+            the summary and skills is a FAILURE. The experience section is the \
+            largest block, lower in the document. `view` it now (down to the end \
+            of the file) and reword at least 5 bullets across the jobs to weave \
+            in the job description's keywords. Keep each edit a tiny str_replace \
+            inside a single <w:t>; never touch tables or run/paragraph properties.
+            """
+        }
+
+        // Route by provider. Claude uses its native built-in text_editor tool;
+        // OpenAI / Moonshot / Grok / DeepSeek share the custom tool over Chat
+        // Completions function-calling (one code path — differs only by key,
+        // base URL, and the max-tokens field name).
+        var genTokensIn = 0
+        var genTokensOut = 0
+        let openAICompatible: (key: String, base: String)? = {
+            // OpenRouter first — its ids are `openrouter/<vendor>/<model>`, which
+            // would also match NVIDIA's `vendor/model` rule.
+            if AIManager.shared.isOpenRouterModel(model) { return (openRouterKey, AIManager.openRouterEndpoint) }
+            if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaKey, AIManager.nvidiaEndpoint) }
+            if AIManager.shared.isMoonshotModel(model) { return (moonshotKey, AIManager.moonshotEndpoint) }
+            if AIManager.shared.isGrokModel(model)     { return (grokKey, AIManager.grokEndpoint) }
+            if AIManager.shared.isDeepSeekModel(model) { return (deepSeekKey, AIManager.deepseekEndpoint) }
+            if AIManager.shared.isOpenAIModel(model)   { return (openAIKey, AIManager.openAIEndpoint) }
+            return nil
+        }()
+        if let oc = openAICompatible {
+            // OpenAI's Chat Completions wants `max_completion_tokens`; the
+            // compatible third parties (Moonshot/Grok/DeepSeek/NVIDIA/OpenRouter)
+            // want `max_tokens`.
+            let tokenField = AIManager.shared.isOpenAIModel(model)
+                ? "max_completion_tokens" : "max_tokens"
+            // OpenRouter ids carry an `openrouter/` prefix we strip before sending.
+            let modelForCall = AIManager.shared.isOpenRouterModel(model)
+                ? String(model.dropFirst(AIManager.openRouterPrefix.count)) : model
+            let usage = try await AIManager.shared.sendWithToolsOpenAI(
+                initialUserMessage: userPrompt, apiKey: oc.key, model: modelForCall,
+                baseURL: oc.base, tokenField: tokenField,
+                systemPrompt: systemPrompt,
+                tools: [AIManager.strReplaceEditorTool(mountPath: mountPath)],
+                maxIterations: 120, maxTokens: 8192, timeoutInterval: 900,
+                minToolEdits: 8, maxNudges: 10,
+                trimHistory: false,        // keep the WHOLE résumé in context the
+                                           // whole time so it can edit experience
+                sectionCheck: sectionCheck,
+                onStatus: status, handle: handler)
+            genTokensIn  = usage.inputTokens
+            genTokensOut = usage.outputTokens
+        } else {
+            _ = try await AIManager.shared.sendWithTools(
+                initialUserMessage: userPrompt, apiKey: apiKey, model: model,
+                systemPrompt: systemPrompt,
+                tools: [AIManager.Tool(builtInType: "text_editor_20250728",
+                                       name: "str_replace_based_edit_tool")],
+                maxIterations: 100, maxTokens: 8192,
+                timeoutInterval: 600,   // 10 min — text_editor loops can take a while
+                onStatus: status, handle: handler)
+        }
         status("Packaging your résumé…")
 
         let finalXML  = await fs.content
@@ -1476,7 +1552,7 @@ final class ResumeController {
 
         guard editCount > 0 else {
             let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
-            return ("Claude didn't make any edits. Original resume saved unchanged.", "", passthrough)
+            return ("The model didn't make any edits. Original résumé saved unchanged.", "", passthrough)
         }
 
         do {
@@ -1486,13 +1562,235 @@ final class ResumeController {
                 outputFilename: outputFilename
             )
             let previewText = (try? ResumeImporter.importFile(url: url)) ?? ""
-            let changelog = "- Claude applied \(editCount) str_replace edit(s) via the text_editor tool"
+            var changelog = "- Applied \(editCount) edit(s) via str_replace"
+            if genTokensIn + genTokensOut > 0 {
+                changelog += " · ~\(genTokensIn) in / \(genTokensOut) out tokens"
+            }
             return (previewText, changelog, url)
         } catch DOCXTemplateEditor.DOCXError.invalidXMLAfterEdits(let detail) {
             let passthrough = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
-            let preview = "Claude's edits produced invalid XML and were rejected so your original DOCX stays intact.\n\nReason: \(detail)"
+            let preview = "The edits produced invalid XML and were rejected, so your original DOCX stays intact.\n\nReason: \(detail)"
             return (preview, "- ⚠️ Edits rejected (invalid XML); original DOCX saved unchanged", passthrough)
         }
+    }
+
+    // MARK: - Chunked generation ("Fast" mode): segment, then edit per section
+
+    /// Plan-then-apply with section chunking:
+    ///  1. ONE call segments the résumé into sections (summary, skills, and one
+    ///     per employer in experience). The model sees the whole résumé once.
+    ///  2. We then edit ONE section at a time — each call carries only that
+    ///     section's paragraphs, so cost stays low AND every section (crucially
+    ///     the experience entries) gets its own dedicated pass; nothing is
+    ///     skipped because the loop is driven in code, not by the model.
+    ///  3. All edits apply together via the deterministic cross-run matcher, so
+    ///     formatting / tables are preserved.
+    private func generateViaChunked(
+        originalBytes: Data,
+        outputFilename: String?,
+        jd: String,
+        model: String,
+        apiKey: String,
+        openAIKey: String,
+        moonshotKey: String,
+        grokKey: String,
+        deepSeekKey: String,
+        nvidiaKey: String,
+        openRouterKey: String,
+        systemPrompt: String,
+        onStatus: @escaping (String) -> Void
+    ) async throws -> (String, String, URL) {
+        onStatus("Reading résumé structure…")
+        let paragraphs = try DOCXTemplateEditor.extractIndexedParagraphs(from: originalBytes)
+        guard !paragraphs.isEmpty else {
+            let pt = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            return ("Couldn't parse the DOCX. Original saved unchanged.", "", pt)
+        }
+        Self.dbg("=== CHUNKED RUN — model=\(model), paragraphs=\(paragraphs.count) ===", reset: true)
+
+        // Plain (marker-free) numbered list so the model's `old` strings are the
+        // literal run text and match cleanly.
+        func numbered(_ paras: [DOCXTemplateEditor.IndexedParagraph]) -> String {
+            paras.map { p in
+                let t = p.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return "\(p.index). \(t.isEmpty ? "(blank)" : t)"
+            }.joined(separator: "\n")
+        }
+
+        // ── 1. Segment ────────────────────────────────────────────────
+        onStatus("Mapping résumé sections…")
+        let segPrompt = """
+        Here is a résumé as numbered paragraphs (1-based). Identify its sections.
+        Return STRICT JSON only — no prose, no markdown fences:
+        { "sections": [ { "name": "string", "start": N, "end": M, "tailor": true } ] }
+        - start/end are inclusive 1-based paragraph numbers covering the section body.
+        - Split WORK EXPERIENCE into ONE section PER employer/role, named
+          "Experience — <Employer>".
+        - tailor=true for sections worth tailoring to a job description:
+          the professional summary/profile, the skills list, and EVERY
+          experience/work entry. tailor=false for the name/contact header,
+          education, certifications, references, and pure heading/blank lines.
+        - Ranges must not overlap.
+
+        Paragraphs:
+        \(numbered(paragraphs))
+        """
+        let segRaw = try await AIManager.shared.sendMessage(
+            segPrompt,
+            apiKey: apiKey, openAIApiKey: openAIKey,
+            moonshotAPIKey: moonshotKey, grokAPIKey: grokKey, deepSeekAPIKey: deepSeekKey,
+            nvidiaAPIKey: nvidiaKey, openRouterAPIKey: openRouterKey,
+            model: model, screenshot: nil,
+            systemPrompt: "You segment résumés into sections. Output strict JSON only.",
+            maxTokens: 4096, timeoutInterval: 120, jsonMode: true)
+        Self.dbg("--- SEGMENTATION RAW ---\n\(segRaw)")
+
+        var diag: [String] = []
+        let parsedSeg = Self.decodeSegmentation(from: segRaw)
+        let sections: [ResumeSection]
+        if let parsed = parsedSeg {
+            sections = parsed.sections
+        } else {
+            // Fallback: fixed-size paragraph windows so we STILL chunk (small,
+            // truncation-safe calls) when segmentation fails — never one giant
+            // whole-résumé request.
+            diag.append("segmentation JSON did not parse — using fixed-size windows")
+            NSLog("[Chunked] segmentation raw: %@", String(segRaw.prefix(800)))
+            let window = 20
+            var built: [ResumeSection] = []
+            var start = (paragraphs.first?.index ?? 1)
+            let lastIdx = paragraphs.last?.index ?? paragraphs.count
+            while start <= lastIdx {
+                let end = min(start + window - 1, lastIdx)
+                built.append(ResumeSection(name: "Part \(built.count + 1)", start: start, end: end, tailor: true))
+                start = end + 1
+            }
+            sections = built
+        }
+        let editable = sections.filter { $0.tailor && $0.end >= $0.start }
+        diag.append("paragraphs=\(paragraphs.count), sections=\(sections.count), editable=\(editable.count)")
+
+        // ── 2. Edit each section (only its own paragraphs travel each call) ──
+        var allEdits: [DOCXTemplateEditor.IndexedEdit] = []
+        var surgicalCount = 0
+        var rewriteCount  = 0
+        var lastRaw = ""
+        for (i, sec) in editable.enumerated() {
+            let secParas = paragraphs.filter { $0.index >= sec.start && $0.index <= sec.end }
+            guard !secParas.isEmpty else {
+                diag.append("• \(sec.name): no paragraphs in range \(sec.start)–\(sec.end)")
+                continue
+            }
+            onStatus("Tailoring \(sec.name) (\(i + 1)/\(editable.count))…")
+            let editPrompt = """
+            You are tailoring ONE section of a résumé — "\(sec.name)" — to the job
+            description below. Here are that section's numbered paragraphs (use the
+            SAME numbers when referring to them):
+            \(numbered(secParas))
+
+            Return STRICT JSON only — no prose, no markdown fences:
+            { "surgical_replacements": [ {"index": N, "old": "exact text", "new": "replacement"} ],
+              "rewrites": [ {"index": N, "new_text": "full new paragraph text"} ] }
+
+            Rules:
+            - You MUST tailor this section — returning empty arrays is NOT
+              allowed. Every section can be aligned to the JD:
+                • SUMMARY: rewrite it to target this exact role and its top
+                  keywords (1–3 edits).
+                • SKILLS: weave the JD's must-have skills the candidate
+                  plausibly has into the existing skills text.
+                • EXPERIENCE: revise MOST of its bullets, not just one — surface
+                  JD keywords and outcomes in each.
+            - Reword to weave in the job description's keywords; KEEP every metric
+              and number exactly. Make the change MEANINGFUL — don't just bolt a
+              generic phrase onto the end; improve the verb and the framing so it
+              reads as written for this JD.
+            - "old" must be text copied EXACTLY from a shown paragraph. Prefer
+              surgical_replacements (focused phrase swaps) over whole rewrites.
+            - NEVER invent employers, titles, dates, degrees, or technologies not
+              already present. Keep new text plain (no markdown, no bullet glyphs).
+            - Only use indices shown above.
+
+            Job Description:
+            \(jd)
+            """
+            let raw = try await AIManager.shared.sendMessage(
+                editPrompt,
+                apiKey: apiKey, openAIApiKey: openAIKey,
+                moonshotAPIKey: moonshotKey, grokAPIKey: grokKey, deepSeekAPIKey: deepSeekKey,
+                nvidiaAPIKey: nvidiaKey, openRouterAPIKey: openRouterKey,
+                model: model, screenshot: nil,
+                systemPrompt: systemPrompt + "\n\nOutput strict JSON only, matching the requested schema.",
+                maxTokens: 8192, timeoutInterval: 180, jsonMode: true)
+            lastRaw = raw
+            Self.dbg("--- SECTION \"\(sec.name)\" (paras \(sec.start)-\(sec.end)) RAW ---\n\(raw)")
+            NSLog("[Chunked] %@ response: %@", sec.name, String(raw.prefix(400)))
+            guard let analysis = Self.decodeIndexedGapAnalysis(from: raw) else {
+                diag.append("• \(sec.name): response was not valid JSON")
+                continue
+            }
+
+            var byIdx: [Int: [(old: String, new: String)]] = [:]
+            for s in analysis.surgical_replacements ?? [] {
+                let t = s.old.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !t.isEmpty else { continue }
+                byIdx[s.index, default: []].append((old: s.old, new: s.new))
+            }
+            let secSurgical = byIdx.values.reduce(0) { $0 + $1.count }
+            let secRewrites = analysis.rewrites?.count ?? 0
+            diag.append("• \(sec.name): \(secSurgical) surgical, \(secRewrites) rewrite")
+            for (idx, reps) in byIdx {
+                allEdits.append(.substringReplace(index: idx, replacements: reps))
+                surgicalCount += reps.count
+            }
+            for r in analysis.rewrites ?? [] {
+                allEdits.append(.rewrite(index: r.index, newText: r.new_text))
+                rewriteCount += 1
+            }
+        }
+
+        guard !allEdits.isEmpty else {
+            let pt = try Self.savePassthrough(originalBytes: originalBytes, filename: outputFilename)
+            let msg = "No edits were produced.\n\nDiagnostics:\n"
+                + diag.joined(separator: "\n")
+                + "\n\nLast model response:\n" + String(lastRaw.prefix(900))
+            return (msg, "", pt)
+        }
+
+        // ── 3. Apply everything at once (deterministic, formatting-safe) ──
+        onStatus("Applying \(surgicalCount) surgical · \(rewriteCount) rewrite edit(s)…")
+        let outcome = try DOCXTemplateEditor.applyIndexedEdits(
+            to: originalBytes, edits: allEdits, outputFilename: outputFilename)
+        Self.dbg("--- APPLY OUTCOME: surgicalApplied=\(outcome.surgicalApplied) surgicalMissed=\(outcome.surgicalMissed) rewritesApplied=\(outcome.rewritesApplied) rewritesMissed=\(outcome.rewritesMissed.count) layoutPreserved=\(outcome.layoutPreserved.count) headingsProtected=\(outcome.headingsProtected.count) ---")
+        let previewText = (try? ResumeImporter.importFile(url: outcome.url)) ?? ""
+        var changelog = "- Tailored \(editable.count) section(s): \(outcome.surgicalApplied) surgical swap(s), \(outcome.rewritesApplied) rewrite(s)"
+        if outcome.surgicalMissed > 0 {
+            changelog += " · ⚠️ \(outcome.surgicalMissed) edit(s) didn't match"
+        }
+        return (previewText, changelog, outcome.url)
+    }
+
+    /// Append-only debug dump of the chunked run's raw model responses to a
+    /// fixed temp path, so the raw JSON can be inspected without the user
+    /// transcribing it. `reset` truncates first (start of a run).
+    private static func dbg(_ s: String, reset: Bool = false) {
+        let url = URL(fileURLWithPath: "/tmp/macoverlay-resume-debug.log")
+        let data = (s + "\n\n").data(using: .utf8) ?? Data()
+        if reset {
+            try? data.write(to: url)
+        } else if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile(); h.write(data); try? h.close()
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    private static func decodeSegmentation(from raw: String) -> ResumeSegmentation? {
+        var c = raw
+        for f in ["```json", "```JSON", "```"] { c = c.replacingOccurrences(of: f, with: "") }
+        guard let a = c.firstIndex(of: "{"), let b = c.lastIndex(of: "}") else { return nil }
+        guard let d = String(c[a...b]).data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ResumeSegmentation.self, from: d)
     }
 
     /// Framing message that kicks off the text_editor loop. Describes the
@@ -1506,34 +1804,91 @@ final class ResumeController {
         you are satisfied, return a brief plain-text summary of the changes
         and stop calling tools.
 
-        Rules for editing:
+        Two goals matter EQUALLY — don't sacrifice one for the other:
+
+        • LOOK: the document must look EXACTLY the same afterward — same fonts,
+          spacing, bullets, columns, and tables. Only the WORDS inside existing
+          text change (plus the occasional new bullet).
+        • COVERAGE: actually tailor the résumé. Editing only the summary, or
+          making just one or two changes, is a FAILURE. You revise content
+          across the WHOLE résumé.
+
+        COVERAGE you MUST achieve (this is the job — do not stop short):
+        - FIRST `view` the WHOLE document end to end (several view_range calls)
+          so you see every section — ESPECIALLY the EXPERIENCE / work-history
+          block lower down. Do NOT edit only what's at the top.
+        - The EXPERIENCE section is the MOST important. Revise MULTIPLE bullets
+          under EACH employer — not one or two. For every important
+          requirement/keyword in the JD, find the bullet that best fits the
+          candidate's real experience and reword it to surface that keyword.
+          Editing only the SUMMARY and SKILLS is a FAILURE.
+        - Update the SKILLS list to include every JD skill the candidate
+          plausibly already has (weave them into the existing skills text).
+        - Rewrite the professional SUMMARY to target this role.
+        - Make at least 8–14 edits total, the MAJORITY of them experience
+          bullets. Keep calling the tool until the experience section is
+          tailored end to end.
+
+        HOW to make each edit (this is what protects the look):
 
         1. Start by `view`-ing `\(mountPath)` to understand its structure
-           (sections, employers, roles, dates). Use `view_range` to zoom in
-           on specific regions; don't re-view the whole file every turn.
-        2. Make focused edits with `str_replace`. Keep `old_str` tiny — a
-           single `<w:t>…</w:t>` for tweaking bullet text, or a whole
-           `<w:p>…</w:p>` only when adding a new bullet.
-        3. To ADD a new bullet, str_replace an existing `<w:p>` with THAT
-           SAME `<w:p>` plus a new `<w:p>` whose structure you CLONED from a
-           nearby bullet (so bullet markers, indents, and `<w:rPr>` styling
-           match exactly).
-        4. Preserve every employer, job title, location, and date verbatim.
-        5. Never invent employers, titles, dates, degrees, certifications,
-           metrics, or technologies that aren't already somewhere in the
-           résumé.
-        6. Tech stack sanity: libraries/tools you add must be appropriate
-           for that client's industry AND have versions that fit the
-           timeframe of the role.
-        7. Don't rewrite section headings, names, or contact info.
-        8. Never invent `<w:pPr>` or `<w:rPr>` from scratch. Always copy
-           them from a nearby run when building a new paragraph.
-        9. Output must remain valid XML after every edit.
-        10. Aim for 4–10 focused edits. Don't carpet-rewrite.
+           (sections, employers, roles, dates, and any TABLES). Use
+           `view_range` to zoom in; don't re-view the whole file every turn.
+        2. Make each edit with `str_replace` on a TINY `old_str` — ideally just
+           the text inside a single `<w:t>…</w:t>`. Change only the words; never
+           touch the surrounding `<w:r>`, `<w:rPr>`, or `<w:pPr>`. (Small edits
+           describe HOW you edit — they are NOT a reason to make FEWER edits.
+           Make MANY small edits.)
+        3. PRESERVE TABLE STRUCTURE ABSOLUTELY. Many résumés lay out the
+           header or skills as a TABLE. NEVER alter any table tag —
+           `<w:tbl>`, `<w:tblPr>`, `<w:tblGrid>`, `<w:gridCol>`, `<w:tr>`,
+           `<w:tc>`, `<w:tcPr>`. Edit ONLY the `<w:t>` text inside cells. Do
+           not add, remove, merge, or resize rows, cells, or columns.
+        4. KEEP each bullet's metrics and numbers; reword AROUND them to weave
+           in JD-relevant keywords. Don't replace a bullet with unrelated
+           content, and don't reorder or delete bullets.
+        5. To add a SKILL, edit the text inside the existing skills cell/line
+           (e.g. "Java, SQL" → "Java, SQL, Python"). Never restructure the
+           skills section to do it.
+        6. To ADD a new bullet, str_replace an existing `<w:p>` with THAT SAME
+           `<w:p>` plus a new `<w:p>` whose structure you CLONED from a nearby
+           bullet (so markers, indents, and `<w:rPr>` match exactly).
+        7. Preserve every employer, job title, location, and date verbatim.
+           Don't rewrite section headings, the name, or contact info.
+        8. Never invent employers, titles, dates, degrees, certifications,
+           metrics, or technologies that aren't already in the résumé. Tech
+           you add must fit the client's industry AND the role's timeframe.
+        9. Never invent `<w:pPr>` or `<w:rPr>` from scratch — always clone
+           from a nearby run. Output must remain valid XML after every edit.
 
         Job Description:
         \(jd)
         """
+    }
+
+    /// True when the EXPERIENCE / work-history block (from its heading to the
+    /// end of the document) has identical plain text in `original` and
+    /// `current` — i.e. the model never touched it. Used to force weaker
+    /// tool-callers back to the experience bullets when they edit only the top.
+    /// Returns false when no experience heading is found (can't locate it, so
+    /// we don't force).
+    private static func experienceSectionUnchanged(original: String, current: String) -> Bool {
+        func tail(_ xml: String) -> String? {
+            let plain = xml
+                .replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            // Most specific headings first so we anchor on the section title,
+            // not a stray "experience" mention in the summary.
+            for marker in ["work experience", "professional experience",
+                           "employment history", "work history", "experience"] {
+                if let r = plain.range(of: marker, options: .caseInsensitive) {
+                    return String(plain[r.lowerBound...])
+                }
+            }
+            return nil
+        }
+        guard let a = tail(original), let b = tail(current) else { return false }
+        return a == b
     }
 
     /// Write the original DOCX bytes to a new temp URL so we can present it

@@ -1039,39 +1039,101 @@ enum DOCXTemplateEditor {
         var xml = paraXML
         var applied = 0
         var missed  = 0
-        guard let re = try? NSRegularExpression(
-            pattern: #"<w:t\b[^>]*?>([\s\S]*?)</w:t>"#
-        ) else { return (xml, 0, replacements.count) }
-
         for rep in replacements {
             let oldTrimmed = rep.old.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !oldTrimmed.isEmpty else { missed += 1; continue }
-
-            let ns = xml as NSString
-            let matches = re.matches(in: xml,
-                                     range: NSRange(location: 0, length: ns.length))
-            var found = false
-            for m in matches where m.numberOfRanges >= 2 {
-                let innerRange = m.range(at: 1)
-                if innerRange.location == NSNotFound { continue }
-                let raw   = ns.substring(with: innerRange)
-                let plain = unescapeXML(raw)
-                if looksLikeDateSpan(plain) { continue }
-                guard let r = plain.range(of: rep.old) else { continue }
-                let prefix = String(plain[..<r.lowerBound])
-                let suffix = String(plain[r.upperBound...])
-                let combined = prefix + rep.new + suffix
-                let safeCombined = stripInvalidXMLChars(combined)
-                let newInner = escapeXML(safeCombined)
-                xml = (xml as NSString)
-                    .replacingCharacters(in: innerRange, with: newInner) as String
+            if replaceAcrossRuns(in: &xml, old: rep.old, new: rep.new) {
                 applied += 1
-                found = true
-                break
+            } else {
+                missed += 1
             }
-            if !found { missed += 1 }
         }
         return (xml, applied, missed)
+    }
+
+    /// Replace the first occurrence of `old` with `new` across one OR MORE
+    /// `<w:t>` runs in a paragraph, touching ONLY the text inside the runs.
+    ///
+    /// Why this matters: Word routinely splits a single visible phrase across
+    /// several `<w:r>` runs (a bold keyword, a spell-check boundary, a font
+    /// tweak). The old matcher searched each `<w:t>` in isolation, so any
+    /// `old` text that straddled a run boundary was never found — the edit
+    /// "missed" and the bullet fell through to a coarser whole-paragraph
+    /// rewrite, which is what flattened formatting and reflowed the line.
+    ///
+    /// Here we concatenate the decoded text of every run, find `old` in that
+    /// combined string, then write the change back into the run(s) it spans:
+    /// `new` lands in the FIRST overlapped run (inheriting its formatting) and
+    /// the matched remainder is removed from the following runs. `<w:rPr>` /
+    /// `<w:pPr>` and the run structure are left byte-for-byte intact, so the
+    /// résumé keeps its exact look — only the words change.
+    private static func replaceAcrossRuns(in xml: inout String,
+                                          old: String,
+                                          new: String) -> Bool {
+        guard let re = try? NSRegularExpression(
+            pattern: #"<w:t\b[^>]*?>([\s\S]*?)</w:t>"#
+        ) else { return false }
+
+        let ns = xml as NSString
+        let matches = re.matches(in: xml, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return false }
+
+        // One entry per `<w:t>`: the NSRange of its inner text (so we can
+        // rewrite it in place) and the decoded characters it holds.
+        struct Run { let innerRange: NSRange; let chars: [Character]; let plain: String }
+        var runs: [Run] = []
+        for m in matches where m.numberOfRanges >= 2 {
+            let inner = m.range(at: 1)
+            if inner.location == NSNotFound { continue }
+            let plain = unescapeXML(ns.substring(with: inner))
+            runs.append(Run(innerRange: inner, chars: Array(plain), plain: plain))
+        }
+        guard !runs.isEmpty else { return false }
+
+        // Concatenate decoded text across runs; remember each run's start
+        // offset (in Character units) into the combined string.
+        var combinedChars: [Character] = []
+        var runStart: [Int] = []
+        for r in runs {
+            runStart.append(combinedChars.count)
+            combinedChars.append(contentsOf: r.chars)
+        }
+        let combined = String(combinedChars)
+
+        guard let mr = combined.range(of: old) else { return false }
+        let startOff = combined.distance(from: combined.startIndex, to: mr.lowerBound)
+        let endOff   = combined.distance(from: combined.startIndex, to: mr.upperBound)
+
+        // Compute the new inner text for each run the match overlaps. Bail if
+        // the match touches a date-looking run — dates must stay byte-exact.
+        var newInner: [Int: String] = [:]
+        var placedNew = false
+        for (i, r) in runs.enumerated() {
+            let rs   = runStart[i]
+            let rEnd = rs + r.chars.count
+            let lo = max(rs, startOff)
+            let hi = min(rEnd, endOff)
+            guard lo < hi else { continue }                 // run not overlapped
+            if looksLikeDateSpan(r.plain) { return false }
+            let prefix = String(r.chars[0..<(lo - rs)])
+            let suffix = String(r.chars[(hi - rs)..<r.chars.count])
+            if !placedNew {
+                newInner[i] = prefix + new + suffix          // new text lands here
+                placedNew = true
+            } else {
+                newInner[i] = prefix + suffix                // matched remainder removed
+            }
+        }
+        guard placedNew else { return false }
+
+        // Apply highest run index first so the earlier runs' NSRanges (which
+        // were computed against the original string) stay valid as we edit.
+        for i in newInner.keys.sorted(by: >) {
+            let escaped = escapeXML(stripInvalidXMLChars(newInner[i]!))
+            xml = (xml as NSString)
+                .replacingCharacters(in: runs[i].innerRange, with: escaped) as String
+        }
+        return true
     }
 
     // MARK: - Table row insertion

@@ -37,6 +37,19 @@ final class OverlayViewModel {
         ("kimi-k2.7-code",            "Kimi 2.7 Code",   "Kimi"),
         ("kimi-k2.6",                 "Kimi 2.6",        "Kimi"),
         ("kimi-k2.5",                 "Kimi 2.5",        "Kimi"),
+        // Grok (xAI) — OpenAI-compatible, https://api.x.ai/v1
+        ("grok-4.3",                  "Grok 4.3",        "Grok"),
+        // DeepSeek — OpenAI-compatible, https://api.deepseek.com
+        ("deepseek-v4-pro",           "DeepSeek V4 Pro", "DeepSeek"),
+        ("deepseek-v4-flash",         "DeepSeek V4 Flash","DeepSeek"),
+        // NVIDIA NIM — OpenAI-compatible, https://integrate.api.nvidia.com/v1
+        ("deepseek-ai/deepseek-v4-pro",   "DeepSeek V4 Pro (NVIDIA)",   "NVIDIA"),
+        ("deepseek-ai/deepseek-v4-flash", "DeepSeek V4 Flash (NVIDIA)", "NVIDIA"),
+        // OpenRouter — one key, any model (https://openrouter.ai). Ids are
+        // "openrouter/<openrouter-model-id>"; add any model the same way.
+        ("openrouter/deepseek/deepseek-chat",        "DeepSeek (OpenRouter)",       "OpenRouter"),
+        ("openrouter/anthropic/claude-sonnet-4.5",   "Claude Sonnet 4.5 (OpenRouter)", "OpenRouter"),
+        ("openrouter/openai/gpt-4.1",                "GPT-4.1 (OpenRouter)",        "OpenRouter"),
     ]
 
     // MARK: - Session
@@ -408,6 +421,26 @@ final class OverlayViewModel {
     var moonshotAPIKey: String {
         didSet { UserDefaults.standard.set(moonshotAPIKey, forKey: "moonshotAPIKey") }
     }
+    /// xAI / Grok API key. Grok models route through xAI's OpenAI-compatible
+    /// endpoint (https://api.x.ai/v1) with this key — see AIManager.
+    var grokAPIKey: String {
+        didSet { UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey") }
+    }
+    /// DeepSeek API key. DeepSeek models route through its OpenAI-compatible
+    /// endpoint (https://api.deepseek.com) with this key — see AIManager.
+    var deepSeekAPIKey: String {
+        didSet { UserDefaults.standard.set(deepSeekAPIKey, forKey: "deepSeekAPIKey") }
+    }
+    /// NVIDIA NIM API key (nvapi-…). Namespaced `vendor/model` ids route through
+    /// NVIDIA's OpenAI-compatible endpoint (integrate.api.nvidia.com) with this.
+    var nvidiaAPIKey: String {
+        didSet { UserDefaults.standard.set(nvidiaAPIKey, forKey: "nvidiaAPIKey") }
+    }
+    /// OpenRouter API key (sk-or-…). Catalogue ids prefixed `openrouter/` route
+    /// through openrouter.ai (one key, any model) — see AIManager.
+    var openRouterAPIKey: String {
+        didSet { UserDefaults.standard.set(openRouterAPIKey, forKey: "openRouterAPIKey") }
+    }
     var elevenLabsAPIKey: String {
         didSet {
             UserDefaults.standard.set(elevenLabsAPIKey, forKey: "elevenLabsAPIKey")
@@ -449,12 +482,31 @@ final class OverlayViewModel {
         case sonnet46 = "claude-sonnet-4-6"
         case sonnet45 = "claude-sonnet-4-5"
         case haiku45  = "claude-haiku-4-5-20251001"
+        // Non-Claude options. These edit the DOCX through the provider-agnostic
+        // str_replace tool loop (Chat Completions function-calling). Claude is
+        // still the most reliable at this exact task, but the choice is yours.
+        case gpt55    = "gpt-5.5"
+        case gpt41    = "gpt-4.1"
+        case kimiK27c = "kimi-k2.7-code"
+        case kimiK26  = "kimi-k2.6"
+        case grok43   = "grok-4.3"
+        case dsV4pro  = "deepseek-v4-pro"
+        case dsV4flash = "deepseek-v4-flash"
+        case orDeepSeek = "openrouter/deepseek/deepseek-chat"
         var id: String { rawValue }
         var displayName: String {
             switch self {
-            case .sonnet46: return "Claude Sonnet 4.6 — newest, top quality"
+            case .sonnet46: return "Claude Sonnet 4.6 — newest, best for résumés"
             case .sonnet45: return "Claude Sonnet 4.5 — strong quality"
             case .haiku45:  return "Claude Haiku 4.5 — best value (~3× cheaper)"
+            case .gpt55:    return "GPT-5.5 (OpenAI) — needs OpenAI key"
+            case .gpt41:    return "GPT-4.1 (OpenAI) — cheaper, needs OpenAI key"
+            case .kimiK27c: return "Kimi 2.7 Code (Moonshot) — needs Kimi key"
+            case .kimiK26:  return "Kimi 2.6 (Moonshot) — needs Kimi key"
+            case .grok43:   return "Grok 4.3 (xAI) — cheaper, needs xAI key"
+            case .dsV4pro:  return "DeepSeek V4 Pro — needs DeepSeek key"
+            case .dsV4flash: return "DeepSeek V4 Flash — cheapest, needs DeepSeek key"
+            case .orDeepSeek: return "DeepSeek (OpenRouter) — needs OpenRouter key"
             }
         }
     }
@@ -473,12 +525,11 @@ final class OverlayViewModel {
     /// - `.quality` — text_editor agent loop end-to-end; Claude plans AND
     ///                verifies each edit live.
     enum ResumeMode: String, CaseIterable, Identifiable {
-        case fast, hybrid, quality
+        case fast, quality
         var id: String { rawValue }
         var displayName: String {
             switch self {
-            case .fast:    return "Fast — single call, ~15× cheaper"
-            case .hybrid:  return "Hybrid — Sonnet plan + Haiku apply"
+            case .fast:    return "Fast — section-by-section, cheaper"
             case .quality: return "Quality — agent loop, best precision"
             }
         }
@@ -567,22 +618,10 @@ final class OverlayViewModel {
     @ObservationIgnored let sessionStore   = SessionStore.shared
     @ObservationIgnored let workspaceStore = WorkspaceStore.shared
 
-    // MARK: - Auth + entitlements
-    /// Shared singletons exposed on the VM so SwiftUI views can observe them
-    /// via `@Bindable`. The stores stay singletons because they hold
-    /// process-wide state (Keychain bindings) — only the VM proxy is per-instance.
-    let auth        = AuthManager.shared
-    let entitlement = EntitlementStore.shared
-    let quota       = ResumeQuotaTracker.shared
-
     // MARK: - Panel customization
     /// User-customisable visibility + sizing for the lower input bar.
     /// Toggles persist to UserDefaults via the store itself.
     let barCustomization = BarCustomization.shared
-
-    /// True when a paywall sheet should be visible. Flipped by quota gates
-    /// (e.g. ResumeController.generate() when the free user is at their cap).
-    var showPaywall: Bool = false
 
     // UI panel toggles for the new surfaces
     var showHistoryPanel       = false
@@ -706,6 +745,15 @@ final class OverlayViewModel {
     }
     @ObservationIgnored var onShellStageChange: ((ShellStage) -> Void)?
 
+    /// Drag-to-resize: the trailing-edge grip reports its cumulative
+    /// horizontal drag translation (points) here on every change, and once
+    /// more with `ended: true` when the drag finishes. AppDelegate widens /
+    /// narrows the host panel to match and remembers the width so it
+    /// survives stage transitions. Width is the panel dimension the user
+    /// controls directly — height is driven by the active stage / surface
+    /// (see AppDelegate.animateShellFrame).
+    @ObservationIgnored var onWidthResize: ((CGFloat, Bool) -> Void)?
+
     /// True when shellStage is `.pill` AND a result/status popup wants to
     /// render above the brand pill (resume score, generated resume,
     /// quick-ask response). AppDelegate listens via `onPillPopupChange`
@@ -721,6 +769,21 @@ final class OverlayViewModel {
     /// Backward-compat read-only shim. New code should test
     /// `shellStage == .expanded` directly.
     var isShellExpanded: Bool { shellStage == .expanded }
+
+    /// Chat/interview answer surfaces use the compact fixed response
+    /// panel while a response is pending or visible. Setup, history,
+    /// browser, preferences, and other tool surfaces keep the full panel.
+    var usesResponseHuggingPanel: Bool {
+        guard shellStage == .expanded else { return false }
+        switch primarySurface {
+        case .chat:
+            return isInterviewSession || isSendingToAI || !sessionStore.activeSession.turns.isEmpty
+        case .interview:
+            return interviewSurfaceShowsChat
+        default:
+            return false
+        }
+    }
 
     // MARK: - Peer control
     @ObservationIgnored let peerServer = PeerControlServer.shared
@@ -795,19 +858,28 @@ final class OverlayViewModel {
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
         moonshotAPIKey     = UserDefaults.standard.string(forKey: "moonshotAPIKey") ?? ""
+        grokAPIKey         = UserDefaults.standard.string(forKey: "grokAPIKey") ?? ""
+        deepSeekAPIKey     = UserDefaults.standard.string(forKey: "deepSeekAPIKey") ?? ""
+        nvidiaAPIKey       = UserDefaults.standard.string(forKey: "nvidiaAPIKey") ?? ""
+        openRouterAPIKey   = UserDefaults.standard.string(forKey: "openRouterAPIKey") ?? ""
         elevenLabsAPIKey   = UserDefaults.standard.string(forKey: "elevenLabsAPIKey") ?? ""
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
-        // Default to Haiku 4.5 — most résumé rewrites don't need Sonnet's
-        // extra reasoning, and the 3× cost difference is substantial.
+        // Default résumé generation to DeepSeek V4 Pro (direct api.deepseek.com)
+        // — the chunked plan-then-apply path with reasoning disabled tailors
+        // every section cheaply, with no NVIDIA rate limits.
         resumeGenerationModel = ResumeGenerationModel(
             rawValue: UserDefaults.standard.string(forKey: "resumeGenerationModel") ?? ""
-        ) ?? .haiku45
-        // Default to fast mode — real-time, ~15× cheaper than agent loop.
+        ) ?? .dsV4pro
+        // Default to Quality: the model edits the real word/document.xml via
+        // the text_editor (str_replace) tool — the same mechanism the docx
+        // skill uses in chat — so tables, fonts, and layout survive. Fast
+        // mode's Swift-side regex surgery broke table structure and
+        // over-rewrote bullets. Quality is slower / pricier but correct.
         resumeMode = ResumeMode(
             rawValue: UserDefaults.standard.string(forKey: "resumeMode") ?? ""
-        ) ?? .fast
+        ) ?? .quality
         resumeSkipScoring = UserDefaults.standard.bool(forKey: "resumeSkipScoring")
         // Migration: if the persisted model was dropped from the catalogue
         // (e.g. an OpenAI model we no longer list, or Sonnet 4.5), fall back
@@ -831,11 +903,6 @@ final class OverlayViewModel {
            let mode = SessionMode(rawValue: raw) {
             sessionMode = mode
         }
-
-        // Bind the per-user stores to whoever is currently signed in (or the
-        // anonymous bucket if nobody is). The AuthGateView will trigger a
-        // re-bind once the user signs in / out via `bindUserScopedStores()`.
-        bindUserScopedStores()
 
         // Calendar manager still exposes Combine publishers; keep these
         // subscriptions wired so the manager keeps compiling, but skip the
@@ -990,14 +1057,11 @@ final class OverlayViewModel {
                         self.transcription = ""
                         return
                     }
-                    // A response is still streaming and a NEW question just
-                    // committed: the latest question wins. Cancel the
-                    // in-flight answer and let the debounced send pick up
-                    // the new one — waiting for the old answer to finish
-                    // made the app feel deaf mid-interview.
-                    if self.isSendingToAI {
-                        self.cancelStreaming()
-                    }
+                    // A new question committed while an earlier answer may
+                    // still be streaming — let it finish. We do NOT cancel
+                    // here: runStream caps concurrency at
+                    // AIController.maxConcurrentStreams and evicts the oldest
+                    // answer only when that cap is exceeded.
                     // Debounced: a VAD commit isn't proof the question is
                     // over. scheduleAutoSend waits a short grace window
                     // (longer when the text trails off mid-thought) and
@@ -1026,23 +1090,6 @@ final class OverlayViewModel {
         }
     }
 
-    // MARK: - Auth lifecycle
-
-    /// Re-bind entitlement + quota to the current user ID. Called on init and
-    /// whenever the auth state changes (sign-in, sign-out, switch to guest)
-    /// so the right Keychain bucket is in scope.
-    func bindUserScopedStores() {
-        let id = auth.currentUser?.userID
-        entitlement.bind(to: id)
-        quota.bind(to: id)
-    }
-
-    /// Sign out + re-bind to the anonymous bucket. Called from the Account
-    /// tab in Preferences.
-    func signOut() {
-        auth.signOut()
-        bindUserScopedStores()
-    }
 
     // MARK: - Calendar
 
@@ -1211,6 +1258,8 @@ final class OverlayViewModel {
         isInterviewTextOnly = false
         interviewRunningSince   = nil
         interviewElapsedSeconds = 0
+        // Stop any answers still generating — ending the interview means stop.
+        cancelStreaming()
         endCapture()
     }
 
@@ -1411,10 +1460,19 @@ final class OverlayViewModel {
             return userText.isEmpty ? blocks : "\(blocks)\n\n\(userText)"
         }()
 
+        let wasFirstExchange = sessionStore.activeSession.turns.isEmpty
+        sessionStore.appendUser(userText,
+                                attachments: attachments.map(\.name),
+                                hiddenContext: attachmentBlocks)
+        let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
+
         // Sending a message implies the user wants to see the response —
         // but don't yank the Interview surface over to Chat mid-session;
         // both render the live conversation, and the flip re-laid-out the
-        // focus card on every auto-send.
+        // focus card on every auto-send. Open the surface AFTER appending
+        // the streaming assistant turn so the first panel resize can hug
+        // the compact fixed response panel instead of jumping to the
+        // generic full tool-surface height.
         if primarySurface != .interview {
             primarySurface = .chat
         }
@@ -1423,12 +1481,6 @@ final class OverlayViewModel {
                 shellStage = .expanded
             }
         }
-
-        let wasFirstExchange = sessionStore.activeSession.turns.isEmpty
-        sessionStore.appendUser(userText,
-                                attachments: attachments.map(\.name),
-                                hiddenContext: attachmentBlocks)
-        let assistantID = sessionStore.beginStreamingAssistant(model: selectedModel)
 
         if !showManualInput { transcription = "" }
 
@@ -1526,9 +1578,11 @@ final class OverlayViewModel {
         pendingAutoSendTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: grace)
             guard let self, !Task.isCancelled else { return }
+            // No longer gated on !isSendingToAI: a new question may be sent
+            // while an earlier answer is still streaming. runStream caps how
+            // many answers run at once.
             guard self.isInterviewSession, self.interviewAutoGenerate,
-                  !self.isInterviewPaused, self.isRecording,
-                  !self.isSendingToAI else { return }
+                  !self.isInterviewPaused, self.isRecording else { return }
             guard TranscriptFilter.isMeaningful(self.transcription) else { return }
             // Detach before sending — sendToAI cancels pendingAutoSendTask
             // (to supersede stale sends), and that must not self-cancel
@@ -1568,8 +1622,15 @@ final class OverlayViewModel {
         sessionStore.activeSession = s
     }
 
-    /// Cancel an in-flight streaming request.
+    /// Cancel ALL in-flight streaming requests (global Stop, session end).
     func cancelStreaming() { ai.cancel() }
+
+    /// Cancel one specific answer by its assistant-turn id (per-pair Stop).
+    func cancelStream(turnID: UUID) { ai.cancelStream(turnID: turnID) }
+
+    /// True while the given assistant turn is still streaming. Lets a pair
+    /// show its own typing indicator / Stop even when it isn't the latest.
+    func isStreaming(turnID: UUID) -> Bool { ai.isStreaming(turnID: turnID) }
 
     /// Resolves the current system prompt. Kept as a shim so existing
     /// call-sites don't have to change — delegates to the AI controller.
@@ -1664,6 +1725,10 @@ final class OverlayViewModel {
                     apiKey:         self.apiKey,
                     openAIApiKey:   self.openAIApiKey,
                     moonshotAPIKey: self.moonshotAPIKey,
+                    grokAPIKey:     self.grokAPIKey,
+                    deepSeekAPIKey: self.deepSeekAPIKey,
+                    nvidiaAPIKey:   self.nvidiaAPIKey,
+                    openRouterAPIKey: self.openRouterAPIKey,
                     model:          self.selectedModel,
                     screenshot:     nil,
                     systemPrompt:   resolvedPrompt,
@@ -1756,6 +1821,9 @@ final class OverlayViewModel {
     }
 
     func continueSession(id: UUID, stayInPrimarySurface: Bool = false) {
+        // Leaving the current session — don't let its answers keep streaming
+        // into a session that's no longer in front.
+        cancelStreaming()
         sessionStore.continueSession(id: id)
         // Restore the mode for the reopened session so the right prompt kicks in.
         if let s = sessionStore.sessions.first(where: { $0.id == id }) {
@@ -1772,6 +1840,8 @@ final class OverlayViewModel {
 
     func startNewSession(kind: ChatSession.Kind = .normal,
                          stayInPrimarySurface: Bool = false) {
+        // Closing the current session — stop any answers still streaming into it.
+        cancelStreaming()
         // Before closing the current session, ask the AI to give it a nicer title.
         let closingID = sessionStore.activeSessionID
         let closing = sessionStore.activeSession
@@ -1973,7 +2043,11 @@ final class OverlayViewModel {
     /// Centralises the Anthropic / OpenAI / Kimi routing so every key check
     /// and error message stays in sync with `AIManager`'s routing.
     var keyForSelectedModel: (key: String, provider: String) {
+        if AIManager.shared.isOpenRouterModel(selectedModel) { return (openRouterAPIKey, "OpenRouter") }
+        if AIManager.shared.isNVIDIAModel(selectedModel)   { return (nvidiaAPIKey, "NVIDIA") }
         if AIManager.shared.isMoonshotModel(selectedModel) { return (moonshotAPIKey, "Moonshot") }
+        if AIManager.shared.isGrokModel(selectedModel)     { return (grokAPIKey, "Grok") }
+        if AIManager.shared.isDeepSeekModel(selectedModel) { return (deepSeekAPIKey, "DeepSeek") }
         if AIManager.shared.isOpenAIModel(selectedModel)   { return (openAIApiKey, "OpenAI") }
         return (apiKey, "Anthropic")
     }

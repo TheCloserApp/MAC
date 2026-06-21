@@ -20,26 +20,34 @@ final class AIController {
     }
 
     @ObservationIgnored private weak var vm: OverlayViewModel?
-    @ObservationIgnored private var streamingTask: Task<Void, Never>?
+    /// In-flight streams keyed by their assistant turn id. A new question no
+    /// longer cancels the previous answer — both generate at once — so we
+    /// track every running stream instead of a single task handle.
+    @ObservationIgnored private var activeStreams: [UUID: Task<Void, Never>] = [:]
+    /// Turn ids oldest→newest, so the cap can evict the OLDEST running answer.
+    @ObservationIgnored private var streamOrder: [UUID] = []
+    /// Most-recently-started stream — it owns the `vm.aiResponse` mirror that
+    /// the secondary status views (top strip, response panel) read.
+    @ObservationIgnored private var currentStreamID: UUID?
+    /// How many answers may generate concurrently. A new question past the
+    /// cap evicts the oldest still-running answer (latest wins on overflow).
+    static let maxConcurrentStreams = 2
+
     @ObservationIgnored private(set) var lastRetry: PendingRetry?
     /// The most recent request regardless of outcome. `lastRetry` clears
     /// on success (it gates the error-Retry UI), but Regenerate must keep
     /// working after a good answer — without this it silently no-opped.
     @ObservationIgnored private(set) var lastRequest: PendingRetry?
-    /// Last time we mirrored the streaming buffer onto `vm.aiResponse`.
-    /// Used to throttle the assignment so SwiftUI doesn't invalidate every
-    /// observer of `vm` on every token (~30+/sec). The chat surface itself
-    /// reads from `session.turns` and still updates per-chunk — this only
-    /// rate-limits the secondary status views (top strip, response panel).
-    @ObservationIgnored private var lastResponseFlushAt: ContinuousClock.Instant = .now
-    /// Monotonic stream token. A new `runStream` bumps it; the old task —
-    /// even though it gets cancelled — may still run its completion block,
-    /// and without this check that block nil'd out `streamingTask` (so
-    /// Stop couldn't cancel the NEW stream) and flipped `isSendingToAI`
-    /// off while the new answer was still streaming.
-    @ObservationIgnored private var streamGeneration = 0
 
     var canRetry: Bool { lastRetry != nil }
+
+    /// True while the given assistant turn is still streaming. Lets the UI
+    /// show a per-answer typing indicator / Stop even when a different pair
+    /// is in focus.
+    func isStreaming(turnID: UUID) -> Bool { activeStreams[turnID] != nil }
+
+    /// Keep `vm.isSendingToAI` in lockstep with "any stream running".
+    private func syncSendingFlag() { vm?.isSendingToAI = !activeStreams.isEmpty }
 
     init(vm: OverlayViewModel) {
         self.vm = vm
@@ -68,11 +76,18 @@ final class AIController {
                    assistantTurnID: UUID,
                    wasFirstExchange: Bool) {
         guard let vm else { return }
-        // One stream at a time: a new send always supersedes the old one.
-        // Callers that want the old answer to finish must not call this.
-        streamingTask?.cancel()
-        streamGeneration += 1
-        let gen = streamGeneration
+
+        // Concurrent answers: a new question does NOT cancel the previous one
+        // — both finish. If this exact turn is already running (Retry /
+        // Regenerate), drop it first so it doesn't double-run. Then enforce
+        // the cap by evicting the OLDEST still-running answer (latest wins on
+        // overflow).
+        cancelStream(turnID: assistantTurnID)
+        while activeStreams.count >= AIController.maxConcurrentStreams,
+              let oldest = streamOrder.first {
+            cancelStream(turnID: oldest)
+        }
+
         lastRetry = PendingRetry(
             userText: userText,
             screenshot: screenshot,
@@ -81,20 +96,34 @@ final class AIController {
             assistantTurnID: assistantTurnID
         )
         lastRequest = lastRetry
-        vm.isSendingToAI = true
-        vm.aiResponse    = ""
-        lastResponseFlushAt = .now
+        currentStreamID = assistantTurnID
+        vm.aiResponse   = ""
 
-        streamingTask = Task { @MainActor [weak self, weak vm] in
+        let task = Task { @MainActor [weak self, weak vm] in
             guard let self, let vm else { return }
             var accumulated = ""
+            // Per-stream throttle: each concurrent answer paces its own store
+            // writes so two streams don't starve each other's updates.
+            var lastFlush = ContinuousClock.now
             var streamFailed = false
+            // Only the newest stream mirrors onto the shared `aiResponse`
+            // (secondary status views show the latest answer). Background
+            // answers still update their own turn via the session store.
+            // A @MainActor closure (not a nested func) so it keeps the task's
+            // actor isolation when touching `currentStreamID` / `aiResponse`.
+            let mirrorIfCurrent: @MainActor (String) -> Void = { text in
+                if self.currentStreamID == assistantTurnID { vm.aiResponse = text }
+            }
             do {
                 let stream = AIManager.shared.streamMessage(
                     userText,
                     apiKey:         vm.apiKey,
                     openAIApiKey:   vm.openAIApiKey,
                     moonshotAPIKey: vm.moonshotAPIKey,
+                    grokAPIKey:     vm.grokAPIKey,
+                    deepSeekAPIKey: vm.deepSeekAPIKey,
+                    nvidiaAPIKey:   vm.nvidiaAPIKey,
+                    openRouterAPIKey: vm.openRouterAPIKey,
                     model:          vm.selectedModel,
                     screenshot:     screenshot,
                     systemPrompt:   systemPrompt,
@@ -110,13 +139,11 @@ final class AIController {
                         // made long answers feel slower the longer they
                         // got (O(n²) total parse work).
                         let now = ContinuousClock.now
-                        if now - self.lastResponseFlushAt >= .milliseconds(33) {
+                        if now - lastFlush >= .milliseconds(33) {
                             vm.sessionStore.setStreamingContent(accumulated,
                                                                 turnID: assistantTurnID)
-                            if gen == self.streamGeneration {
-                                vm.aiResponse = accumulated
-                            }
-                            self.lastResponseFlushAt = now
+                            mirrorIfCurrent(accumulated)
+                            lastFlush = now
                         }
                     case .usage(let inTok, let outTok):
                         vm.sessionStore.finalizeAssistant(turnID: assistantTurnID,
@@ -127,9 +154,7 @@ final class AIController {
                 // Final flush so the trailing tokens land even if they
                 // arrived inside the last 33ms window.
                 vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
-                if gen == self.streamGeneration, vm.aiResponse != accumulated {
-                    vm.aiResponse = accumulated
-                }
+                mirrorIfCurrent(accumulated)
 
                 if wasFirstExchange {
                     let s = vm.sessionStore.activeSession
@@ -141,15 +166,11 @@ final class AIController {
                     vm.sessionNotes = vm.notesManager.entries
                 }
             } catch is CancellationError {
-                // User hit Stop, or a newer question interrupted this
-                // answer. Keep whatever streamed — no error decoration,
-                // no retry-state churn. The interrupting question's send
-                // is already scheduled by whoever cancelled us.
+                // User hit Stop, or the cap evicted this answer. Keep whatever
+                // streamed — no error decoration, no retry-state churn.
                 streamFailed = true
                 vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
-                if gen == self.streamGeneration, vm.aiResponse != accumulated {
-                    vm.aiResponse = accumulated
-                }
+                mirrorIfCurrent(accumulated)
             } catch {
                 streamFailed = true
                 let errMsg = "Error: \(error.localizedDescription)"
@@ -157,13 +178,14 @@ final class AIController {
                 // Replace (not append): the throttled store may not have
                 // the full accumulated text yet.
                 vm.sessionStore.setStreamingContent(display, turnID: assistantTurnID)
-                if gen == self.streamGeneration { vm.aiResponse = display }
+                mirrorIfCurrent(display)
             }
-            // A newer stream owns the shared state now — this (superseded)
-            // task must not flip its flags or clear its task handle.
-            guard gen == self.streamGeneration else { return }
-            vm.isSendingToAI = false
-            self.streamingTask = nil
+            // Retire this stream. Guard against a straggler completion for a
+            // turn that was already cancelled + replaced (removeAll/nil are
+            // both no-ops in that case).
+            self.activeStreams[assistantTurnID] = nil
+            self.streamOrder.removeAll { $0 == assistantTurnID }
+            self.syncSendingFlag()
             if !streamFailed {
                 self.lastRetry = nil
                 // Anything the interviewer said while we were streaming is
@@ -172,14 +194,20 @@ final class AIController {
                 vm.flushPendingLiveTranscript()
             }
         }
+        // Register before the task suspends (we're on @MainActor, so the body
+        // can't run until this synchronous code yields).
+        activeStreams[assistantTurnID] = task
+        streamOrder.append(assistantTurnID)
+        syncSendingFlag()
     }
 
     /// Reset the assistant turn and replay the last request — the failed
     /// one when there is one, otherwise the last successful one
     /// (Regenerate).
     func retry() {
-        guard streamingTask == nil else { return }
         guard let r = lastRetry ?? lastRequest, let vm else { return }
+        // Don't double-run a turn that's already streaming.
+        guard activeStreams[r.assistantTurnID] == nil else { return }
         vm.resetAssistantTurn(id: r.assistantTurnID)
         runStream(userText: r.userText,
                   screenshot: r.screenshot,
@@ -189,10 +217,21 @@ final class AIController {
                   wasFirstExchange: false)
     }
 
-    /// Cancel whatever's streaming right now.
+    /// Cancel one specific answer (per-pair Stop, or cap eviction).
+    func cancelStream(turnID: UUID) {
+        guard let task = activeStreams[turnID] else { return }
+        task.cancel()
+        activeStreams[turnID] = nil
+        streamOrder.removeAll { $0 == turnID }
+        syncSendingFlag()
+    }
+
+    /// Cancel every in-flight answer (global Stop, session end / switch).
     func cancel() {
-        streamingTask?.cancel()
-        streamingTask = nil
+        for task in activeStreams.values { task.cancel() }
+        activeStreams.removeAll()
+        streamOrder.removeAll()
+        currentStreamID = nil
         vm?.isSendingToAI = false
     }
 

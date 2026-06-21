@@ -17,8 +17,24 @@ class AIManager {
     /// request/response shape) but lives on a different base URL and uses its
     /// own key, so it gets its own routing branch.
     private static let moonshotPrefixes = ["kimi", "moonshot-"]
+    /// xAI / Grok model ids. xAI's API is OpenAI-compatible (same request /
+    /// response shape) on its own base URL with its own key — own branch.
+    private static let grokPrefixes = ["grok"]
+    /// DeepSeek model ids. OpenAI-compatible API on its own base URL + key.
+    private static let deepseekPrefixes = ["deepseek"]
     static let openAIEndpoint   = "https://api.openai.com/v1/chat/completions"
     static let moonshotEndpoint = "https://api.moonshot.ai/v1/chat/completions"
+    static let grokEndpoint     = "https://api.x.ai/v1/chat/completions"
+    static let deepseekEndpoint = "https://api.deepseek.com/chat/completions"
+    /// NVIDIA-hosted NIM endpoint (OpenAI-compatible). Models are namespaced
+    /// `vendor/model` (e.g. `deepseek-ai/deepseek-v4-flash`), which is how we
+    /// route to it — the slash never appears in any other provider's id.
+    static let nvidiaEndpoint   = "https://integrate.api.nvidia.com/v1/chat/completions"
+    /// OpenRouter (OpenAI-compatible). One key → any model. Catalogue ids carry
+    /// an `openrouter/` prefix so they're distinguishable from NVIDIA's
+    /// `vendor/model`; the prefix is stripped before the request.
+    static let openRouterPrefix = "openrouter/"
+    static let openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
     func isOpenAIModel(_ model: String) -> Bool {
         AIManager.openAIPrefixes.contains { model.hasPrefix($0) }
@@ -28,22 +44,60 @@ class AIManager {
         AIManager.moonshotPrefixes.contains { model.hasPrefix($0) }
     }
 
+    func isGrokModel(_ model: String) -> Bool {
+        AIManager.grokPrefixes.contains { model.hasPrefix($0) }
+    }
+
+    func isDeepSeekModel(_ model: String) -> Bool {
+        AIManager.deepseekPrefixes.contains { model.hasPrefix($0) }
+    }
+
+    /// OpenRouter ids carry the explicit `openrouter/` prefix (checked BEFORE
+    /// NVIDIA, since the stripped id is itself `vendor/model`).
+    func isOpenRouterModel(_ model: String) -> Bool { model.hasPrefix(AIManager.openRouterPrefix) }
+
+    /// NVIDIA NIM models are `vendor/model` namespaced — the slash is unique to
+    /// them across our catalogue, so it doubles as the routing signal.
+    func isNVIDIAModel(_ model: String) -> Bool { model.contains("/") }
+
     func sendMessage(
         _ text: String,
         apiKey: String,
         openAIApiKey: String,
         moonshotAPIKey: String = "",
+        grokAPIKey: String = "",
+        deepSeekAPIKey: String = "",
+        nvidiaAPIKey: String = "",
+        openRouterAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
         history: [(user: String, assistant: String)] = [],
         maxTokens: Int = 1024,
-        timeoutInterval: TimeInterval = 60
+        timeoutInterval: TimeInterval = 60,
+        // Request strict JSON output (OpenAI-compatible `response_format`).
+        // Ignored on the Anthropic path. Use for prompts that must return JSON.
+        jsonMode: Bool = false
     ) async throws -> String {
-        if isMoonshotModel(model) {
-            return try await sendOpenAI(text, apiKey: moonshotAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.moonshotEndpoint, tokenField: "max_tokens")
+        // OpenRouter first — its ids carry the explicit `openrouter/` prefix,
+        // which would otherwise match NVIDIA's `vendor/model` rule. Strip the
+        // prefix before sending the real model id.
+        if isOpenRouterModel(model) {
+            let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+            return try await sendOpenAI(text, apiKey: openRouterAPIKey, model: real, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.openRouterEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        }
+        // NVIDIA next — its `vendor/model` ids (e.g. deepseek-ai/…) would also
+        // match the plain DeepSeek prefix, so it must win over DeepSeek.
+        if isNVIDIAModel(model) {
+            return try await sendOpenAI(text, apiKey: nvidiaAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.nvidiaEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        } else if isMoonshotModel(model) {
+            return try await sendOpenAI(text, apiKey: moonshotAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.moonshotEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        } else if isGrokModel(model) {
+            return try await sendOpenAI(text, apiKey: grokAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.grokEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
+        } else if isDeepSeekModel(model) {
+            return try await sendOpenAI(text, apiKey: deepSeekAPIKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.deepseekEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
         } else if isOpenAIModel(model) {
-            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
+            return try await sendOpenAI(text, apiKey: openAIApiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, jsonMode: jsonMode)
         } else {
             return try await sendAnthropic(text, apiKey: apiKey, model: model, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval)
         }
@@ -88,7 +142,7 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens") async throws -> String {
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens", jsonMode: Bool = false) async throws -> String {
         guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -114,19 +168,44 @@ class AIManager {
         // Completions — reasoning models (o1/o3/o4, GPT-5) reject the old
         // field. Moonshot's OpenAI-compatible API still expects `max_tokens`,
         // so the field name is passed in by the caller.
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "model": model, tokenField: maxTokens,
             "messages": messages
-        ])
+        ]
+        // Strict JSON output — supported by OpenAI / DeepSeek / Moonshot / Grok.
+        // Forces a parseable JSON object instead of prose/markdown-wrapped text.
+        if jsonMode { body["response_format"] = ["type": "json_object"] }
+        // DeepSeek's reasoning models spend the whole token budget on hidden
+        // `reasoning_content`, leaving `content` empty/truncated. For mechanical
+        // JSON extraction we don't want reasoning — turn it off so the JSON
+        // answer is emitted directly (and far cheaper).
+        if jsonMode, baseURL == AIManager.deepseekEndpoint {
+            body["thinking"] = ["type": "disabled"]
+        }
+        // NVIDIA-hosted reasoning models (e.g. deepseek-ai/*) gate thinking via
+        // chat_template_kwargs — turn it off for JSON extraction so `content`
+        // isn't swallowed by reasoning.
+        if jsonMode, baseURL == AIManager.nvidiaEndpoint, model.contains("deepseek") {
+            body["chat_template_kwargs"] = ["thinking": false]
+        }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw AIError.invalidResponse }
-        guard http.statusCode == 200 else { throw AIError.apiError(http.statusCode, String(data: data, encoding: .utf8) ?? "") }
-        guard
-            let json    = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = json["choices"] as? [[String: Any]],
-            let result  = choices.first?["message"] as? [String: Any],
-            let text    = result["content"] as? String
-        else { throw AIError.parseError }
+        let bodyString = String(data: data, encoding: .utf8) ?? ""
+        guard http.statusCode == 200 else { throw AIError.apiError(http.statusCode, bodyString) }
+        // Use try? so a non-JSON 200 body (gateway page, empty body, SSE, …)
+        // surfaces the actual text instead of propagating Foundation's opaque
+        // "data couldn't be read because it isn't in the correct format".
+        guard let obj = try? JSONSerialization.jsonObject(with: data),
+              let json = obj as? [String: Any] else {
+            throw AIError.apiError(http.statusCode, "Non-JSON response: \(String(bodyString.prefix(600)))")
+        }
+        guard let choices = json["choices"] as? [[String: Any]],
+              let result  = choices.first?["message"] as? [String: Any],
+              let text    = result["content"] as? String
+        else {
+            throw AIError.apiError(http.statusCode, "Unexpected response shape: \(String(bodyString.prefix(600)))")
+        }
         return text
     }
 
@@ -331,6 +410,243 @@ class AIManager {
         return ""
     }
 
+    // MARK: - Tool use (OpenAI / Moonshot-compatible)
+
+    /// A provider-agnostic file-editing tool with the SAME command surface as
+    /// Anthropic's built-in `text_editor` (`view` / `str_replace` / `insert` /
+    /// `create`). Lets OpenAI- and Moonshot/Kimi-compatible models drive the
+    /// exact same résumé-editing loop Claude runs natively, so the handler in
+    /// `generateViaStrReplace` works unchanged regardless of provider.
+    static func strReplaceEditorTool(mountPath: String) -> Tool {
+        Tool(
+            name: "str_replace_based_edit_tool",
+            description: """
+            Edit the text file mounted at \(mountPath). Commands:
+            - "view": read the file; optional "view_range": [start,end] (1-based lines).
+            - "str_replace": replace "old_str" with "new_str". "old_str" must occur EXACTLY ONCE.
+            - "insert": insert "new_str" after line "insert_line".
+            - "create": overwrite the whole file with "file_text".
+            Always "view" before editing. Make the smallest edits possible.
+            """,
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "command": ["type": "string",
+                                "enum": ["view", "str_replace", "insert", "create"]],
+                    "path": ["type": "string", "description": "File path; use \(mountPath)"],
+                    "old_str": ["type": "string", "description": "Exact text to replace (str_replace)"],
+                    "new_str": ["type": "string", "description": "Replacement / inserted text"],
+                    "insert_line": ["type": "integer", "description": "Line to insert after (insert)"],
+                    "view_range": ["type": "array", "items": ["type": "integer"],
+                                   "description": "[start,end] 1-based lines (view)"],
+                    "file_text": ["type": "string", "description": "Full new content (create)"]
+                ],
+                "required": ["command", "path"]
+            ]
+        )
+    }
+
+    /// OpenAI-/Moonshot-compatible counterpart to `sendWithTools`. Runs the
+    /// same view/str_replace loop over Chat Completions function-calling so GPT
+    /// and Kimi can tailor résumés through the identical handler. `baseURL` +
+    /// `tokenField` select the provider (OpenAI vs Moonshot), exactly like
+    /// `sendOpenAI` / `streamOpenAI`.
+    func sendWithToolsOpenAI(
+        initialUserMessage: String,
+        apiKey: String,
+        model: String,
+        baseURL: String,
+        tokenField: String,
+        systemPrompt: String,
+        tools: [Tool],
+        maxIterations: Int = 40,
+        maxTokens: Int = 8192,
+        timeoutInterval: TimeInterval = 300,
+        // Backstop for models (Grok/Kimi/smaller GPT) that quit the tool loop
+        // after one or two edits: if the model stops with fewer than
+        // `minToolEdits` editing calls, nudge it to keep going (up to
+        // `maxNudges` times) instead of returning. 0 = disabled.
+        minToolEdits: Int = 0,
+        maxNudges: Int = 0,
+        // When false, NEVER elide old tool outputs — the model keeps the whole
+        // résumé (and its earlier views) in context the entire loop. Costs more
+        // input tokens but stops the model "forgetting" the experience section
+        // it needs to edit. true keeps the token-saving trim.
+        trimHistory: Bool = true,
+        // Called when the model wants to stop AND the edit-count floor is met.
+        // Return a nudge string to force one more round (e.g. "you skipped the
+        // experience section"), or nil to let it stop. Counts against maxNudges.
+        sectionCheck: (() async -> String?)? = nil,
+        onStatus: (@Sendable (String) -> Void)? = nil,
+        handle: (_ name: String, _ input: [String: Any]) async throws -> String
+    ) async throws -> (text: String, inputTokens: Int, outputTokens: Int) {
+        guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
+        let toolsPayload: [[String: Any]] = tools.map { t in
+            ["type": "function",
+             "function": ["name": t.name,
+                          "description": t.description,
+                          "parameters": t.inputSchema]]
+        }
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": systemPrompt],
+            ["role": "user",   "content": initialUserMessage]
+        ]
+        var editCalls = 0   // str_replace / insert calls made so far
+        var nudges    = 0
+        var totalIn   = 0   // cumulative prompt tokens across the loop
+        var totalOut  = 0   // cumulative completion tokens
+
+        for iteration in 0..<maxIterations {
+            onStatus?(iteration == 0
+                      ? "Reading your résumé…"
+                      : "Editing — \(editCalls) edits so far · ~\(totalIn + totalOut) tokens")
+            // Token-saving trim (off when trimHistory == false so the model
+            // keeps the full document in view the whole time).
+            if trimHistory, iteration > 4 {
+                messages = Self.trimOldToolMessagesOpenAI(in: messages, recentToKeep: 6)
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.timeoutInterval = timeoutInterval
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "content-type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": model,
+                tokenField: maxTokens,
+                "messages": messages,
+                "tools": toolsPayload,
+                "tool_choice": "auto"
+            ])
+
+            // 429 backoff — capped exponential. Tool loops carry a growing
+            // transcript and routinely hit per-minute limits.
+            var attempt = 0
+            let maxAttempts = 6
+            var data = Data()
+            while true {
+                let (d, r) = try await URLSession.shared.data(for: req)
+                guard let h = r as? HTTPURLResponse else { throw AIError.invalidResponse }
+                if h.statusCode == 200 { data = d; break }
+                if h.statusCode == 429, attempt < maxAttempts {
+                    let waitSec = min(60, 5 * pow(2, Double(attempt)))
+                    onStatus?("Rate-limited — waiting \(Int(waitSec))s…")
+                    try await Task.sleep(nanoseconds: UInt64(waitSec * 1_000_000_000))
+                    attempt += 1
+                    continue
+                }
+                throw AIError.apiError(h.statusCode, String(data: d, encoding: .utf8) ?? "")
+            }
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any]
+            else { throw AIError.parseError }
+
+            // Accumulate token usage so the caller can show the run's cost.
+            if let usage = json["usage"] as? [String: Any] {
+                totalIn  += usage["prompt_tokens"]     as? Int ?? 0
+                totalOut += usage["completion_tokens"] as? Int ?? 0
+            }
+
+            let toolCalls = message["tool_calls"] as? [[String: Any]] ?? []
+
+            // Record the assistant turn. It must carry `tool_calls` verbatim so
+            // the `role:tool` replies below reference valid ids.
+            var assistantMsg: [String: Any] = ["role": "assistant"]
+            assistantMsg["content"] = message["content"] ?? NSNull()
+            if !toolCalls.isEmpty { assistantMsg["tool_calls"] = toolCalls }
+            messages.append(assistantMsg)
+
+            // No tool calls → the model wants to stop. If it bailed early with
+            // too few edits, nudge it to keep tailoring instead of returning.
+            if toolCalls.isEmpty {
+                if nudges < maxNudges {
+                    var nudge: String? = nil
+                    if editCalls < minToolEdits {
+                        // Too few edits overall — push for more.
+                        nudge = """
+                        You've made only \(editCalls) edit(s) so far and the \
+                        résumé is NOT done — you've barely touched it. Do NOT \
+                        stop. `view` the EXPERIENCE section if you haven't, then \
+                        keep editing: reword MULTIPLE bullets under EACH employer \
+                        to match the job description, and update the SKILLS list. \
+                        Make at least \(max(1, minToolEdits - editCalls)) more \
+                        str_replace edits now, then stop. Keep every edit a tiny \
+                        str_replace inside a single <w:t>; never touch tables or \
+                        run/paragraph properties.
+                        """
+                    } else if let check = sectionCheck {
+                        // Count is fine, but a required section may be untouched
+                        // (e.g. the model edited only the summary + skills).
+                        nudge = await check()
+                    }
+                    if let nudge {
+                        nudges += 1
+                        onStatus?("Not done yet (\(editCalls) edits) — pushing it to tailor more…")
+                        messages.append(["role": "user", "content": nudge])
+                        continue
+                    }
+                }
+                return (message["content"] as? String ?? "", totalIn, totalOut)
+            }
+
+            for call in toolCalls {
+                let id = call["id"] as? String ?? ""
+                let fn = call["function"] as? [String: Any] ?? [:]
+                let name = fn["name"] as? String ?? ""
+                // OpenAI/Kimi return `arguments` as a JSON string; be tolerant
+                // of a pre-parsed object too.
+                let input: [String: Any] = {
+                    if let dict = fn["arguments"] as? [String: Any] { return dict }
+                    if let s = fn["arguments"] as? String,
+                       let d = s.data(using: .utf8),
+                       let dict = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] {
+                        return dict
+                    }
+                    return [:]
+                }()
+                // Count edits (not `view`s) so the early-stop backstop knows
+                // how much real tailoring has happened.
+                let cmd = input["command"] as? String ?? ""
+                if cmd == "str_replace" || cmd == "insert" || cmd == "create" {
+                    editCalls += 1
+                }
+                onStatus?(Self.statusLine(for: input))
+                let output: String
+                do { output = try await handle(name, input) }
+                catch { output = "Error: \(error.localizedDescription)" }
+                messages.append([
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": output
+                ])
+            }
+        }
+        onStatus?("Reached iteration limit — saving edits made so far.")
+        return ("", totalIn, totalOut)
+    }
+
+    /// Elide the content of old `role:"tool"` messages (keep the last
+    /// `recentToKeep`) so a long OpenAI/Kimi edit loop doesn't balloon input
+    /// tokens. Mirrors `trimOldToolResults` for the Anthropic path.
+    private static func trimOldToolMessagesOpenAI(in messages: [[String: Any]],
+                                                  recentToKeep: Int) -> [[String: Any]] {
+        var result = messages
+        var toolIdx: [Int] = []
+        for (i, m) in result.enumerated() where (m["role"] as? String) == "tool" {
+            toolIdx.append(i)
+        }
+        guard toolIdx.count > recentToKeep else { return result }
+        let cutoff = toolIdx.count - recentToKeep
+        for k in 0..<cutoff {
+            let idx = toolIdx[k]
+            if let payload = result[idx]["content"] as? String, payload.count > 200 {
+                result[idx]["content"] = "(earlier tool output elided — \(payload.count) chars)"
+            }
+        }
+        return result
+    }
+
     /// Replace the `content` of tool_result blocks on all but the last
     /// `recentToKeep` user turns with a short "elided" stub. Keeps the
     /// conversation shape intact so Claude still sees that tools were used,
@@ -438,6 +754,10 @@ class AIManager {
         apiKey: String,
         openAIApiKey: String,
         moonshotAPIKey: String = "",
+        grokAPIKey: String = "",
+        deepSeekAPIKey: String = "",
+        nvidiaAPIKey: String = "",
+        openRouterAPIKey: String = "",
         model: String,
         screenshot: NSImage? = nil,
         systemPrompt: String = "You are a helpful assistant. Respond helpfully and concisely.",
@@ -446,11 +766,44 @@ class AIManager {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    if isMoonshotModel(model) {
+                    if isOpenRouterModel(model) {
+                        let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+                        try await streamOpenAI(text, apiKey: openRouterAPIKey, model: real,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.openRouterEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isNVIDIAModel(model) {
+                        try await streamOpenAI(text, apiKey: nvidiaAPIKey, model: model,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.nvidiaEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isMoonshotModel(model) {
                         try await streamOpenAI(text, apiKey: moonshotAPIKey, model: model,
                                                screenshot: screenshot, systemPrompt: systemPrompt,
                                                history: history,
                                                baseURL: AIManager.moonshotEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isGrokModel(model) {
+                        try await streamOpenAI(text, apiKey: grokAPIKey, model: model,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.grokEndpoint,
+                                               tokenField: "max_tokens") { event in
+                            continuation.yield(event)
+                        }
+                    } else if isDeepSeekModel(model) {
+                        try await streamOpenAI(text, apiKey: deepSeekAPIKey, model: model,
+                                               screenshot: screenshot, systemPrompt: systemPrompt,
+                                               history: history,
+                                               baseURL: AIManager.deepseekEndpoint,
                                                tokenField: "max_tokens") { event in
                             continuation.yield(event)
                         }

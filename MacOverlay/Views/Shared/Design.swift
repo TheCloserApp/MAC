@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Central design tokens. Use these instead of magic numbers. Keeps the app
 /// cohesive and makes global restyles a one-file change.
@@ -46,14 +47,33 @@ enum Design {
     // instead of a repo-wide search-and-replace.
     enum Surface {
         /// Base fill under shell capsules, cards, panels, and onboarding.
-        /// One flat, uniform shade everywhere — neutral charcoal (#212123),
-        /// the ChatGPT-desktop palette: near-black surface, white primary
-        /// text, soft-gray secondaries, subtle blue accents. No gradient.
-        static let shellFill = Color(red: 0x21/255, green: 0x21/255, blue: 0x23/255)
+        /// One flat, uniform shade everywhere — neutral charcoal (#212121),
+        /// matching the ChatGPT desktop dark palette. No gradient.
+        static let shellFill = Color(red: 0x21/255, green: 0x21/255, blue: 0x21/255)
+        static let raisedFill = Color(red: 0x2f/255, green: 0x2f/255, blue: 0x2f/255)
+        static let controlFill = Color(red: 0x2a/255, green: 0x2a/255, blue: 0x2a/255)
+        static let controlHoverFill = Color(red: 0x33/255, green: 0x33/255, blue: 0x33/255)
+        static let inputFill = Color(red: 0x30/255, green: 0x30/255, blue: 0x30/255)
+        static let userBubbleFill = Color(red: 0x30/255, green: 0x30/255, blue: 0x30/255)
+        static let previewFill = Color(red: 0x27/255, green: 0x27/255, blue: 0x27/255)
+        static let codeFill = Color(red: 0x17/255, green: 0x17/255, blue: 0x17/255)
+        static let separator = Color.white.opacity(0.08)
+        static let hairline = Color.white.opacity(0.10)
+        static let strongHairline = Color.white.opacity(0.14)
+    }
+
+    // MARK: - ChatGPT desktop text colors
+    enum Ink {
+        static let primary = Color(red: 0xec/255, green: 0xec/255, blue: 0xec/255)
+        static let secondary = Color(red: 0xc5/255, green: 0xc5/255, blue: 0xc5/255)
+        static let tertiary = Color(red: 0x8e/255, green: 0x8e/255, blue: 0x8e/255)
+        static let muted = Color(red: 0x6f/255, green: 0x6f/255, blue: 0x6f/255)
+        static let inverse = Color(red: 0x21/255, green: 0x21/255, blue: 0x21/255)
     }
 
     // MARK: - macOS system accents (used by sidebar / top strip / chat rail)
     enum Accent {
+        static let chatGPT = Color(red: 16/255, green: 163/255, blue: 127/255)
         static let blue   = Color(red: 10/255,  green: 132/255, blue: 255/255)
         static let green  = Color(red: 52/255,  green: 199/255, blue: 89/255)
         static let red    = Color(red: 255/255, green: 69/255,  blue: 58/255)
@@ -130,7 +150,7 @@ extension View {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
+                    .strokeBorder(Design.Surface.hairline, lineWidth: 0.75)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .designShadow(shadow)
@@ -153,7 +173,7 @@ extension View {
         )
         return self
             .background { shape.fill(Design.Surface.shellFill).opacity(opacity) }
-            .overlay { shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75) }
+            .overlay { shape.strokeBorder(Design.Surface.hairline, lineWidth: 0.75) }
             .clipShape(shape)
             .designShadow(shadow)
     }
@@ -179,7 +199,7 @@ extension View {
 /// Background that reveals on hover — for list rows.
 struct HoverHighlight: ViewModifier {
     @State private var hovering = false
-    var color: Color = .primary.opacity(0.06)
+    var color: Color = Design.Surface.controlHoverFill
     func body(content: Content) -> some View {
         content
             .background(
@@ -191,8 +211,49 @@ struct HoverHighlight: ViewModifier {
 }
 
 extension View {
-    func hoverHighlight(_ color: Color = .primary.opacity(0.06)) -> some View {
+    func hoverHighlight(_ color: Color = Design.Surface.controlHoverFill) -> some View {
         modifier(HoverHighlight(color: color))
+    }
+}
+
+/// SwiftUI's hidden scroll indicators can still leave AppKit's scroller
+/// gutter in narrow overlay panels. Keep wheel/trackpad scrolling, but make
+/// AppKit use overlay scrollers with zero insets so no invisible strip takes
+/// layout or visual space.
+private struct ScrollGutterHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { Self.configure(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { Self.configure(from: nsView) }
+    }
+
+    private static func configure(from view: NSView) {
+        var current = view.superview
+        while let candidate = current {
+            if let scrollView = candidate as? NSScrollView {
+                scrollView.hasVerticalScroller = false
+                scrollView.hasHorizontalScroller = false
+                scrollView.autohidesScrollers = true
+                scrollView.scrollerStyle = .overlay
+                scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+                scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+                scrollView.automaticallyAdjustsContentInsets = false
+                return
+            }
+            current = candidate.superview
+        }
+    }
+}
+
+extension View {
+    func hiddenScrollGutter() -> some View {
+        self
+            .scrollIndicators(.hidden)
+            .background(ScrollGutterHider().frame(width: 0, height: 0))
     }
 }
 
@@ -211,7 +272,7 @@ struct TypingIndicatorView: View {
             HStack(spacing: 4) {
                 ForEach(0..<3) { i in
                     Circle()
-                        .fill(Color.secondary)
+                        .fill(Design.Ink.secondary)
                         .frame(width: 5, height: 5)
                         .opacity(dotOpacity(time: t, index: i))
                         .scaleEffect(dotScale(time: t, index: i))

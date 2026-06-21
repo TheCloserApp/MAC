@@ -1,6 +1,10 @@
 # Build output
 build/
 
+# Packaged disk image (build artifact). The landing-page copy in Website/
+# is kept separately for download.
+/MacOverlay.dmg
+
 # macOS
 .DS_Store
 
