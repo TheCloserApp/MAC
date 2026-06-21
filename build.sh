@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-echo "🔨 Building MacOverlay..."
+echo "🔨 Building thecloser..."
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$PROJECT_DIR/MacOverlay"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/MacOverlay.app"
+APP_DIR="$BUILD_DIR/thecloser.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -21,7 +21,7 @@ while IFS= read -r -d '' f; do SWIFT_SOURCES+=("$f"); done < <(find "$SRC_DIR" -
 
 swiftc \
     -O \
-    -o "$MACOS_DIR/MacOverlay" \
+    -o "$MACOS_DIR/thecloser" \
     -framework Cocoa \
     -framework SwiftUI \
     -framework AVFoundation \
@@ -47,7 +47,7 @@ cp "$SRC_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
 # Sign in with Apple will not actually return a credential against an
 # ad-hoc-signed bundle. To ship to real customers, rebuild with a
 # Developer ID Application identity that's been provisioned for the
-# `com.overlay.MacOverlay` bundle ID with the Sign in with Apple
+# `tech.thecloser.mac` bundle ID with the Sign in with Apple
 # capability enabled in Apple Developer's Identifiers panel.
 ENTITLEMENTS="$SRC_DIR/MacOverlay.entitlements"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -68,7 +68,7 @@ echo "📍 App location: $APP_DIR"
 
 if [[ "$1" == "--run" || "$1" == "-r" ]]; then
     echo "🔄 Relaunching..."
-    pkill MacOverlay 2>/dev/null; sleep 0.3
+    pkill thecloser 2>/dev/null; pkill MacOverlay 2>/dev/null; sleep 0.3
     open "$APP_DIR"
     echo "✅ Running!"
 else

@@ -489,7 +489,7 @@ class PeerControlServer: ObservableObject, @unchecked Sendable {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>MacOverlay — Peer Control</title>
+<title>thecloser — Peer Control</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d0d12;color:#e2e8f0;min-height:100vh}
@@ -582,7 +582,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <!-- Auth -->
 <div id="authWrap" class="auth-wrap">
   <div class="auth-card">
-    <div class="at">MacOverlay</div>
+    <div class="at">thecloser</div>
     <div class="as">Enter the 6-digit access code shown in the overlay settings to connect.</div>
     <br>
     <input id="codeInp" class="ci" type="text" inputmode="numeric" maxlength="6" placeholder="······" autocomplete="off">

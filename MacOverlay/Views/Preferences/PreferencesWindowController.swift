@@ -16,7 +16,7 @@ final class PreferencesWindowController {
 
         let hosting = NSHostingController(rootView: PreferencesView().environment(vm))
         let w = NSWindow(contentViewController: hosting)
-        w.title = "MacOverlay Preferences"
+        w.title = "thecloser Preferences"
         w.styleMask = [.titled, .closable, .miniaturizable]
         w.setContentSize(NSSize(width: 580, height: 460))
         w.isReleasedWhenClosed = false

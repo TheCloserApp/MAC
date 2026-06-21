@@ -300,7 +300,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
               inputFormat.description, inputFormat.channelCount, inputFormat.sampleRate)
         guard inputFormat.channelCount > 0, inputFormat.sampleRate > 0 else {
             throw TranscriptionError.permissionDenied(
-                "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that MacOverlay has Microphone permission.")
+                "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that thecloser has Microphone permission.")
         }
 
         guard let fmt = AVAudioFormat(commonFormat: .pcmFormatInt16,
@@ -376,7 +376,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         } catch {
             throw TranscriptionError.permissionDenied(
                 "System audio error: \((error as NSError).localizedDescription). " +
-                "Open System Settings → Privacy & Security → Screen Recording → enable MacOverlay, " +
+                "Open System Settings → Privacy & Security → Screen Recording → enable thecloser," +
                 "then QUIT and relaunch the app."
             )
         }
