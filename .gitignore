@@ -13,3 +13,6 @@ build/
 .swiftpm/
 DerivedData/
 *.xcworkspace/xcuserdata/
+
+# Claude Code local state
+.claude/
