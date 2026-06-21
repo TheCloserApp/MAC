@@ -176,6 +176,7 @@ MacOverlay/
 
 ## License
 
-Proprietary — © 2026. All rights reserved.
+[MIT](LICENSE) — free to use and modify. The app charges nothing; bring your
+own provider API key.
 </content>
 </invoke>
