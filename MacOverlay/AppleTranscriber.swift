@@ -144,7 +144,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
                   format.description, format.channelCount, format.sampleRate)
             guard format.channelCount > 0, format.sampleRate > 0 else {
                 throw TranscriptionError.permissionDenied(
-                    "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that MacOverlay has Microphone permission.")
+                    "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that thecloser has Microphone permission.")
             }
             node.removeTap(onBus: 0)
             var bufferCount = 0
@@ -463,7 +463,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         } catch {
             throw TranscriptionError.permissionDenied(
                 "System audio error: \((error as NSError).localizedDescription). " +
-                "Open System Settings → Privacy & Security → Screen Recording → enable MacOverlay, " +
+                "Open System Settings → Privacy & Security → Screen Recording → enable thecloser," +
                 "then QUIT and relaunch the app."
             )
         }

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>MacOverlay</string>
+    <string>thecloser</string>
     <key>CFBundleDisplayName</key>
-    <string>Mac Overlay</string>
+    <string>thecloser</string>
     <key>CFBundleIdentifier</key>
-    <string>com.overlay.MacOverlay</string>
+    <string>tech.thecloser.mac</string>
     <key>CFBundleVersion</key>
     <string>3.0</string>
     <key>CFBundleShortVersionString</key>
@@ -15,7 +15,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>MacOverlay</string>
+    <string>thecloser</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -25,9 +25,9 @@
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>MacOverlay needs microphone access to transcribe your speech in real time.</string>
+    <string>thecloser needs microphone access to transcribe your speech in real time.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>MacOverlay uses speech recognition to convert audio to text.</string>
+    <string>thecloser uses speech recognition to convert audio to text.</string>
     <!--
       Calendar permission strings deliberately omitted in v1. The Calendar
       feature is hidden behind FeatureFlags.calendarEnabled; without these

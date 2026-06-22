@@ -1,4 +1,4 @@
-# MacOverlay — Invisible AI Copilot for macOS
+# thecloser — Invisible AI Copilot for macOS
 
 A native Swift overlay that floats above every app — including full-screen
 calls — and is **excluded from screen capture**, so it's there for you but
@@ -55,9 +55,9 @@ generate a tailored DOCX with before/after scoring).
 
 ### Build
 ```bash
-./build.sh          # compile + ad-hoc sign into build/MacOverlay.app
+./build.sh          # compile + ad-hoc sign into build/thecloser.app
 ./build.sh --run    # build, kill any running copy, and relaunch
-open build/MacOverlay.app
+open build/thecloser.app
 ```
 
 > **Intel Macs:** change `-target arm64-apple-macos14.0` to
@@ -70,7 +70,7 @@ open build/MacOverlay.app
 
 ### Install
 ```bash
-cp -r build/MacOverlay.app /Applications/
+cp -r build/thecloser.app /Applications/
 ```
 Launch at login: **System Settings → General → Login Items → +**.
 
@@ -176,6 +176,7 @@ MacOverlay/
 
 ## License
 
-Proprietary — © 2026. All rights reserved.
+[MIT](LICENSE) — free to use and modify. The app charges nothing; bring your
+own provider API key.
 </content>
 </invoke>

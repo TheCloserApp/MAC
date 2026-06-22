@@ -91,7 +91,7 @@ struct WebPanelView: NSViewRepresentable {
             }
         case .denied, .restricted:
             NSLog("[WebPanel] mic access denied at OS level — websites will get a silent stream. " +
-                  "Open System Settings → Privacy & Security → Microphone and enable MacOverlay.")
+                  "Open System Settings → Privacy & Security → Microphone and enable thecloser.")
         case .authorized:
             break
         @unknown default:

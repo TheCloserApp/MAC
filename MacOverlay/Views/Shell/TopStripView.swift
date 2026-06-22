@@ -346,7 +346,7 @@ struct TopStripView: View {
             Button {
                 NSApp.terminate(nil)
             } label: {
-                Label("Quit MacOverlay", systemImage: "power")
+                Label("Quit thecloser", systemImage: "power")
             }
         } label: {
             Image(systemName: "ellipsis")
