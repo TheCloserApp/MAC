@@ -124,11 +124,17 @@ struct OverlayView: View {
         // mid-drag). Revealed on hover like the rest of the chrome; kept
         // hit-testable even when faded so an in-flight drag is never dropped
         // if the cursor briefly leaves the panel bounds.
-        .overlay(alignment: .trailing) {
+        // Corner drag-resize — the single resize affordance (the old
+        // trailing-edge grip was redundant once the corner could do both
+        // axes). Bottom-trailing, width AND height together with the top
+        // edge pinned; hover-revealed like the rest of the chrome.
+        .overlay(alignment: .bottomTrailing) {
             if vm.shellStage == .expanded && vm.primarySurface != nil {
-                ResizeGrip { dx, ended in vm.onWidthResize?(dx, ended) }
-                    .opacity(chromeHovering ? 1 : 0)
-                    .animation(.easeInOut(duration: 0.18), value: chromeHovering)
+                CornerResizeGrip { dx, dy, ended in
+                    vm.onCornerResize?(dx, dy, ended)
+                }
+                .opacity(chromeHovering ? 1 : 0)
+                .animation(.easeInOut(duration: 0.18), value: chromeHovering)
             }
         }
         .animation(Design.Motion.standard, value: vm.shellStage)
@@ -187,11 +193,7 @@ struct OverlayView: View {
     /// Applies on BOTH the interview and chat surfaces — they render the
     /// same live session, and requiring `.interview` here left the chat
     /// surface's focus view floating centered in a full-height card.
-    private var focusHugging: Bool {
-        (vm.primarySurface == .interview || vm.primarySurface == .chat)
-            && vm.isInterviewSession
-            && !vm.isInterviewTextOnly && vm.interviewFocusMode
-    }
+    private var focusHugging: Bool { vm.focusHuggingActive }
 
     @ViewBuilder
     private var upperLayer: some View {
@@ -203,15 +205,28 @@ struct OverlayView: View {
                     // own slot (transparent when idle, so no empty bar
                     // shows) so the card — transcript strip + answer — never
                     // moves, and the header never overlaps the transcript.
-                    revealOnHover(floatingHeaderBar)
-                        .padding(.leading, Self.panelInsetLeading)
-                        .padding(.trailing, Self.panelInsetTrailing)
-                        .padding(.bottom, 6)
-                    topCard
-                        .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
-                        .padding(.leading, Self.panelInsetLeading)
-                        .padding(.trailing, Self.panelInsetTrailing)
-                        .transition(.opacity)
+                    // The stack's natural height is measured and reported so
+                    // AppDelegate can track the panel height to the content
+                    // in realtime — the window grows/shrinks smoothly with
+                    // the answer instead of clipping it or leaving a dead
+                    // gap below the card.
+                    VStack(spacing: 0) {
+                        revealOnHover(floatingHeaderBar)
+                            .padding(.bottom, 6)
+                        topCard
+                            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+                            .transition(.opacity)
+                    }
+                    .padding(.leading, Self.panelInsetLeading)
+                    .padding(.trailing, Self.panelInsetTrailing)
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: FocusShellHeightKey.self,
+                                               value: g.size.height)
+                    })
+                    .onPreferenceChange(FocusShellHeightKey.self) { h in
+                        guard h > 0 else { return }
+                        vm.onFocusContentHeight?(h)
+                    }
                     Spacer(minLength: 0)
                 } else {
                     topCard
@@ -385,47 +400,81 @@ struct OverlayView: View {
 
 // MARK: - Resize grip
 
-/// Slim vertical grip that sits in the panel's right margin. Dragging it
-/// horizontally reports the cumulative translation back through `onResize`
-/// so AppDelegate can resize the host NSPanel's width. Shows an
-/// east-west resize cursor on hover.
-private struct ResizeGrip: View {
-    /// `(cumulativeTranslationX, isEnded)` — matches AppDelegate's
-    /// `handleWidthResize`, which captures the base frame on the first
-    /// change and resets on `isEnded`.
-    let onResize: (CGFloat, Bool) -> Void
+/// Reports the Live Focus stack's natural height so AppDelegate can track
+/// the panel height to the content in realtime.
+private struct FocusShellHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Diagonal corner grip at the panel's bottom-trailing. Reports cumulative
+/// drag translation in both axes so AppDelegate can resize the host panel's
+/// width and height together.
+private struct CornerResizeGrip: View {
+    /// `(cumulative dx, cumulative dy, isEnded)`, dy positive = downward.
+    let onResize: (CGFloat, CGFloat, Bool) -> Void
     @State private var hovering = false
+    /// Screen-space anchor captured on the first drag event. See the
+    /// gesture below for why SwiftUI's own translation can't be used.
+    @State private var dragAnchor: NSPoint?
 
     var body: some View {
-        VStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { _ in
-                Circle()
-                    .fill(Design.Ink.tertiary)
-                    .frame(width: 2.5, height: 2.5)
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundColor(Design.Ink.tertiary)
+            .frame(width: 18, height: 18)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(hovering ? Design.Surface.controlHoverFill
+                                   : Design.Surface.controlFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+            .onHover { h in
+                hovering = h
+                if h { Self.diagonalCursor.push() } else { NSCursor.pop() }
             }
+            // Screen-space deltas, NOT SwiftUI's translation. The grip
+            // lives INSIDE the window it resizes, so any window-relative
+            // coordinate space (.global is window-relative on macOS) moves
+            // under the cursor as the panel grows — each event then reports
+            // a translation polluted by the resize it just caused, which is
+            // exactly the feedback loop that made dragging flicker.
+            // `NSEvent.mouseLocation` is absolute screen space and cannot
+            // feed back. Screen y grows upward, so invert it to keep
+            // "drag down = taller".
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in
+                        let loc = NSEvent.mouseLocation
+                        let anchor = dragAnchor ?? loc
+                        if dragAnchor == nil { dragAnchor = loc }
+                        onResize(loc.x - anchor.x, anchor.y - loc.y, false)
+                    }
+                    .onEnded { _ in
+                        let loc = NSEvent.mouseLocation
+                        let anchor = dragAnchor ?? loc
+                        onResize(loc.x - anchor.x, anchor.y - loc.y, true)
+                        dragAnchor = nil
+                    }
+            )
+            .help("Drag to resize")
+            .padding(.trailing, 2)
+            .padding(.bottom, 2)
+    }
+
+    /// Real diagonal resize cursor on macOS 15+, crosshair fallback below
+    /// (AppKit exposes no public diagonal cursor before then).
+    private static var diagonalCursor: NSCursor {
+        if #available(macOS 15.0, *) {
+            return .frameResize(position: .bottomRight, directions: .all)
         }
-        .frame(width: 12, height: 46)
-        .background(
-            Capsule(style: .continuous)
-                .fill(hovering ? Design.Surface.controlHoverFill
-                               : Design.Surface.controlFill)
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder(Design.Surface.hairline, lineWidth: 0.5)
-        )
-        .contentShape(Rectangle())
-        .onHover { h in
-            hovering = h
-            if h { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { onResize($0.translation.width, false) }
-                .onEnded   { onResize($0.translation.width, true) }
-        )
-        .help("Drag to resize")
-        .padding(.trailing, 1)
+        return .crosshair
     }
 }
 

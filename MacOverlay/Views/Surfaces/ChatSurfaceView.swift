@@ -319,11 +319,17 @@ struct ChatSurfaceView: View {
     /// focus card lag came from re-measuring the card per token, not from
     /// laying out the text.
     private func streamingAnswer(_ turn: ChatTurn?) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let turn, !turn.content.isEmpty {
+        let hasText = !(turn?.content ?? "").isEmpty
+        return VStack(alignment: .leading, spacing: 0) {
+            if let turn, hasText {
                 MarkdownResponseView(text: turn.content, baseSize: 13.5)
             } else {
+                // Waiting on the first token: pin to ONE line's worth of
+                // height. Growing the panel for "Thinking…" was pure noise
+                // — the window should only start moving once real answer
+                // text is actually arriving.
                 StreamingPlaceholderRow()
+                    .frame(height: Self.placeholderRowHeight)
             }
         }
         .padding(.horizontal, 22)
@@ -337,7 +343,18 @@ struct ChatSurfaceView: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxHeight: Self.focusMaxHeight, alignment: .top)
         .clipped()
+        // Glide, don't step: each ~30Hz flush that adds a wrapped line
+        // animates the card's growth instead of snapping — matching the
+        // panel's own animated resize (AppDelegate tracks this height).
+        // Only animate once text exists; the placeholder→first-token swap
+        // shouldn't lerp through an intermediate height.
+        .animation(hasText ? .easeOut(duration: 0.15) : nil,
+                   value: turn?.content ?? "")
     }
+
+    /// Fixed height of the "Thinking…" row, so waiting for the first token
+    /// never resizes the panel.
+    private static let placeholderRowHeight: CGFloat = 20
 
     /// A finished answer. Measured ONCE (the text is static now), so the
     /// card hugs short answers and caps + scrolls long ones — none of the
@@ -359,6 +376,10 @@ struct ChatSurfaceView: View {
         .onPreferenceChange(FocusHeightKey.self) { focusContentHeight = $0 }
         .frame(height: min(max(focusContentHeight, 56), Self.focusMaxHeight),
                alignment: .top)
+        // Smooth the streaming→completed swap and ‹ › navigation between
+        // answers of different lengths — the card glides to the measured
+        // height instead of snapping.
+        .animation(.easeOut(duration: 0.18), value: focusContentHeight)
         .onChange(of: turn.id) { _, _ in focusContentHeight = 0 }
     }
 
@@ -512,6 +533,9 @@ struct ChatSurfaceView: View {
                         .textSelection(.enabled)
                         .animation(.easeInOut(duration: 0.12), value: vm.transcription)
                     Spacer(minLength: 6)
+                    if !vm.transcription.isEmpty {
+                        TranscriptCopyButton()
+                    }
                     if !vm.isInterviewSession {
                         backendBadge
                     }
@@ -984,6 +1008,37 @@ private struct FocusHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Tiny copy button on the live transcript strip — copies whatever is
+/// currently transcribed so the user can grab the interviewer's question
+/// mid-session (paste into notes, a search, another tool) without waiting
+/// for it to become a chat turn.
+private struct TranscriptCopyButton: View {
+    @Environment(OverlayViewModel.self) private var vm
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let text = vm.transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation(Design.Motion.fast) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(Design.Motion.fast) { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(copied ? Design.Accent.green : .secondary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied" : "Copy transcript")
     }
 }
 

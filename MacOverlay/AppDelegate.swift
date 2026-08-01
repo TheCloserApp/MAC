@@ -110,9 +110,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.animateShellFrame(stage: stage)
         }
 
-        // Drag-to-resize from the trailing-edge grip inside the shell.
-        vm.onWidthResize = { [weak self] dx, ended in
-            self?.handleWidthResize(translationX: dx, ended: ended)
+        // Corner grip: resize width + height together, top edge pinned.
+        vm.onCornerResize = { [weak self] dx, dy, ended in
+            self?.handleCornerResize(translationX: dx, translationY: dy, ended: ended)
+        }
+
+        // Live Focus reports its content height; track the panel to it so
+        // the window grows/shrinks smoothly with the streamed answer.
+        vm.onFocusContentHeight = { [weak self] h in
+            self?.handleFocusContentHeight(h)
         }
 
         // Watch the panel's position so the shell can flip the sidebar to the
@@ -476,40 +482,115 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Drag-to-resize (trailing grip)
+    // MARK: - Drag-to-resize (corner grip)
 
-    /// Frame captured at the start of a grip drag. Each `DragGesture`
-    /// translation is cumulative from the drag's start, so we apply it
-    /// against this stable base rather than compounding per-event deltas.
-    private var widthResizeBaseFrame: NSRect?
+    /// Frame captured at the start of a grip drag. The grip reports
+    /// deltas cumulative from the drag's start, so we apply them against
+    /// this stable base rather than compounding per-event deltas.
+    private var cornerResizeBaseFrame: NSRect?
 
-    /// Live width resize driven by the SwiftUI trailing grip. The leading
-    /// (left) edge stays pinned and the width grows / shrinks to the right;
-    /// `constrainFrameRect` nudges the panel left if it would otherwise run
-    /// off the right screen edge. Records the user's width in `lastFullSize`
-    /// so pill ↔ expanded transitions restore it instead of snapping back.
+    /// Set once the user drag-resizes while Live Focus is on screen. Their
+    /// chosen height then wins over content tracking — without this the
+    /// next streamed line would immediately snap the panel back to the
+    /// content height, undoing the drag the moment they let go.
+    /// Cleared on any stage / surface transition (see animateShellFrame).
+    private var focusHeightUserOverride = false
+
+    /// Corner drag-resize: width and height together. SwiftUI drag
+    /// translation is +y downward; the panel keeps its TOP edge pinned and
+    /// grows downward, so dragging the bottom-right grip toward the screen
+    /// corner enlarges the panel exactly the way a normal window corner
+    /// does. Remembers both dimensions in `lastFullSize` so pill ↔ expanded
+    /// transitions restore the user's size.
     @MainActor
-    private func handleWidthResize(translationX dx: CGFloat, ended: Bool) {
+    private func handleCornerResize(translationX dx: CGFloat,
+                                    translationY dy: CGFloat,
+                                    ended: Bool) {
         guard let panel = overlayPanel else { return }
         if ended {
-            widthResizeBaseFrame = nil
+            cornerResizeBaseFrame = nil
             persistPanelOrigin()
             return
         }
         let base: NSRect
-        if let b = widthResizeBaseFrame {
+        if let b = cornerResizeBaseFrame {
             base = b
         } else {
             base = panel.frame
-            widthResizeBaseFrame = base
+            cornerResizeBaseFrame = base
         }
-        let newW = max(panel.minSize.width, base.width + dx)
-        let frame = NSRect(x: base.origin.x, y: base.origin.y,
-                           width: newW, height: base.height)
+        let newW = max(panel.minSize.width,  base.width  + dx)
+        let newH = max(panel.minSize.height, base.height + dy)
+        // Top edge pinned: maxY constant, origin.y follows the height.
+        let frame = NSRect(x: base.origin.x,
+                           y: base.maxY - newH,
+                           width: newW, height: newH)
+        // Unanimated + no implicit animation: the drag IS the animation.
+        // Letting an implicit animation chase each mouse event puts the
+        // panel a frame behind the cursor, which reads as lag/judder.
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
         panel.setFrame(frame, display: true)
-        // Read back the (possibly screen-clamped) width so the remembered
-        // size matches what's actually on screen.
-        lastFullSize.width = panel.frame.width
+        NSAnimationContext.endGrouping()
+        lastFullSize = panel.frame.size
+        // The user's hand outranks content tracking from here on.
+        if vm.focusHuggingActive { focusHeightUserOverride = true }
+    }
+
+    /// Latest content-height report from the Live Focus stack (the header
+    /// slot + card). Drives the dynamic panel height below.
+    private var lastFocusContentHeight: CGFloat = 0
+
+    /// Extra vertical space the panel needs beyond the focus stack: the
+    /// reserved input-bar slot (60) + the root padding above and below
+    /// (Design.Space.sm ×2 = 16).
+    private static let focusPanelChrome: CGFloat = 76
+
+    /// Track the panel height to the Live Focus content so the window
+    /// grows and shrinks with the answer in realtime. Short implicit
+    /// animation per retarget — successive streaming reports land ~lines
+    /// apart, so the panel glides instead of stepping. Skipped while a
+    /// grip drag is in flight (the user's hand wins) and outside the
+    /// hugging layout (fixed-height response mode keeps its behaviour).
+    @MainActor
+    private func handleFocusContentHeight(_ h: CGFloat) {
+        lastFocusContentHeight = h
+        // The report arrives from onPreferenceChange, which can fire inside
+        // a SwiftUI layout pass — defer the AppKit resize to the next
+        // runloop turn. Stale queued applies converge on the same target
+        // and no-op via the Δ<2 guard.
+        DispatchQueue.main.async { [weak self] in self?.applyFocusPanelHeight() }
+    }
+
+    @MainActor
+    private func applyFocusPanelHeight() {
+        let h = lastFocusContentHeight
+        guard h > 0,
+              let panel = overlayPanel,
+              vm.focusHuggingActive,
+              vm.shellStage == .expanded,
+              !focusHeightUserOverride,
+              cornerResizeBaseFrame == nil else { return }
+
+        let targetH = min(max(h + Self.focusPanelChrome,
+                              Self.expandedCompactMinSize.height),
+                          Self.expandedSize.height + 80)
+        let cur = panel.frame
+        guard abs(cur.height - targetH) >= 2 else { return }
+
+        // Top edge pinned — the card and its first line never move; the
+        // panel's bottom edge is what glides as text streams in.
+        let target = NSRect(x: cur.origin.x,
+                            y: cur.maxY - targetH,
+                            width: cur.width,
+                            height: targetH)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            ctx.allowsImplicitAnimation = true
+            panel.animator().setFrame(target, display: true)
+        }
     }
 
     // MARK: - Clipboard explain
@@ -654,6 +735,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func animateShellFrame(stage: OverlayViewModel.ShellStage) {
         guard let panel = overlayPanel else { return }
+        // A stage / surface transition re-lays out the shell anyway, so
+        // this is the natural point to hand height control back to content
+        // tracking after a manual drag-resize.
+        focusHeightUserOverride = false
         let cur = panel.frame
         let surfaceOpen = vm.primarySurface != nil
         let responseHugging = stage == .expanded && surfaceOpen && vm.usesResponseHuggingPanel
@@ -681,7 +766,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .expanded:
             if surfaceOpen {
                 if responseHugging {
-                    target = NSSize(width: preservedWidth, height: Self.responseExpandedSize.height)
+                    // Live Focus tracks the content height dynamically
+                    // (see handleFocusContentHeight); use the last report
+                    // so entering the mode lands at the right size, not
+                    // the fixed response height. Non-focus response mode
+                    // (scrolling conversation) keeps the fixed height.
+                    let h: CGFloat = vm.focusHuggingActive && lastFocusContentHeight > 0
+                        ? min(max(lastFocusContentHeight + Self.focusPanelChrome,
+                                  Self.expandedCompactMinSize.height),
+                              Self.expandedSize.height + 80)
+                        : Self.responseExpandedSize.height
+                    target = NSSize(width: preservedWidth, height: h)
                 } else {
                     target = NSSize(
                         width:  preservedWidth,

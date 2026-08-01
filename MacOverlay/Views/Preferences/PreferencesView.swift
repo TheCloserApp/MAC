@@ -266,6 +266,12 @@ struct PreferencesView: View {
             }
             .toggleStyle(.switch)
 
+            Toggle(isOn: $vm.interviewResponseGate) {
+                labelTwoLine(title: "Only answer real questions",
+                             subtitle: "Skips \"okay\", \"got it\" and half-sentences so they can't pull a random answer over what you're reading. Clear questions still send instantly; only genuinely ambiguous lines are double-checked with a fast model.")
+            }
+            .toggleStyle(.switch)
+
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
                              subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
