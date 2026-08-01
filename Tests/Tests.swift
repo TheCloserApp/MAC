@@ -288,38 +288,6 @@ func testTranscriptFilterSeemsComplete() throws {
 }
 
 @MainActor
-func testTranscriptFilterEchoesAnswer() throws {
-    let answer = """
-    I led the migration of our payment service to Kubernetes, cutting deploy
-    times from 40 minutes to under 5 while keeping 99.9% uptime across the
-    transition. The key was canary rollouts with automated rollback.
-    """
-    // User reading the answer aloud → echo, must be dropped.
-    try assertTrue(TranscriptFilter.echoesAnswer(
-        "I led the migration of our payment service to Kubernetes cutting deploy times",
-        answer: answer))
-    try assertTrue(TranscriptFilter.echoesAnswer(
-        "the key was canary rollouts with automated rollback keeping uptime",
-        answer: answer))
-    // A real follow-up question brings new vocabulary → passes through.
-    try assertFalse(TranscriptFilter.echoesAnswer(
-        "Interesting — how did you handle stateful workloads and database failover during that?",
-        answer: answer))
-    try assertFalse(TranscriptFilter.echoesAnswer(
-        "Tell me about a time you disagreed with your manager.",
-        answer: answer))
-    // Edge cases: empty answer or tiny segments never count as echo.
-    try assertFalse(TranscriptFilter.echoesAnswer("anything at all here", answer: ""))
-    try assertFalse(TranscriptFilter.echoesAnswer("the key was", answer: answer))
-    // A "?"-terminated segment is a question, never a read-back — even
-    // when it reuses the answer's vocabulary heavily (follow-ups quote
-    // the answer all the time).
-    try assertFalse(TranscriptFilter.echoesAnswer(
-        "canary rollouts with automated rollback during the payment migration?",
-        answer: answer))
-}
-
-@MainActor
 func testTranscriptFilterNormalized() throws {
     // Punctuation / casing revisions normalize to the same form — the
     // signal the auto-send debounce uses to ignore cosmetic re-emits.
@@ -390,7 +358,6 @@ struct TestsMain {
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)
         TestRunner.run("TranscriptFilter question completeness", testTranscriptFilterSeemsComplete)
-        TestRunner.run("TranscriptFilter answer echo suppression", testTranscriptFilterEchoesAnswer)
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)

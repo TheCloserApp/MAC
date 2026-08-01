@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 /// Tabbed preferences window body. Replaces the cramped gear popover.
 struct PreferencesView: View {
@@ -12,6 +14,7 @@ struct PreferencesView: View {
         case panel      = "Panel"
         case profile    = "Profile"
         case ai         = "AI"
+        case quickAsk   = "Quick Ask"
         case prompts    = "Prompts"
         case memory     = "Memory"
         case workspaces = "Workspaces"
@@ -24,6 +27,7 @@ struct PreferencesView: View {
             case .panel:      return "rectangle.bottomthird.inset.filled"
             case .profile:    return "person.crop.circle.fill"
             case .ai:         return "sparkles"
+            case .quickAsk:   return "bolt.fill"
             case .prompts:    return "text.bubble.fill"
             case .memory:     return "brain.head.profile"
             case .workspaces: return "square.grid.2x2.fill"
@@ -83,6 +87,7 @@ struct PreferencesView: View {
                         case .panel:      panelTab
                         case .profile:    profileTab
                         case .ai:         aiTab
+                        case .quickAsk:   quickAskTab
                         case .prompts:    promptsTab
                         case .memory:     memoryTab
                         case .workspaces: workspacesTab
@@ -277,9 +282,133 @@ struct PreferencesView: View {
             }
         }
 
+        section(title: "Privacy") {
+            Toggle(isOn: $vm.screenShareInvisible) {
+                labelTwoLine(title: "Hide from screen sharing",
+                             subtitle: "On: the overlay is excluded from screen shares and recordings (Zoom, Meet, QuickTime). Off: it shows up in shared screens.")
+            }
+            .toggleStyle(.switch)
+        }
+
         section(title: "Onboarding") {
             Button("Replay welcome tour") { vm.showOnboarding = true }
                 .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private var quickAskTab: some View {
+        @Bindable var vm = vm
+
+        section(title: "Custom prompt",
+                subtitle: "How Quick Ask should answer. Leave empty to use the built-in concise default.") {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.white.opacity(0.04))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                TextEditor(text: $vm.quickAskCustomPrompt)
+                    .scrollContentBackground(.hidden)
+                    .font(.system(size: 12))
+                    .padding(8)
+                    .frame(minHeight: 90, maxHeight: 170)
+                if vm.quickAskCustomPrompt.isEmpty {
+                    Text(OverlayViewModel.defaultQuickAskPrompt)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.5))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 14)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+
+        section(title: "Context files",
+                subtitle: "Their text is sent with every Quick Ask — a cheat-sheet, product notes, your bio, etc.") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Button {
+                        pickQuickAskFiles()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "paperclip")
+                                .font(.system(size: 11, weight: .medium))
+                            Text(vm.quickAskFiles.isEmpty ? "Attach files" : "Attach more")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .help("PDF · DOCX · RTF · TXT · MD — text is extracted and stored locally. Re-attaching a file with the same name replaces it.")
+                    Spacer()
+                }
+
+                ForEach(vm.quickAskFiles) { f in
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.text.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Text(f.name)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(charCountLabel(f.extractedText.count))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                        Button {
+                            vm.removeQuickAskFile(id: f.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove")
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                }
+            }
+        }
+
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .padding(.top, 1)
+            Text("Quick Ask favours latency: when an Anthropic key is set it answers on Haiku (much faster first token) instead of the chat's selected model.")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary.opacity(0.8))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Compact "how much text rides along" label for a file chip.
+    private func charCountLabel(_ count: Int) -> String {
+        count >= 1000 ? "\(count / 1000)k chars" : "\(count) chars"
+    }
+
+    /// Open a picker and attach the chosen docs to Quick Ask. Text is
+    /// extracted synchronously here (settings adds are infrequent and the
+    /// files are usually small) and only the name + text are stored.
+    private func pickQuickAskFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [
+            .pdf, .plainText,
+            UTType(filenameExtension: "docx") ?? .data,
+            UTType(filenameExtension: "rtf")  ?? .data,
+            UTType(filenameExtension: "md")   ?? .plainText,
+        ]
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            let text = (try? ResumeImporter.importFile(url: url)) ?? ""
+            vm.appendQuickAskFile(name: url.lastPathComponent, extractedText: text)
         }
     }
 
