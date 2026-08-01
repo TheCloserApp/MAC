@@ -162,6 +162,74 @@ final class OverlayViewModel {
     var quickAskResponse  = ""
     var isQuickAskSending = false
 
+    /// A context file attached to Quick Ask in Settings. Its extracted text
+    /// rides along with every Quick Ask request. Persisted (name + text) so
+    /// it survives relaunch.
+    struct QuickAskFile: Identifiable, Equatable, Codable {
+        var id = UUID()
+        let name: String
+        let extractedText: String
+    }
+
+    /// User-configurable system prompt for Quick Ask. Empty → the built-in
+    /// concise default (`defaultQuickAskPrompt`).
+    var quickAskCustomPrompt: String {
+        didSet { UserDefaults.standard.set(quickAskCustomPrompt, forKey: "quickAskCustomPrompt") }
+    }
+
+    /// Context files whose text is prepended to every Quick Ask request.
+    var quickAskFiles: [QuickAskFile] {
+        didSet {
+            if let data = try? JSONEncoder().encode(quickAskFiles) {
+                UserDefaults.standard.set(data, forKey: "quickAskFiles")
+            }
+        }
+    }
+
+    /// Concise default that keeps Quick Ask snappy: a short, direct answer
+    /// with no preamble, so the first words land fast and the reply stays
+    /// brief.
+    static let defaultQuickAskPrompt =
+        "You are a fast, no-nonsense assistant. Answer the question directly and concisely — a sentence or two, or a short list. No preamble, no restating the question, no sign-off."
+
+    /// The prompt Quick Ask actually sends: the user's override if set,
+    /// otherwise the concise default.
+    var quickAskSystemPromptResolved: String {
+        let trimmed = quickAskCustomPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultQuickAskPrompt : trimmed
+    }
+
+    /// Model Quick Ask runs on. It trades depth for latency — meant to
+    /// answer almost the instant the user lets go — so it prefers Haiku
+    /// (a fraction of the heavier chat models' time-to-first-token)
+    /// whenever an Anthropic key exists, and only falls back to the chat's
+    /// selected model when it doesn't.
+    var quickAskModel: String {
+        apiKey.isEmpty ? selectedModel : "claude-haiku-4-5-20251001"
+    }
+
+    /// Per-file cap on stored context text (~15k tokens). Quick Ask's whole
+    /// point is latency — an unbounded PDF prepended to every request would
+    /// re-slow it (and bloat the UserDefaults blob the files persist in).
+    static let quickAskFileCharBudget = 60_000
+
+    /// Add a context file to Quick Ask. Re-attaching a file with the same
+    /// name REPLACES the stored copy (the user updated their cheat-sheet),
+    /// rather than silently keeping the stale text. Oversized extractions
+    /// are truncated to the budget with a visible marker.
+    func appendQuickAskFile(name: String, extractedText: String) {
+        guard !extractedText.isEmpty else { return }
+        let text = extractedText.count <= Self.quickAskFileCharBudget
+            ? extractedText
+            : String(extractedText.prefix(Self.quickAskFileCharBudget)) + "\n\n[truncated]"
+        quickAskFiles.removeAll { $0.name == name }
+        quickAskFiles.append(QuickAskFile(name: name, extractedText: text))
+    }
+
+    func removeQuickAskFile(id: UUID) {
+        quickAskFiles.removeAll { $0.id == id }
+    }
+
     // MARK: - Option-key dictation
     var isDictating    = false
     var dictationText  = ""
@@ -557,6 +625,18 @@ final class OverlayViewModel {
         didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
     }
 
+    /// Screen-share visibility. `true` (default) excludes every window the
+    /// app shows from screen capture — invisible to Zoom / Meet / QuickTime
+    /// recordings. Flip it off to let the overlay show up in shared screens
+    /// (e.g. when YOU are demoing the app). AppDelegate applies it live to
+    /// the panel and gates the order-front swizzle.
+    var screenShareInvisible: Bool {
+        didSet {
+            UserDefaults.standard.set(screenShareInvisible, forKey: "screenShareInvisible")
+            onScreenShareVisibilityChange?(screenShareInvisible)
+        }
+    }
+
     // MARK: - Custom resume prompts
 
     /// User override for the resume generation system prompt. Empty → use default.
@@ -605,6 +685,9 @@ final class OverlayViewModel {
     }
     /// AppDelegate hooks this to keep the panel's alphaValue in sync.
     @ObservationIgnored var onOpacityChange: ((Double) -> Void)?
+    /// AppDelegate hooks this to flip every window's `sharingType` when the
+    /// user toggles screen-share visibility.
+    @ObservationIgnored var onScreenShareVisibilityChange: ((Bool) -> Void)?
 
     // MARK: - Onboarding
     var hasCompletedOnboarding: Bool {
@@ -891,6 +974,14 @@ final class OverlayViewModel {
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
         showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
+        screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
+        quickAskCustomPrompt = UserDefaults.standard.string(forKey: "quickAskCustomPrompt") ?? ""
+        if let data = UserDefaults.standard.data(forKey: "quickAskFiles"),
+           let files = try? JSONDecoder().decode([QuickAskFile].self, from: data) {
+            quickAskFiles = files
+        } else {
+            quickAskFiles = []
+        }
         customResumeGenerationPrompt =
             UserDefaults.standard.string(forKey: "customResumeGenerationPrompt") ?? ""
         customResumeScoringPrompt =
@@ -1695,13 +1786,41 @@ final class OverlayViewModel {
         isQuickAskSending = false
     }
 
+    /// Copy the Quick Ask answer to the clipboard so the user can paste it
+    /// straight into an email, doc, chat, etc. Returns whether anything was
+    /// copied so the view can show a transient confirmation.
+    @discardableResult
+    func copyQuickAskResponse() -> Bool {
+        let text = quickAskResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        return true
+    }
+
     private func sendQuickAskToAI(text: String) {
-        if keyForSelectedModel.key.isEmpty { quickAskResponse = "No API key configured."; return }
+        // Quick Ask runs on its own fast model — validate ITS key, not the
+        // chat's selected model.
+        let model = quickAskModel
+        let (modelKey, provider) = key(for: model)
+        if modelKey.isEmpty {
+            quickAskResponse = "No \(provider) API key — add one in Settings → AI."
+            return
+        }
 
         isQuickAskSending = true
         quickAskResponse  = ""
 
-        let resolvedPrompt = resolveActivePrompt()
+        let resolvedPrompt = quickAskSystemPromptResolved
+
+        // Prepend any Settings-configured context files as labelled blocks
+        // so the model has them in scope, while the chat bubble still shows
+        // only the user's question.
+        let fileBlocks = quickAskFiles
+            .filter { !$0.extractedText.isEmpty }
+            .map { "[Attached \($0.name)]\n\n\($0.extractedText)" }
+            .joined(separator: "\n\n")
+        let prompt = fileBlocks.isEmpty ? text : "\(fileBlocks)\n\n\(text)"
 
         // Quick asks live in their own session (kind = .quickAsk) so they
         // don't bleed into whatever chat/interview the user is in the
@@ -1712,7 +1831,7 @@ final class OverlayViewModel {
         )
         sessionStore.appendUser(to: quickSessionID, text)
         let assistantID = sessionStore.beginStreamingAssistant(
-            in: quickSessionID, model: selectedModel
+            in: quickSessionID, model: model
         )
 
         Task { @MainActor [weak self] in
@@ -1721,7 +1840,7 @@ final class OverlayViewModel {
             var lastFlush = ContinuousClock.now
             do {
                 let stream = AIManager.shared.streamMessage(
-                    text,
+                    prompt,
                     apiKey:         self.apiKey,
                     openAIApiKey:   self.openAIApiKey,
                     moonshotAPIKey: self.moonshotAPIKey,
@@ -1729,7 +1848,7 @@ final class OverlayViewModel {
                     deepSeekAPIKey: self.deepSeekAPIKey,
                     nvidiaAPIKey:   self.nvidiaAPIKey,
                     openRouterAPIKey: self.openRouterAPIKey,
-                    model:          self.selectedModel,
+                    model:          model,
                     screenshot:     nil,
                     systemPrompt:   resolvedPrompt,
                     history:        []
@@ -2042,15 +2161,18 @@ final class OverlayViewModel {
     /// The API key + provider display name required by `selectedModel`.
     /// Centralises the Anthropic / OpenAI / Kimi routing so every key check
     /// and error message stays in sync with `AIManager`'s routing.
-    var keyForSelectedModel: (key: String, provider: String) {
-        if AIManager.shared.isOpenRouterModel(selectedModel) { return (openRouterAPIKey, "OpenRouter") }
-        if AIManager.shared.isNVIDIAModel(selectedModel)   { return (nvidiaAPIKey, "NVIDIA") }
-        if AIManager.shared.isMoonshotModel(selectedModel) { return (moonshotAPIKey, "Moonshot") }
-        if AIManager.shared.isGrokModel(selectedModel)     { return (grokAPIKey, "Grok") }
-        if AIManager.shared.isDeepSeekModel(selectedModel) { return (deepSeekAPIKey, "DeepSeek") }
-        if AIManager.shared.isOpenAIModel(selectedModel)   { return (openAIApiKey, "OpenAI") }
+    /// API key + provider label for an arbitrary model id.
+    func key(for model: String) -> (key: String, provider: String) {
+        if AIManager.shared.isOpenRouterModel(model) { return (openRouterAPIKey, "OpenRouter") }
+        if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaAPIKey, "NVIDIA") }
+        if AIManager.shared.isMoonshotModel(model) { return (moonshotAPIKey, "Moonshot") }
+        if AIManager.shared.isGrokModel(model)     { return (grokAPIKey, "Grok") }
+        if AIManager.shared.isDeepSeekModel(model) { return (deepSeekAPIKey, "DeepSeek") }
+        if AIManager.shared.isOpenAIModel(model)   { return (openAIApiKey, "OpenAI") }
         return (apiKey, "Anthropic")
     }
+
+    var keyForSelectedModel: (key: String, provider: String) { key(for: selectedModel) }
 
     var canSend: Bool {
         let hasText = showManualInput ? !manualInput.isEmpty : !transcription.isEmpty

@@ -1,13 +1,39 @@
 import AppKit
 
-/// Hold ⌥ → streams mic through ElevenLabs scribe_v2_realtime WebSocket →
-/// on release, pastes the committed transcript into the previously active app.
+/// Common surface DictationManager drives, so it can run on either the
+/// ElevenLabs Scribe socket OR Apple's on-device recognizer without caring
+/// which. Both `TranscriptionManager` and `AppleTranscriber` already expose
+/// these members; the empty conformances below just name that fact.
+protocol DictationEngine: AnyObject {
+    var onPartial: ((String) -> Void)? { get set }
+    var onCommit:  ((String) -> Void)? { get set }
+    var isRunning: Bool { get }
+    func start(source: AudioSource) async throws
+    func stop()
+    func stopAudioCapture()
+    func sendCommit()
+}
+
+extension TranscriptionManager: DictationEngine {}
+extension AppleTranscriber: DictationEngine {}
+
+/// Hold ⌥ → streams the mic through a speech engine → on release, pastes the
+/// committed transcript into the previously active app.
+///
+/// Engine selection: if an ElevenLabs key is set we use Scribe
+/// (`scribe_v2_realtime`); otherwise we fall back to Apple's on-device
+/// recognizer so dictation still works with no key / no network. The two
+/// engines differ in how they report text — Scribe emits incremental
+/// committed segments, Apple emits the cumulative transcript each update — so
+/// the callbacks and the stop/commit flow branch on `usesApple`.
 class DictationManager {
 
-    private let tm               = TranscriptionManager()
-    private var targetPID:         pid_t = 0
-    private var accumulatedText  = ""   // committed segments while holding Option
-    private var waitingForFinal  = false // true after Option released, waiting for last commit
+    private var tm: DictationEngine = TranscriptionManager()
+    private var usesApple           = false
+    private var targetPID:            pid_t = 0
+    private var accumulatedText     = ""    // full transcript captured while holding Option
+    private var waitingForFinal     = false // true after Option released, waiting for last commit
+    private var hasPasted           = false // guard against a double paste from racing commits
 
     var onTranscript:    ((String) -> Void)?
     var onEngineStarted: (() -> Void)?
@@ -18,35 +44,69 @@ class DictationManager {
 
     func start(targetPID: pid_t, elevenLabsAPIKey: String) {
         self.targetPID = targetPID
-        tm.elevenLabsAPIKey = elevenLabsAPIKey
         accumulatedText = ""
         waitingForFinal = false
+        hasPasted       = false
 
-        // Show live partials in the overlay (appended to accumulated committed text)
-        tm.onPartial = { [weak self] text in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let display = self.accumulatedText.isEmpty ? text : self.accumulatedText + " " + text
-                self.onTranscript?(display)
-            }
+        // Pick the engine. ElevenLabs Scribe when a key is present, else
+        // Apple's on-device recognizer.
+        if elevenLabsAPIKey.isEmpty {
+            usesApple = true
+            tm = AppleTranscriber()
+        } else {
+            usesApple = false
+            let scribe = TranscriptionManager()
+            scribe.elevenLabsAPIKey = elevenLabsAPIKey
+            tm = scribe
         }
 
-        // ElevenLabs auto-commits on VAD silence gaps while Option is still held.
-        // Accumulate those segments. Only paste when waitingForFinal is set (Option released).
-        tm.onCommit = { [self] text in
-            DispatchQueue.main.async {
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                print("[Dictation] committed segment (\(trimmed.count) chars) waitingForFinal=\(self.waitingForFinal)")
-
-                // Append to accumulated text
-                self.accumulatedText += (self.accumulatedText.isEmpty ? "" : " ") + trimmed
-                self.onTranscript?(self.accumulatedText)
-
-                if self.waitingForFinal {
-                    // Option was already released — this is the last commit, paste now
-                    self.tm.stop()
-                    self.pasteIntoPreviousApp(self.accumulatedText)
+        if usesApple {
+            // Apple reports the WHOLE transcript on every update, so we
+            // REPLACE (never append) — appending would duplicate text.
+            tm.onPartial = { [weak self] text in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.accumulatedText = text
+                    self.onTranscript?(text)
+                }
+            }
+            tm.onCommit = { [weak self] text in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    self.accumulatedText = trimmed
+                    self.onTranscript?(trimmed)
+                    if self.waitingForFinal {
+                        self.tm.stop()
+                        self.pasteIntoPreviousApp(trimmed)
+                    }
+                }
+            }
+        } else {
+            // ElevenLabs partials describe only the CURRENT utterance, so the
+            // display is accumulated committed text + the live partial, and
+            // commits are APPENDED as discrete segments.
+            tm.onPartial = { [weak self] text in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let display = self.accumulatedText.isEmpty
+                        ? text : self.accumulatedText + " " + text
+                    self.onTranscript?(display)
+                }
+            }
+            tm.onCommit = { [weak self] text in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    print("[Dictation] committed segment (\(trimmed.count) chars) waitingForFinal=\(self.waitingForFinal)")
+                    self.accumulatedText += (self.accumulatedText.isEmpty ? "" : " ") + trimmed
+                    self.onTranscript?(self.accumulatedText)
+                    if self.waitingForFinal {
+                        self.tm.stop()
+                        self.pasteIntoPreviousApp(self.accumulatedText)
+                    }
                 }
             }
         }
@@ -55,7 +115,7 @@ class DictationManager {
             do {
                 try await tm.start(source: .microphone)
                 await MainActor.run { self.onEngineStarted?() }
-                print("[Dictation] ElevenLabs started, pid=\(targetPID)")
+                print("[Dictation] \(usesApple ? "Apple" : "ElevenLabs") started, pid=\(targetPID)")
             } catch {
                 print("[Dictation] start error: \(error)")
                 await MainActor.run { self.onStatus?("Error: \(error.localizedDescription)") }
@@ -67,11 +127,32 @@ class DictationManager {
 
     func stop() {
         waitingForFinal = true
-        // Stop mic but keep WebSocket open for the final committed_transcript
+
+        if usesApple {
+            // Apple keeps recognizing until we stop it. Give it a beat to
+            // flush the final partial, then commit — onCommit pastes. If the
+            // commit is empty (nothing heard) no onCommit fires, so a backstop
+            // stops the engine and reports.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [self] in
+                guard tm.isRunning else { return }
+                tm.sendCommit()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
+                    guard tm.isRunning else { return }   // onCommit already pasted + stopped
+                    tm.stop()
+                    let trimmed = accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty { onStatus?("Nothing transcribed") }
+                    else               { pasteIntoPreviousApp(trimmed) }
+                }
+            }
+            return
+        }
+
+        // ElevenLabs: stop the mic but keep the socket open for the final
+        // committed_transcript; paste on that commit (above), or after a
+        // timeout if it never arrives.
         tm.stopAudioCapture()
         tm.sendCommit()
 
-        // Fallback: if no committed_transcript arrives within 3s, paste what we have
         let snapshot = accumulatedText
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
             guard self.tm.isRunning else { return }  // already handled by onCommit
@@ -89,6 +170,9 @@ class DictationManager {
     // MARK: - Paste via clipboard + Cmd+V
 
     private func pasteIntoPreviousApp(_ text: String) {
+        guard !hasPasted else { return }   // racing commits must not double-paste
+        hasPasted = true
+
         guard targetPID != 0 else {
             onStatus?("Click in a text field first, then hold Option")
             return

@@ -62,6 +62,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         vm = OverlayViewModel()
         NSApp.setActivationPolicy(.accessory)
+        // Seed the screen-share gate BEFORE any window is created so the
+        // panel (and the swizzle) pick up the persisted preference.
+        NSWindow.screenShareInvisible = vm.screenShareInvisible
         setupOverlayPanel()
         // No menu-bar status item: the icon next to the clock/battery is
         // visible to other people during screen shares (the menu bar IS
@@ -76,6 +79,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.overlayPanel.alphaValue = val
         }
         overlayPanel.alphaValue = vm.opacity
+
+        // Flip every app window's capture exclusion when the user toggles
+        // screen-share visibility in Settings.
+        vm.onScreenShareVisibilityChange = { [weak self] invisible in
+            self?.applyScreenShareVisibility(invisible)
+        }
 
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the
@@ -216,7 +225,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.hidesOnDeactivate          = false
         overlayPanel.isFloatingPanel            = true
         overlayPanel.becomesKeyOnlyIfNeeded     = true
-        overlayPanel.sharingType                = .none
+        overlayPanel.sharingType                = NSWindow.desiredSharingType
         // Initial minSize matches the launch stage; `animateShellFrame`
         // updates it on every stage transition so the user can never
         // shrink the panel below what's visible.
@@ -729,6 +738,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Screen share protection is handled by NSWindow.installScreenShareProtection()
     // called at launch — see the extension below AppDelegate.
 
+    /// Apply the screen-share visibility toggle live. Updates the global
+    /// gate the swizzle reads, then re-stamps the sharingType on the
+    /// overlay panel and every other window currently on screen (popovers,
+    /// menus) so the change takes effect immediately, not just on the next
+    /// time a window is shown.
+    func applyScreenShareVisibility(_ invisible: Bool) {
+        NSWindow.screenShareInvisible = invisible
+        let type = NSWindow.desiredSharingType
+        overlayPanel?.sharingType = type
+        for window in NSApp.windows {
+            window.sharingType = type
+        }
+    }
+
     // MARK: - Menu actions
 
     @objc func toggleOverlay() {
@@ -784,6 +807,18 @@ import ObjectiveC.runtime
 
 extension NSWindow {
 
+    /// Global gate for the order-front swizzle. When true (default) every
+    /// window is forced to `.none` (excluded from screen capture) right
+    /// before it appears; when false, windows use `.readOnly` and ARE
+    /// visible to screen shares. AppDelegate seeds this from the persisted
+    /// user setting at launch and updates it when the toggle flips.
+    static var screenShareInvisible = true
+
+    /// The sharing type implied by the current `screenShareInvisible` gate.
+    static var desiredSharingType: NSWindow.SharingType {
+        screenShareInvisible ? .none : .readOnly
+    }
+
     static func installScreenShareProtection() {
         let pairs: [(Selector, Selector)] = [
             (#selector(NSWindow.orderFront(_:)),
@@ -803,17 +838,17 @@ extension NSWindow {
     }
 
     @objc func _sp_orderFront(_ sender: Any?) {
-        sharingType = .none
+        sharingType = NSWindow.desiredSharingType
         _sp_orderFront(sender)            // calls original after swap
     }
 
     @objc func _sp_orderFrontRegardless() {
-        sharingType = .none
+        sharingType = NSWindow.desiredSharingType
         _sp_orderFrontRegardless()        // calls original after swap
     }
 
     @objc func _sp_makeKeyAndOrderFront(_ sender: Any?) {
-        sharingType = .none
+        sharingType = NSWindow.desiredSharingType
         _sp_makeKeyAndOrderFront(sender)  // calls original after swap
     }
 }
