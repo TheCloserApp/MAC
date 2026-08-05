@@ -850,6 +850,20 @@ final class OverlayViewModel {
     /// height with dead space (or clipping) below the card.
     @ObservationIgnored var onFocusContentHeight: ((CGFloat) -> Void)?
 
+    /// The user explicitly changed what the Live Focus card shows —
+    /// stepped ‹ › to another Q&A pair, or toggled the transcript
+    /// drop-down. AppDelegate listens to resume content-height tracking,
+    /// which a manual drag-resize otherwise freezes: the freeze belongs
+    /// to the answer the user resized on, not to one they navigated to.
+    @ObservationIgnored var onResumeFocusTracking: (() -> Void)?
+
+    /// True while a corner-grip drag-resize is in flight. Views drop
+    /// their layout animations for the duration — the drag itself is the
+    /// animation, and any easing that lags the cursor (the focus card's
+    /// height glide re-triggered by every width-induced text rewrap)
+    /// reads as flicker at the panel's bottom edge.
+    var isUserResizingPanel = false
+
     /// Single source of truth for "the shell is in Live Focus hugging
     /// layout" — shared by OverlayView (layout) and AppDelegate (dynamic
     /// panel height) so the two can never disagree.
@@ -1610,6 +1624,24 @@ final class OverlayViewModel {
                      history: historySnapshot,
                      assistantTurnID: assistantID,
                      wasFirstExchange: wasFirstExchange)
+    }
+
+    /// Default question for a screenshot sent without any typed text.
+    /// Phrased for the common case — a problem, error, or question visible
+    /// on screen — rather than a generic "describe this image".
+    static let screenshotPrompt =
+        "Look at my screen and answer what's there. If it's a question, problem, or error, give the answer or fix directly and concisely. Otherwise describe what matters."
+
+    /// Capture-and-send: attach `image` and dispatch it to the AI in one
+    /// step (the ⌃⇧S hotkey). Any draft the user had already typed is kept
+    /// as the question; otherwise the default screenshot prompt is used so
+    /// the turn reads sensibly in the transcript instead of being blank.
+    func sendScreenshotToAI(_ image: NSImage) {
+        pendingScreenshot = image
+        let typed = manualInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        showManualInput = true
+        if typed.isEmpty { manualInput = Self.screenshotPrompt }
+        sendToAI()
     }
 
     /// Manually push the current live transcription to the AI — used by the

@@ -16,6 +16,12 @@ struct ChatSurfaceView: View {
     /// 0 = live pair; the ‹ › arrows step through history and any new
     /// question snaps it back to 0.
     @State private var focusPairOffset = 0
+    /// Whether the transcript strip's drop-down is open, showing every
+    /// previous question with a per-row copy button.
+    @State private var transcriptExpanded = false
+    /// Measured height of the transcript-history rows so the drop-down
+    /// hugs a short history instead of claiming its full cap.
+    @State private var historyContentHeight: CGFloat = 0
 
     var body: some View {
         let session = vm.sessionStore.activeSession
@@ -258,6 +264,7 @@ struct ChatSurfaceView: View {
                                    enabled: offset < maxOffset,
                                    help: "Previous question") {
                             focusPairOffset = min(offset + 1, maxOffset)
+                            vm.onResumeFocusTracking?()
                         }
                         Text("\(position)/\(total)")
                             .font(.system(size: 9, weight: .semibold))
@@ -267,6 +274,7 @@ struct ChatSurfaceView: View {
                                    enabled: offset > 0,
                                    help: "Next question") {
                             focusPairOffset = max(offset - 1, 0)
+                            vm.onResumeFocusTracking?()
                         }
                     }
                     if let streamingTurnID {
@@ -347,8 +355,10 @@ struct ChatSurfaceView: View {
         // animates the card's growth instead of snapping — matching the
         // panel's own animated resize (AppDelegate tracks this height).
         // Only animate once text exists; the placeholder→first-token swap
-        // shouldn't lerp through an intermediate height.
-        .animation(hasText ? .easeOut(duration: 0.15) : nil,
+        // shouldn't lerp through an intermediate height. Suspended during
+        // a grip drag so the card tracks the cursor without lag.
+        .animation(hasText && !vm.isUserResizingPanel
+                   ? .easeOut(duration: 0.15) : nil,
                    value: turn?.content ?? "")
     }
 
@@ -378,9 +388,18 @@ struct ChatSurfaceView: View {
                alignment: .top)
         // Smooth the streaming→completed swap and ‹ › navigation between
         // answers of different lengths — the card glides to the measured
-        // height instead of snapping.
-        .animation(.easeOut(duration: 0.18), value: focusContentHeight)
-        .onChange(of: turn.id) { _, _ in focusContentHeight = 0 }
+        // height instead of snapping. Suspended during a grip drag: the
+        // drag is the animation, and easing the card's height behind the
+        // cursor (every width change rewraps the text and re-measures)
+        // made the bottom edge visibly bounce while resizing.
+        .animation(vm.isUserResizingPanel ? nil : .easeOut(duration: 0.18),
+                   value: focusContentHeight)
+        // Re-created per answer so the preference re-reports on appear
+        // (and the scroll position starts at the top of each answer).
+        // Resetting the height state on turn change instead raced the
+        // preference: the new height could land first, never fire again,
+        // and strand the card — and the panel — at the 56pt floor.
+        .id(turn.id)
     }
 
     /// Cap on the focus answer area before it starts scrolling.
@@ -536,6 +555,9 @@ struct ChatSurfaceView: View {
                     if !vm.transcription.isEmpty {
                         TranscriptCopyButton()
                     }
+                    if !previousQuestions.isEmpty || !vm.transcription.isEmpty {
+                        transcriptExpandToggle
+                    }
                     if !vm.isInterviewSession {
                         backendBadge
                     }
@@ -545,6 +567,10 @@ struct ChatSurfaceView: View {
                     }
                 }
 
+                if transcriptExpanded {
+                    transcriptHistoryPanel
+                        .transition(.opacity)
+                }
             }
         }
         .padding(.horizontal, Design.Space.lg)
@@ -592,6 +618,111 @@ struct ChatSurfaceView: View {
         }
         .buttonStyle(.plain)
         .help("Hide the transcript — bring it back from the ⋯ menu")
+    }
+
+    // MARK: - Transcript history drop-down
+
+    /// Questions already sent to the AI (the session's user turns) — the
+    /// transcript history behind the drop-down. The live partial renders
+    /// as its own row at the bottom of the panel.
+    private var previousQuestions: [ChatTurn] {
+        vm.sessionStore.activeSession.turns.filter { $0.role == .user }
+    }
+
+    /// Chevron on the strip that opens / closes the full-transcript panel.
+    private var transcriptExpandToggle: some View {
+        Button {
+            withAnimation(Design.Motion.fast) { transcriptExpanded.toggle() }
+            // The drop-down changes the focus card's height — resume
+            // content tracking so the panel makes room for it even after
+            // a manual drag-resize froze the height.
+            vm.onResumeFocusTracking?()
+        } label: {
+            Image(systemName: transcriptExpanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(transcriptExpanded ? Design.Ink.primary : Design.Ink.secondary)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Design.Surface.controlFill))
+                .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(transcriptExpanded
+              ? "Hide the full transcript"
+              : "Show the full transcript — previous questions, each with a copy button")
+    }
+
+    /// The expanded transcript: every previous question in order, each
+    /// with its own copy button, the live partial pinned last, and a
+    /// Copy-all chip in the header. Height hugs the rows up to a cap,
+    /// then scrolls — pinned to the newest entry.
+    private var transcriptHistoryPanel: some View {
+        let questions = previousQuestions
+        let live = vm.transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("Full transcript")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Design.Ink.tertiary)
+                Spacer(minLength: 0)
+                if !questions.isEmpty || !live.isEmpty {
+                    TranscriptCopyAllButton(
+                        segments: questions.map(\.content) + (live.isEmpty ? [] : [live])
+                    )
+                }
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(Array(questions.enumerated()), id: \.element.id) { i, turn in
+                            transcriptHistoryRow(label: "Q\(i + 1)",
+                                                 text: turn.content,
+                                                 isLive: false)
+                        }
+                        if !live.isEmpty {
+                            transcriptHistoryRow(label: "LIVE", text: live, isLive: true)
+                        }
+                        Color.clear.frame(height: 1).id("transcript-bottom")
+                    }
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: HistoryHeightKey.self,
+                                               value: g.size.height)
+                    })
+                }
+                .hiddenScrollGutter()
+                .onPreferenceChange(HistoryHeightKey.self) { historyContentHeight = $0 }
+                .frame(height: min(max(historyContentHeight, 22), Self.historyMaxHeight))
+                .onAppear { proxy.scrollTo("transcript-bottom", anchor: .bottom) }
+                .onChange(of: questions.count) { _, _ in
+                    proxy.scrollTo("transcript-bottom", anchor: .bottom)
+                }
+                .onChange(of: live) { _, _ in
+                    proxy.scrollTo("transcript-bottom", anchor: .bottom)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    /// Cap on the transcript drop-down before it scrolls.
+    private static let historyMaxHeight: CGFloat = 220
+
+    private func transcriptHistoryRow(label: String, text: String, isLive: Bool) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Text(label)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(isLive
+                                 ? AnyShapeStyle(Design.Accent.red)
+                                 : AnyShapeStyle(Design.Ink.tertiary))
+                .frame(width: 28, alignment: .leading)
+                .padding(.top, 3)
+            Text(text)
+                .font(.system(size: 11.5))
+                .foregroundColor(isLive ? Design.Ink.secondary : Design.Ink.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HistoryRowCopyButton(text: text)
+        }
     }
 
     private var backendBadge: some View {
@@ -1008,6 +1139,79 @@ private struct FocusHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Same measuring trick for the transcript-history drop-down, so it hugs
+/// a short history instead of always claiming its full cap.
+private struct HistoryHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Icon-only copy button for one transcript-history row.
+private struct HistoryRowCopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(t, forType: .string)
+            withAnimation(Design.Motion.fast) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(Design.Motion.fast) { copied = false }
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundColor(copied ? Design.Accent.green : .secondary)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(Color.white.opacity(0.06)))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied" : "Copy this question")
+    }
+}
+
+/// "Copy all" chip in the transcript-history header — joins every
+/// question (plus the live partial) into one numbered block.
+private struct TranscriptCopyAllButton: View {
+    let segments: [String]
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            let joined = segments.enumerated()
+                .map { "Q\($0.offset + 1): \($0.element)" }
+                .joined(separator: "\n\n")
+            guard !joined.isEmpty else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(joined, forType: .string)
+            withAnimation(Design.Motion.fast) { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(Design.Motion.fast) { copied = false }
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: 8, weight: .semibold))
+                Text(copied ? "Copied" : "Copy all")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .foregroundColor(copied ? Design.Accent.green : Design.Ink.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(Design.Surface.controlFill))
+            .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Copy the full transcript")
     }
 }
 

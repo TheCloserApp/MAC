@@ -121,6 +121,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleFocusContentHeight(h)
         }
 
+        // Stepping to another Q&A pair (or toggling the transcript
+        // drop-down) resumes content tracking: a drag-resize froze the
+        // height for the answer the user resized on, not the one they
+        // just navigated to.
+        vm.onResumeFocusTracking = { [weak self] in
+            guard let self else { return }
+            self.focusHeightUserOverride = false
+            self.applyFocusPanelHeight()
+        }
+
         // Watch the panel's position so the shell can flip the sidebar to the
         // correct side as the user drags the overlay around the screen.
         updatePillAnchor()
@@ -266,7 +276,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resizeRight: if isPressed { self.resizePanel(dw:  self.resizeStep, dh: 0) }
             case .resizeUp:    if isPressed { self.resizePanel(dw: 0, dh:  self.resizeStep) }
             case .resizeDown:  if isPressed { self.resizePanel(dw: 0, dh: -self.resizeStep) }
-            case .screenshot:  if isPressed { self.captureAndAttachScreenshot() }
+            case .screenshot:     if isPressed { self.captureAndAttachScreenshot() }
+            case .screenshotSend: if isPressed { self.captureAndSendScreenshot() }
             case .clipboard:   if isPressed { self.explainClipboard() }
             case .toggle:      if isPressed { self.toggleOverlay() }
             case .record:      if isPressed { self.hotkeyRecord() }
@@ -479,6 +490,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSRect(x: f.origin.x, y: newOriginY, width: nw, height: nh),
                 display: true, animate: false
             )
+            // Same precedence as the corner grip: a manual resize outranks
+            // content tracking. Without this the next Live Focus height
+            // report animated the panel straight back — a visible
+            // grow-then-snap flicker on every keyboard resize.
+            if vm.shellStage == .expanded { lastFullSize = overlayPanel.frame.size }
+            if vm.focusHuggingActive { focusHeightUserOverride = true }
         }
     }
 
@@ -510,6 +527,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if ended {
             cornerResizeBaseFrame = nil
             persistPanelOrigin()
+            if vm.isUserResizingPanel { vm.isUserResizingPanel = false }
             return
         }
         let base: NSRect
@@ -519,6 +537,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             base = panel.frame
             cornerResizeBaseFrame = base
         }
+        // Flag only on transition — re-setting it per mouse event would
+        // invalidate observers 60+ times a second for no layout change.
+        if !vm.isUserResizingPanel { vm.isUserResizingPanel = true }
         let newW = max(panel.minSize.width,  base.width  + dx)
         let newH = max(panel.minSize.height, base.height + dy)
         // Top edge pinned: maxY constant, origin.y follows the height.
@@ -622,6 +643,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let img = await self.captureScreen()
             self.overlayPanel.alphaValue = self.vm.opacity
             if let img { self.vm.pendingScreenshot = img }
+        }
+    }
+
+    /// Capture the screen and ask the AI about it immediately — the
+    /// companion to `captureAndAttachScreenshot`, which only stages the
+    /// image in the bar for the user to type alongside. When the question
+    /// simply IS "what's on my screen" (a coding problem, an error dialog,
+    /// a slide), typing anything is friction, so this one sends straight
+    /// away.
+    func captureAndSendScreenshot() {
+        DispatchQueue.main.async { [self] in
+            overlayPanel.alphaValue = 0
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            let img = await self.captureScreen()
+            self.overlayPanel.alphaValue = self.vm.opacity
+            guard let img else {
+                // captureScreen swallows the reason; the most common one by
+                // far is the permission not being granted yet.
+                self.vm.statusMessage = "Error: screen capture failed — check System Settings → Privacy & Security → Screen Recording."
+                if !self.overlayPanel.isVisible { self.overlayPanel.orderFrontRegardless() }
+                return
+            }
+            if !self.overlayPanel.isVisible { self.overlayPanel.orderFrontRegardless() }
+            self.vm.sendScreenshotToAI(img)
         }
     }
 

@@ -808,7 +808,8 @@ struct PreferencesView: View {
             VStack(spacing: 2) {
                 shortcut("⌃⌥Space", "Show / hide overlay")
                 shortcut("⌃⌥T",      "Toggle recording + send")
-                shortcut("⌃⌥S",      "Capture screenshot → AI")
+                shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
+                shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
                 shortcut("⌃⌥A",      "Send selected text to AI")
                 shortcut("⌃⌥C",      "Explain clipboard")
                 shortcut("⌃⌥R",      "Tailor resume from clipboard JD")
