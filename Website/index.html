@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="MacOverlay is a native macOS AI copilot for live interviews and calls. It floats above your work, drafts answers in real time, and stays hidden from screen share."
+    >
+    <title>MacOverlay - Private AI Copilot for macOS</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preload" href="hero-macoverlay.png" as="image">
+    <link rel="stylesheet" href="styles.css?v=prototype">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <nav class="nav" aria-label="Primary navigation">
+        <a class="brand" href="#top" aria-label="MacOverlay home">
+          <span class="brand-icon" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>MacOverlay</span>
+        </a>
+        <div class="nav-links">
+          <a href="#demo">Demo</a>
+          <a href="#privacy">Privacy</a>
+          <a href="#features">Features</a>
+          <a href="#native">Native</a>
+        </div>
+        <a class="nav-button" href="thecloser.dmg" download>Download</a>
+      </nav>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Private AI copilot for live interviews</p>
+          <h1 id="hero-title">Answer with confidence. Stay invisible.</h1>
+          <p class="hero-text">
+            MacOverlay floats above your call, listens in real time, and drafts
+            concise answers you can say out loud.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="thecloser.dmg" download>Download for macOS</a>
+            <a class="button button-secondary" href="#features">Learn more</a>
+          </div>
+          <p class="compatibility">macOS 13+ · Native Swift · Bring your own AI key</p>
+        </div>
+
+        <figure class="hero-visual">
+          <img
+            src="hero-macoverlay.png"
+            alt="MacOverlay floating as a translucent assistant panel over a macOS interview window."
+          >
+        </figure>
+      </section>
+
+      <section class="interactive-section" aria-labelledby="demo-title">
+        <div class="interactive-copy">
+          <p class="eyebrow">Interactive macOS preview</p>
+          <h2 id="demo-title">Click around. It behaves like a tiny Mac.</h2>
+          <p>
+            Open apps from the Dock, drag the glass windows, change overlay
+            settings, type a prompt, start the call, and see how MacOverlay
+            stays above everything.
+          </p>
+        </div>
+
+        <div class="mac-playground" id="demo" data-mac-playground>
+          <div class="macos-menubar">
+            <div class="menubar-left">
+              <button type="button" class="system-mark" data-menu-action="reset" aria-label="Reset prototype">
+                <span></span><span></span><span></span><span></span>
+              </button>
+              <button type="button" class="active-app-name" data-open-window="assistant">MacOverlay</button>
+              <button type="button" data-open-surface="interview">File</button>
+              <button type="button" data-open-surface="prompts">Edit</button>
+              <button type="button" data-open-surface="settings">View</button>
+              <button type="button" data-prototype-action="compact">Window</button>
+              <button type="button" data-open-surface="home">Help</button>
+            </div>
+            <div class="menubar-right">
+              <button type="button" class="status-glyph search" aria-label="Search"></button>
+              <button type="button" class="status-glyph control" data-menu-action="theme" aria-label="Control Center"></button>
+              <button type="button" class="status-glyph wifi" aria-label="Wi-Fi"><i></i><i></i><i></i></button>
+              <button type="button" class="battery" aria-label="Battery"><span></span></button>
+              <button type="button" class="privacy-menu" data-menu-action="privacy">Hidden</button>
+              <span data-clock>10:42 AM</span>
+            </div>
+          </div>
+
+          <div class="wallpaper-grid" aria-hidden="true"></div>
+
+          <section class="mac-window prototype-call-window" data-window="call" style="--x: 6%; --y: 12%; --w: 52%; --z: 3;">
+            <header class="window-titlebar" data-drag-handle>
+              <div class="traffic-controls">
+                <button type="button" class="traffic close" data-window-action="close" aria-label="Close call"></button>
+                <button type="button" class="traffic minimize" data-window-action="minimize" aria-label="Minimize call"></button>
+                <button type="button" class="traffic zoom" data-window-action="zoom" aria-label="Zoom call"></button>
+              </div>
+              <span>Interview Call</span>
+              <em data-call-status>Screen sharing</em>
+            </header>
+            <div class="prototype-call-body">
+              <div class="call-person">
+                <span>DS</span>
+                <strong>Design Systems</strong>
+                <small>Interviewer</small>
+              </div>
+              <div class="call-person you">
+                <span>You</span>
+                <strong>Abhishek</strong>
+                <small>Candidate</small>
+              </div>
+            </div>
+            <div class="call-controls">
+              <button type="button" data-call-toggle="mic">Mic on</button>
+              <button type="button" data-call-toggle="camera">Camera on</button>
+              <button type="button" data-call-toggle="share" class="is-on">Sharing</button>
+              <button type="button" class="danger" data-call-toggle="end">End</button>
+            </div>
+          </section>
+
+          <section class="mac-window overlay-prototype active-window" data-window="assistant" style="--x: 54%; --y: 10%; --w: 39%; --z: 9;">
+            <header class="overlay-topstrip" data-drag-handle>
+              <button type="button" class="round-control" data-prototype-action="compact" aria-label="Collapse MacOverlay">×</button>
+              <strong data-prototype-title>MacOverlay</strong>
+              <div class="topstrip-actions">
+                <button type="button" data-prototype-action="new">＋</button>
+                <button type="button" data-open-surface="settings">⋯</button>
+              </div>
+            </header>
+
+            <div class="prototype-surfaces">
+              <div class="prototype-surface is-active" data-surface="home">
+                <div class="surface-hero">
+                  <span class="brand-icon surface-logo" aria-hidden="true"><span></span><span></span><span></span></span>
+                  <h3>Ready for your interview</h3>
+                  <p>Choose a mode, attach context, then keep the answer visible above the call.</p>
+                </div>
+                <div class="surface-grid">
+                  <button type="button" data-open-surface="interview">Interview</button>
+                  <button type="button" data-open-surface="resume">Resume</button>
+                  <button type="button" data-open-surface="prompts">Prompts</button>
+                  <button type="button" data-open-surface="settings">Settings</button>
+                </div>
+              </div>
+
+              <div class="prototype-surface" data-surface="interview">
+                <div class="mode-tabs">
+                  <button type="button" class="is-selected" data-mode="interview">Interview</button>
+                  <button type="button" data-mode="call">Regular call</button>
+                </div>
+                <label class="proto-field">
+                  Session
+                  <span>New interview · Software Engineer</span>
+                </label>
+                <label class="proto-field">
+                  Context
+                  <span data-context-label>Resume.pdf + Job Description.txt attached</span>
+                </label>
+                <label class="proto-field">
+                  System prompt
+                  <span>Answer with concrete examples from my background.</span>
+                </label>
+                <button type="button" class="prototype-primary" data-prototype-action="start">Start interview</button>
+              </div>
+
+              <div class="prototype-surface" data-surface="live">
+                <div class="live-strip">
+                  <span class="live-dot"></span>
+                  <span data-live-transcript>Walk me through a system you made faster.</span>
+                </div>
+                <div class="live-answer" data-answer-box>
+                  I’d start with the bottleneck, measure it, then ship the smallest change that improves the user-visible metric.
+                </div>
+                <div class="live-actions">
+                  <button type="button" data-prototype-action="pause">Pause</button>
+                  <button type="button" data-prototype-action="answer">Suggest answer</button>
+                  <button type="button" data-prototype-action="end">End</button>
+                </div>
+              </div>
+
+              <div class="prototype-surface" data-surface="resume">
+                <div class="resume-score">
+                  <strong>Resume context</strong>
+                  <span>87%</span>
+                </div>
+                <button type="button" data-context-file="Resume.pdf">Attach Resume.pdf</button>
+                <button type="button" data-context-file="Job Description.txt">Attach Job Description.txt</button>
+                <button type="button" data-context-file="System Design Notes.md">Attach Notes.md</button>
+              </div>
+
+              <div class="prototype-surface" data-surface="prompts">
+                <button type="button" data-prompt-preset="Give me a concise technical answer.">Technical answer</button>
+                <button type="button" data-prompt-preset="Give me a behavioral answer with situation, action, result.">Behavioral answer</button>
+                <button type="button" data-prompt-preset="Give me a thoughtful question to ask the interviewer.">Question to ask</button>
+              </div>
+
+              <div class="prototype-surface" data-surface="settings">
+                <label>
+                  Overlay opacity
+                  <input type="range" min="45" max="100" value="92" data-setting="opacity">
+                </label>
+                <label>
+                  Glass blur
+                  <input type="range" min="8" max="36" value="24" data-setting="blur">
+                </label>
+                <div class="toggle-row">
+                  <span>Hide from screen share</span>
+                  <button type="button" class="switch is-on" data-setting="privacy" aria-pressed="true"><span></span></button>
+                </div>
+              </div>
+            </div>
+
+            <form class="overlay-inputbar" data-prompt-form>
+              <button type="button" class="brand-pill" data-open-surface="home" aria-label="Home">
+                <span class="brand-icon mini" aria-hidden="true"><span></span><span></span><span></span></span>
+              </button>
+              <button type="button" data-open-surface="interview">Interview</button>
+              <button type="button" data-open-surface="resume">Resume</button>
+              <button type="button" data-open-surface="prompts">Prompts</button>
+              <input name="prompt" type="text" autocomplete="off" placeholder="Ask anything">
+              <button type="submit" class="send-button">↑</button>
+            </form>
+          </section>
+
+          <div class="prototype-pill" data-compact-pill hidden>
+            <span class="brand-icon mini" aria-hidden="true"><span></span><span></span><span></span></span>
+            <strong>MacOverlay</strong>
+            <button type="button" data-open-window="assistant">Open</button>
+          </div>
+
+          <div class="mac-dock" aria-label="Interactive Dock">
+            <button type="button" class="dock-icon finder" data-open-window="call" aria-label="Open call"><span></span></button>
+            <button type="button" class="dock-icon overlay-app" data-open-window="assistant" aria-label="Open MacOverlay"><span class="brand-icon mini" aria-hidden="true"><span></span><span></span><span></span></span></button>
+            <button type="button" class="dock-icon doc-app" data-open-surface="resume" aria-label="Open resume"><span></span></button>
+            <button type="button" class="dock-icon prompt-app" data-open-surface="prompts" aria-label="Open prompts"><span></span></button>
+            <button type="button" class="dock-icon settings-app" data-open-surface="settings" aria-label="Open settings"><span></span></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="privacy-section" id="privacy" aria-labelledby="privacy-title">
+        <div class="statement">
+          <p class="eyebrow">Designed for screen share</p>
+          <h2 id="privacy-title">The overlay is for you. Not the meeting.</h2>
+          <p>
+            MacOverlay uses a native macOS panel configured to stay out of
+            screen capture, so your assistant can sit beside the conversation
+            without appearing in the shared window.
+          </p>
+        </div>
+      </section>
+
+      <section class="features-section" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="eyebrow">Built for live pressure</p>
+          <h2 id="features-title">Everything focused on the next answer.</h2>
+        </div>
+
+        <div class="feature-grid">
+          <article>
+            <span>01</span>
+            <h3>Real-time listening</h3>
+            <p>Turn the interviewer's question into clean context as the call moves.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Speakable drafts</h3>
+            <p>Get a direct opening sentence and short supporting points, not a wall of text.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Resume grounding</h3>
+            <p>Add your resume, job description, notes, or prompt preset before you start.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Manual or automatic</h3>
+            <p>Let MacOverlay answer on pauses, or send the current transcript yourself.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="native-section" id="native" aria-labelledby="native-title">
+        <div class="native-copy">
+          <p class="eyebrow">Native to Mac</p>
+          <h2 id="native-title">A floating panel that feels like part of macOS.</h2>
+        </div>
+        <div class="native-list">
+          <div>
+            <h3>Above full-screen apps</h3>
+            <p>Keep help visible over meetings, browsers, IDEs, and presentations.</p>
+          </div>
+          <div>
+            <h3>Small when you need focus</h3>
+            <p>Collapse to a compact pill, then expand into the answer surface instantly.</p>
+          </div>
+          <div>
+            <h3>Keyboard-first workflow</h3>
+            <p>Start, stop, send, capture, and move the overlay without breaking flow.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="final-cta" aria-labelledby="final-title">
+        <p class="eyebrow">Ready for your next call</p>
+        <h2 id="final-title">Keep the answer within reach.</h2>
+        <a class="button button-primary" href="thecloser.dmg" download>Download MacOverlay</a>
+      </section>
+    </main>
+    <script src="script.js?v=prototype"></script>
+  </body>
+</html>
