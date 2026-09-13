@@ -14,11 +14,16 @@ struct TopStripView: View {
             closeButton
             titleField
             Spacer()
+            browserPopOutButton
             composeButton
             sessionMenu
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
+        // The header doubles as the panel's title bar: empty space in it
+        // drags the whole overlay. Behind the row, so the ✕, the title, and
+        // the right-hand buttons keep taking their own clicks.
+        .background(PanelDragArea())
     }
 
     @ViewBuilder
@@ -103,6 +108,31 @@ struct TopStripView: View {
     /// Compose / new-chat button — the reference UI's top-right pencil.
     /// Context-aware: on the Interview surface it returns to the setup
     /// form; everywhere else it mints a fresh chat session.
+    /// Pops the browser out into its own window, so the shell is free to
+    /// show the interview panel while a page stays open next to it.
+    ///
+    /// It lives in the header — not only in the browser's tab bar — because
+    /// the tab bar doesn't exist until a tab does: with no tabs open the
+    /// surface is the quick-start empty state, and the only pop-out control
+    /// would have been on a strip that isn't on screen yet.
+    @ViewBuilder
+    private var browserPopOutButton: some View {
+        if vm.primarySurface == .browser && !vm.browserDetached {
+            Button {
+                vm.detachBrowser()
+            } label: {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Design.Ink.secondary)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(Design.Surface.controlFill))
+                    .overlay(Circle().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .help("Open the browser in its own window")
+        }
+    }
+
     private var composeButton: some View {
         Button {
             if vm.primarySurface == .interview {

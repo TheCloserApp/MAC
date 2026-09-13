@@ -8,9 +8,9 @@ struct ToolsMenuView: View {
     @Binding var isShown: Bool
 
     private var primaryTools: [Tool] {
-        // v1 set: Notes, Resume, Type, Capture. Calendar + Browser are
-        // gated by FeatureFlags so we can bring them back in v2 by flipping
-        // a single flag.
+        // Notes, Resume, Type, Capture always show; Browser is on and
+        // Calendar still off. Both stay gated by FeatureFlags so either can
+        // be taken back out by flipping a single flag.
         var tools: [Tool] = []
         if FeatureFlags.calendarEnabled {
             tools.append(Tool(icon: "calendar", title: "Calendar",

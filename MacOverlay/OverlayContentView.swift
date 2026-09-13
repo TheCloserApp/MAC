@@ -482,19 +482,61 @@ private struct CornerResizeGrip: View {
 
 /// When the browser surface is active, ensure a tab exists and show the
 /// existing BrowserPanelView inside the shell.
-private struct BrowserShellSurface: View {
+///
+/// Also hosted — with `isDetached` — as the content of `BrowserWindow`, so
+/// the popped-out window and the embedded surface stay the same UI rather
+/// than two copies that drift apart.
+struct BrowserShellSurface: View {
+    /// True for the copy inside `BrowserWindow`. The detached copy never
+    /// shows the "it's in its own window" placeholder — it *is* the window.
+    var isDetached: Bool = false
+
     @Environment(OverlayViewModel.self) private var vm
     @State private var customURL: String = ""
 
     var body: some View {
         Group {
-            if vm.browserTabs.isEmpty {
+            if vm.browserDetached && !isDetached {
+                detachedState
+            } else if vm.browserTabs.isEmpty {
                 emptyState
             } else {
-                BrowserPanelView()
+                BrowserPanelView(isDetached: isDetached)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// What the overlay's browser surface shows while the browser is off in
+    /// its own window: where it went, and the two ways back.
+    private var detachedState: some View {
+        VStack(spacing: 16) {
+            VStack(spacing: 8) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 32, weight: .light))
+                    .foregroundStyle(Design.Ink.tertiary)
+                Text("Browser is in its own window")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(Design.Ink.primary)
+                Text("It stays open beside the overlay, so this panel is free for the interview.")
+                    .font(.system(size: 11))
+                    .foregroundColor(Design.Ink.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 340)
+            }
+
+            HStack(spacing: 8) {
+                chip(title: "Bring it back", icon: "arrow.down.right.and.arrow.up.left") {
+                    vm.reattachBrowser()
+                }
+                chip(title: "Focus window", icon: "macwindow") {
+                    BrowserWindow.shared.focus()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
     }
 
     private var emptyState: some View {
@@ -524,6 +566,16 @@ private struct BrowserShellSurface: View {
             }
 
             customURLField
+
+            // The tab bar carries the same control, but it isn't on screen
+            // until a tab is — and in the detached window with no tabs open
+            // this is the only way back into the overlay besides the window's
+            // own close button.
+            chip(title: isDetached ? "Put back in overlay" : "Open in its own window",
+                 icon:  isDetached ? "arrow.down.right.and.arrow.up.left"
+                                   : "macwindow.on.rectangle") {
+                if isDetached { vm.reattachBrowser() } else { vm.detachBrowser() }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 24)
@@ -566,15 +618,20 @@ private struct BrowserShellSurface: View {
         }
     }
 
-    /// Capsule chip used in the empty state — same chip style the
-    /// Interview / Resume cards use, so the four quick-start destinations
-    /// (Google, ChatGPT, Claude) read as a consistent set.
     private func quickStartChip(title: String, icon: String, url: String) -> some View {
-        Button {
-            if let u = URL(string: url) {
-                vm.addTab(url: u)
-            }
-        } label: {
+        chip(title: title, icon: icon, help: "Open \(title)") {
+            if let u = URL(string: url) { vm.addTab(url: u) }
+        }
+    }
+
+    /// Capsule chip shared by the empty and detached states — same chip
+    /// style the Interview / Resume cards use, so the quick-start
+    /// destinations and the put-back controls read as one consistent set.
+    private func chip(title: String,
+                      icon: String,
+                      help: String? = nil,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.system(size: 11, weight: .medium))
@@ -588,6 +645,6 @@ private struct BrowserShellSurface: View {
             .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .help("Open \(title)")
+        .help(help ?? title)
     }
 }

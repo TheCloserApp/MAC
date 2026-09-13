@@ -358,6 +358,12 @@ final class OverlayViewModel {
     /// produce any signal for the website to read.
     var browserSystemOutputState: BrowserAudioRouter.SystemOutputState = .notRouted
 
+    /// True while the browser lives in its own window instead of inside the
+    /// overlay shell. Deliberately session-only state: a detached window
+    /// never survives a relaunch, so persisting the flag would point it at a
+    /// window that doesn't exist.
+    var browserDetached: Bool = false
+
     var hasBrowser: Bool { !browserTabs.isEmpty }
 
     func addTab(url: URL = URL(string: "https://www.google.com")!) {
@@ -383,10 +389,39 @@ final class OverlayViewModel {
             browserTabs = []
             activeTabID = nil
             splitCount = 1
+            // Closing the browser closes it everywhere — leaving a detached
+            // window behind with no tabs in it would be a window the user
+            // just asked to be rid of.
+            if browserDetached {
+                browserDetached = false
+                BrowserWindow.shared.dismiss()
+            }
         } else {
             addTab()
         }
         applyBrowserAudioRouting()
+    }
+
+    /// Move the browser out of the overlay shell into its own window, so the
+    /// page and the interview panel are visible at the same time instead of
+    /// taking turns in the one surface slot.
+    func detachBrowser() {
+        if !hasBrowser { addTab() }
+        browserDetached = true
+        BrowserWindow.shared.present(vm: self)
+        // The overlay is on the browser surface at this point, which would
+        // leave it showing a placeholder for the window the user is already
+        // looking at. Hand the freed-up shell to the interview — the reason
+        // for popping the browser out in the first place.
+        if primarySurface == .browser { openInterviewSurface() }
+    }
+
+    /// Put the browser back inside the overlay shell and show it there.
+    func reattachBrowser() {
+        browserDetached = false
+        BrowserWindow.shared.dismiss()
+        primarySurface = .browser
+        if shellStage == .pill { shellStage = .expanded }
     }
 
     /// Called by the browser's audio-source picker. Mirrors `audioSource` for
@@ -843,6 +878,12 @@ final class OverlayViewModel {
     /// edge pinned so the card stays put while the panel grows downward,
     /// and remembers the size so it survives stage transitions.
     @ObservationIgnored var onCornerResize: ((CGFloat, CGFloat, Bool) -> Void)?
+
+    /// Drag-to-move from a `PanelDragArea` handle: same shape as
+    /// `onCornerResize` — `(cumulative dx, cumulative dy, ended)` in
+    /// screen-space points. AppDelegate moves the panel by that offset from
+    /// the origin the drag started at.
+    @ObservationIgnored var onPanelDrag: ((CGFloat, CGFloat, Bool) -> Void)?
 
     /// Live Focus content-height reports from SwiftUI. AppDelegate matches
     /// the panel height to the content so the window grows and shrinks
@@ -1893,7 +1934,7 @@ final class OverlayViewModel {
                     return
                 }
                 do {
-                    try quickRecorder.start()
+                    try await quickRecorder.start()
                 } catch {
                     NSLog("[QuickAsk] quickRecorder.start failed: %@", error.localizedDescription)
                     statusMessage    = ""

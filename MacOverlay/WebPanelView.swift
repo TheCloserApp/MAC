@@ -71,7 +71,15 @@ struct WebPanelView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        WebViewRegistry.shared.unregister(for: coordinator.tabID)
+        // Only drop the registry entry if it still points at *this* web
+        // view. Popping the browser in or out of its own window rebuilds
+        // the tab in the other host, and SwiftUI may run that host's
+        // `makeNSView` before this teardown — an unconditional unregister
+        // would then erase the mapping for the web view that just took
+        // over, leaving the tab impossible to evict on close.
+        if WebViewRegistry.shared.webView(for: coordinator.tabID) === nsView {
+            WebViewRegistry.shared.unregister(for: coordinator.tabID)
+        }
         nsView.configuration.userContentController.removeScriptMessageHandler(forName: "macoverlayMediaLog")
     }
 

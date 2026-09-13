@@ -112,9 +112,24 @@ Launch at login: **System Settings → General → Login Items → +**.
 | `⌃⌥ A` | Send the current selection from the front app to the AI |
 | `⌃⌥ R` / `⌃⌥ M` | Generate / score a résumé from the clipboard |
 | `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
+| `⌃⌥ X` | Quit thecloser completely (and relaunch it — see below) |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
 Accessibility permission required.
+
+### Quit and relaunch with one combo
+
+`⌃⌥ Space` only hides the window — the app keeps running. `⌃⌥ X` ends the
+process outright: no window, no menu-bar item, nothing left in Activity
+Monitor.
+
+Nothing that has exited can listen for its own hotkey, so the way back has to
+belong to macOS. **Preferences ▸ Shortcuts ▸ Install** writes a no-input Quick
+Action to `~/Library/Services` and binds `⌃⌥ X` to it, which relaunches the
+app. While thecloser is running, its own Carbon hotkey takes the keystroke
+first, so the same combo quits; once the process is gone, the Quick Action
+picks it up and opens the app again. The Quick Action runs only for the
+instant the key is pressed — it leaves nothing resident.
 
 ---
 
@@ -155,8 +170,8 @@ MacOverlay/
 - **State:** one `@MainActor @Observable OverlayViewModel`; SwiftUI views read
   it from the environment. AppKit↔SwiftUI bridge via plain callbacks
   (`onShellStageChange`, `onWidthResize`, …).
-- **Feature flags:** `FeatureFlags.swift` hides v1-out-of-scope surfaces
-  (browser, peer-control, calendar, workspaces) without deleting the code.
+- **Feature flags:** `FeatureFlags.swift` hides out-of-scope surfaces
+  (peer-control, calendar, workspaces) without deleting the code.
 - **Models:** the catalogue lives in `OverlayViewModel.availableModels`; ids
   route to the right provider in `AIManager` by prefix.
 

@@ -20,6 +20,7 @@ enum HotkeyAction: Int {
     case resumeScore    = 16   // Ctrl+Opt+M — clipboard as JD → score current resume
     case quickAsk       = 17   // Ctrl+Opt+Q — push-to-talk quick ask
     case screenshotSend = 18   // Ctrl+Shift+S — screenshot straight to AI
+    case quitApp        = 19   // Ctrl+Opt+X — quit the app outright
 }
 
 class HotkeyManager {
@@ -100,6 +101,11 @@ class HotkeyManager {
             add(kVK_ANSI_M,  ctrlOpt,   .resumeScore)
         }
         add(kVK_ANSI_Q,      ctrlOpt,   .quickAsk)
+
+        // Quit outright — leaves nothing running. The reverse direction
+        // (relaunch on the same combo) can't be ours to own once the
+        // process is gone; see LaunchShortcutInstaller.
+        add(kVK_ANSI_X,      ctrlOpt,   .quitApp)
     }
 
     private func add(_ keyCode: Int, _ modifiers: UInt32, _ action: HotkeyAction) {

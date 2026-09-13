@@ -8,6 +8,10 @@ protocol DictationEngine: AnyObject {
     var onPartial: ((String) -> Void)? { get set }
     var onCommit:  ((String) -> Void)? { get set }
     var isRunning: Bool { get }
+    /// Whether any mic audio actually reached the engine — separates "you
+    /// didn't say anything" from "the mic never opened", which is what
+    /// happens when another app has the input device tied up.
+    var receivedAudio: Bool { get }
     func start(source: AudioSource) async throws
     func stop()
     func stopAudioCapture()
@@ -138,9 +142,10 @@ class DictationManager {
                 tm.sendCommit()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [self] in
                     guard tm.isRunning else { return }   // onCommit already pasted + stopped
+                    let heardAudio = tm.receivedAudio
                     tm.stop()
                     let trimmed = accumulatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.isEmpty { onStatus?("Nothing transcribed") }
+                    if trimmed.isEmpty { onStatus?(nothingHeardMessage(heardAudio: heardAudio)) }
                     else               { pasteIntoPreviousApp(trimmed) }
                 }
             }
@@ -156,15 +161,25 @@ class DictationManager {
         let snapshot = accumulatedText
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
             guard self.tm.isRunning else { return }  // already handled by onCommit
+            let heardAudio = self.tm.receivedAudio
             self.tm.stop()
             let trimmed = snapshot.trimmingCharacters(in: .whitespacesAndNewlines)
             print("[Dictation] fallback paste (\(trimmed.count) chars)")
             guard !trimmed.isEmpty else {
-                self.onStatus?("Nothing transcribed")
+                self.onStatus?(self.nothingHeardMessage(heardAudio: heardAudio))
                 return
             }
             self.pasteIntoPreviousApp(trimmed)
         }
+    }
+
+    /// "Nothing transcribed" is only the right message when the mic was
+    /// actually working. When no audio ever arrived — the common case while
+    /// another app is holding the input device — say that instead, and name
+    /// what's holding it.
+    private func nothingHeardMessage(heardAudio: Bool) -> String {
+        heardAudio ? "Nothing transcribed"
+                   : "No mic audio. \(MicInput.troubleHint())"
     }
 
     // MARK: - Paste via clipboard + Cmd+V

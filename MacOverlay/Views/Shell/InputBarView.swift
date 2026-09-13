@@ -33,6 +33,9 @@ struct InputBarView: View {
     /// brand button visibly responds the instant the cursor lands on it,
     /// even before the dwell-debounced expansion fires.
     @State private var brandHovered = false
+    /// Set while a drag on the brand pill is moving the panel, so the
+    /// button's own click action can stand down. Cleared when it reads it.
+    @State private var brandDidDrag = false
     /// Pending hover-to-expand task. A short dwell (`brandHoverDwell`)
     /// debounces the expansion so a quick mouse-cross doesn't pop the
     /// bar open. Cancelled if the cursor leaves before it elapses.
@@ -60,6 +63,12 @@ struct InputBarView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
             barRow
+                // Drag handle behind the row — this is the only chrome on
+                // screen in `.pill`, so without it the collapsed overlay
+                // can't be moved by mouse at all. In front of the capsule
+                // fill (which would otherwise swallow the drag) and behind
+                // the controls, which keep their own clicks.
+                .background(PanelDragArea())
                 // Constant horizontal padding across stages — animating
                 // padding 4 → 8 during expansion shifts the brand pill 4pt
                 // right mid-flight, which reads as the icon "twitching" as
@@ -280,6 +289,12 @@ struct InputBarView: View {
     /// while collapsed expands to a bar-only `.expanded` (no surface).
     private var brandLogoButton: some View {
         Button {
+            // A press that turned into a drag moved the panel; it must not
+            // also toggle the shell. The window follows the cursor, so the
+            // pointer is still on the brand at mouse-up and this action
+            // fires at the end of every drag without the guard. The gesture
+            // clears the flag itself on the next runloop turn.
+            if brandDidDrag { return }
             cancelBrandHoverDwell()
             withAnimation(Design.Motion.expand) {
                 if vm.shellStage == .pill {
@@ -302,6 +317,10 @@ struct InputBarView: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // In `.pill` the brand IS the overlay — 44×44 of button with no
+        // background left to grab — so the pill itself has to be the drag
+        // handle or the collapsed overlay can't be moved by mouse at all.
+        .panelDraggable(didDrag: $brandDidDrag)
         .onHover { isHovering in
             brandHovered = isHovering
             if isHovering, vm.shellStage == .pill {
@@ -310,7 +329,7 @@ struct InputBarView: View {
                 cancelBrandHoverDwell()
             }
         }
-        .help(vm.shellStage == .pill ? "Hover or click to open" : "Click to collapse")
+        .help(vm.shellStage == .pill ? "Drag to move · click to open" : "Click to collapse")
     }
 
     private func scheduleBrandHoverExpand() {
@@ -366,10 +385,10 @@ struct InputBarView: View {
 
     @ViewBuilder
     private var surfaceButtons: some View {
-        // v1 bar surface set: Interview, Profile (Resume + Browser are behind
-        // feature flags, off for v1). Everything else (mode picker, model
-        // picker, history, mic, send, text field) is parked — flows start by
-        // clicking one of these icons.
+        // Bar surface set: Interview, Resumes, Browser, Profile — the middle
+        // two behind feature flags, both currently on. Everything else (mode
+        // picker, model picker, history, mic, send, text field) is parked —
+        // flows start by clicking one of these icons.
         surfaceButton(.interview, icon: "desktopcomputer", label: "Interview")
         if FeatureFlags.resumesEnabled {
             surfaceButton(.resumes, icon: "doc.richtext", label: "Resumes")

@@ -309,6 +309,7 @@ struct SettingsPopoverView: View {
             shortcutRow("Ctrl+Opt+A",       "Send selected text to AI")
             shortcutRow("Ctrl+Opt+C",       "Explain clipboard")
             shortcutRow("Ctrl+Opt+Space",   "Toggle overlay")
+            shortcutRow("Ctrl+Opt+X",       "Quit completely")
 
             Divider().padding(.vertical, 4)
 

@@ -55,6 +55,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var fnKeyDown        = false   // tracks Fn/Globe key for quick-ask push-to-talk
     private var dictationKeyDown = false   // tracks Option key for dictation push-to-talk
     private var dictationManager: DictationManager?
+    private var sigtermSource: DispatchSourceSignal?
     private var lastFrontAppPID: pid_t = 0
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
@@ -72,6 +73,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // app's discretion. Quit / Reset position moved into the session
         // ⋯ menu inside the overlay.
         setupKeyboardShortcuts()
+        installTerminationSignalHandler()
 
         // With @Observable the ViewModel no longer publishes a Combine $opacity.
         // Use a direct callback so we only do the work that matters.
@@ -113,6 +115,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Corner grip: resize width + height together, top edge pinned.
         vm.onCornerResize = { [weak self] dx, dy, ended in
             self?.handleCornerResize(translationX: dx, translationY: dy, ended: ended)
+        }
+
+        // Drag handles behind the header strip and the input bar.
+        vm.onPanelDrag = { [weak self] dx, dy, ended in
+            self?.handlePanelDrag(dx: dx, dy: dy, ended: ended)
         }
 
         // Live Focus reports its content height; track the panel to it so
@@ -286,6 +293,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resumeGenerate: if isPressed { self.resumeFromClipboard() }
             case .resumeScore:    if isPressed { self.scoreResumeFromClipboard() }
             case .quickAsk:       break   // handled via Fn flagsChanged monitor
+            case .quitApp:        if isPressed { self.quitApp() }
             }
         }
         HotkeyManager.shared.register()
@@ -497,6 +505,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if vm.shellStage == .expanded { lastFullSize = overlayPanel.frame.size }
             if vm.focusHuggingActive { focusHeightUserOverride = true }
         }
+    }
+
+    // MARK: - Drag-to-move (panel drag handles)
+
+    /// Origin captured at the start of a handle drag — same stable-base
+    /// reasoning as `cornerResizeBaseFrame`.
+    private var panelDragBaseOrigin: NSPoint?
+
+    /// Drag-to-move from a `PanelDragArea`. `setFrame` rather than
+    /// `setFrameOrigin` so `UnconstrainedPanel.constrainFrameRect` still
+    /// clamps the panel to a connected screen — dragging must not be able to
+    /// strand the overlay off the edge of the desktop.
+    @MainActor
+    private func handlePanelDrag(dx: CGFloat, dy: CGFloat, ended: Bool) {
+        guard let panel = overlayPanel else { return }
+        let base: NSPoint
+        if let b = panelDragBaseOrigin {
+            base = b
+        } else {
+            base = panel.frame.origin
+            panelDragBaseOrigin = base
+        }
+        panel.setFrame(NSRect(origin: NSPoint(x: base.x + dx, y: base.y + dy),
+                              size: panel.frame.size),
+                       display: true)
+        // `panelDidMove` persists the origin and re-evaluates the pill
+        // anchor on its own — it fires for every move, however caused.
+        if ended { panelDragBaseOrigin = nil }
     }
 
     // MARK: - Drag-to-resize (corner grip)
@@ -898,8 +934,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu actions
 
     @objc func toggleOverlay() {
-        if overlayPanel.isVisible { overlayPanel.orderOut(nil) }
-        else                      { overlayPanel.orderFrontRegardless() }
+        let showing = overlayPanel.isVisible
+        if showing { overlayPanel.orderOut(nil) }
+        else       { overlayPanel.orderFrontRegardless() }
+        // The detached browser window goes with it. ⌃⌥Space is the key you
+        // hit when someone walks up; leaving a browser on screen because it
+        // happens to live in its own window would defeat the whole point.
+        //
+        // `assumeIsolated` rather than a `Task`: this method already drives
+        // AppKit directly, so it only ever runs on the main thread (the
+        // hotkey path hops through `DispatchQueue.main.async` first), and
+        // hopping to a later runloop turn would let the two windows
+        // disappear one frame apart.
+        MainActor.assumeIsolated { BrowserWindow.shared.setVisible(!showing) }
     }
 
     @objc func resetPosition() {
@@ -909,6 +956,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quitApp() { NSApp.terminate(nil) }
+
+    /// Quit cleanly on SIGTERM instead of dying where we stand. The launch
+    /// Quick Action uses `pkill` as its "app is already running" branch, and
+    /// the default SIGTERM disposition would skip applicationWillTerminate —
+    /// losing whatever the session store hasn't flushed yet.
+    private func installTerminationSignalHandler() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        sigtermSource = source
+    }
 
     /// Show the Accessibility permission dialog the first time the user
     /// actually invokes dictation. Idempotent: subsequent invocations
