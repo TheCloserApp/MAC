@@ -1,0 +1,30 @@
+[package]
+name = "copilot-core"
+version = "1.0.0"
+edition = "2021"
+description = "Portable logic for the thecloser Windows interview copilot: provider routing, prompt building, transcript filtering, streaming AI client, and settings. No OS/GUI dependencies, so it builds and tests on any platform."
+license = "MIT"
+
+[lib]
+name = "copilot_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+dirs = "5"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "multipart",
+    "rustls-tls",
+] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+futures-util = "0.3"
+
+# Résumé / context-file text extraction (ports ResumeImporter.swift).
+# A .docx is a zip holding word/document.xml; pdf-extract is pure Rust, so
+# both work identically on Windows without shelling out to anything.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+pdf-extract = "0.7"

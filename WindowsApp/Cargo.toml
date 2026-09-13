@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["copilot-core", "thecloser"]
+
+# Build the GUI app in release by default for a fast, single binary.
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+panic = "abort"

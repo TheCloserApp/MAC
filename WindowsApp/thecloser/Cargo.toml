@@ -1,0 +1,58 @@
+[package]
+name = "thecloser"
+version = "1.0.0"
+edition = "2021"
+description = "thecloser — invisible AI interview-copilot overlay for Windows. Floats over every app, excluded from screen capture, with live transcription and streaming AI answers."
+license = "MIT"
+default-run = "thecloser"
+
+[[bin]]
+name = "thecloser"
+path = "src/main.rs"
+
+[dependencies]
+copilot-core = { path = "../copilot-core" }
+
+# UI + windowing (pure Rust, immediate mode).
+eframe = { version = "0.29", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
+egui = "0.29"
+
+# Async + HTTP (shared shape with copilot-core).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "multipart",
+    "rustls-tls",
+] }
+futures-util = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Global shortcuts, clipboard, WAV encoding for STT, config dir.
+global-hotkey = "0.6"
+arboard = "3"
+hound = "3"
+dirs = "5"
+
+# Native file open/save dialogs for résumé + context uploads.
+rfd = "0.15"
+
+# PNG encoding for the THECLOSER_DEMO UI-gallery screenshots (dev aid; the
+# crate is already in the tree via arboard, so this adds no build cost).
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Windows-only: capture-excluded overlay window + WASAPI audio capture/loopback.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+wasapi = "0.15"
