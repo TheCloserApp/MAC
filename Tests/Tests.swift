@@ -288,6 +288,46 @@ func testTranscriptFilterSeemsComplete() throws {
 }
 
 @MainActor
+func testTranscriptFilterWarrantsResponse() throws {
+    func isYes(_ s: String) -> Bool {
+        if case .yes = TranscriptFilter.warrantsResponse(s) { return true }
+        return false
+    }
+    func isNo(_ s: String) -> Bool {
+        if case .no = TranscriptFilter.warrantsResponse(s) { return true }
+        return false
+    }
+    func isUnsure(_ s: String) -> Bool {
+        if case .unsure = TranscriptFilter.warrantsResponse(s) { return true }
+        return false
+    }
+
+    // Real questions send instantly — no model call.
+    try assertTrue(isYes("What's your experience with Kubernetes?"))
+    try assertTrue(isYes("Tell me about yourself"))
+    try assertTrue(isYes("Walk me through your last project"))
+    try assertTrue(isYes("How would you design a rate limiter"))
+    try assertTrue(isYes("Can you give an example"))
+    // A question mark wins even when the line opens with acknowledgement.
+    try assertTrue(isYes("Okay, so what's next?"))
+    // Long unpunctuated scenario prompts are substantive.
+    try assertTrue(isYes("So your team is on call and the pager goes off at 3am and the database is down"))
+
+    // Backchannel never sends, at any length.
+    try assertTrue(isNo("Okay"))
+    try assertTrue(isNo("yeah, that makes sense"))
+    try assertTrue(isNo("Right, got it"))
+    try assertTrue(isNo("hold on one second"))
+    try assertTrue(isNo("mm-hmm"))
+    // Short fragments with no question shape.
+    try assertTrue(isNo("and then the"))
+    try assertTrue(isNo(""))
+
+    // The narrow ambiguous band — these are what the model resolves.
+    try assertTrue(isUnsure("give me a second there"))
+}
+
+@MainActor
 func testTranscriptFilterNormalized() throws {
     // Punctuation / casing revisions normalize to the same form — the
     // signal the auto-send debounce uses to ignore cosmetic re-emits.
@@ -358,6 +398,7 @@ struct TestsMain {
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)
         TestRunner.run("TranscriptFilter question completeness", testTranscriptFilterSeemsComplete)
+        TestRunner.run("TranscriptFilter response gate triage", testTranscriptFilterWarrantsResponse)
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)

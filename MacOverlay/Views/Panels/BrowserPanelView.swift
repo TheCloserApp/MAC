@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 
 struct BrowserPanelView: View {
+    /// True for the copy hosted by `BrowserWindow` — flips the tab bar's
+    /// pop-out control into a put-back control.
+    var isDetached: Bool = false
+
     @Environment(OverlayViewModel.self) private var vm
 
     var body: some View {
@@ -144,33 +148,68 @@ struct BrowserPanelView: View {
                 .padding(.vertical, 4)
             }
 
-            Button { vm.addTab() } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .frame(width: 26, height: 26)
-                    .background(Circle().fill(Color.white.opacity(0.05)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
-            }
-            .buttonStyle(.plain)
-            .help("New tab (Google)")
-            .padding(.horizontal, 4)
+            // One group at a higher layout priority than the tab strip, so a
+            // narrow panel shrinks the scrolling tabs instead of pushing the
+            // controls — the pop-out button among them — off the right edge.
+            HStack(spacing: 0) {
+                Button { vm.addTab() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Color.white.opacity(0.05)))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+                }
+                .buttonStyle(.plain)
+                .help("New tab (Google)")
+                .padding(.horizontal, 4)
 
-            Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
+                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
 
-            HStack(spacing: 2) {
-                layoutBtn(1, "rectangle")
-                layoutBtn(2, "rectangle.split.2x1")
-                layoutBtn(3, "rectangle.split.3x1")
-            }
-            .padding(.horizontal, 6)
-
-            Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
-
-            audioSourceMenu
+                HStack(spacing: 2) {
+                    layoutBtn(1, "rectangle")
+                    layoutBtn(2, "rectangle.split.2x1")
+                    layoutBtn(3, "rectangle.split.3x1")
+                }
                 .padding(.horizontal, 6)
+
+                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
+
+                audioSourceMenu
+                    .padding(.horizontal, 6)
+
+                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
+
+                detachButton
+                    .padding(.horizontal, 6)
+            }
+            .fixedSize()
+            .layoutPriority(1)
         }
         .background(Color.white.opacity(0.025))
+    }
+
+    /// Pops the browser into its own window and back. Detached, the page
+    /// keeps running beside the overlay while the shell shows the interview
+    /// panel — the two stop competing for the single surface slot.
+    private var detachButton: some View {
+        Button {
+            if isDetached { vm.reattachBrowser() } else { vm.detachBrowser() }
+        } label: {
+            Image(systemName: isDetached
+                  ? "arrow.down.right.and.arrow.up.left"
+                  : "macwindow.on.rectangle")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .frame(width: 26, height: 22)
+                .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.05)))
+                .overlay(RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(isDetached
+              ? "Put the browser back in the overlay"
+              : "Open the browser in its own window")
     }
 
     private var audioSourceMenu: some View {

@@ -67,14 +67,43 @@ final class AIController {
 
     // MARK: - Streaming
 
+    /// How much already-streamed text we're willing to throw away for a
+    /// silent retry. Past this, regenerating costs more than it saves —
+    /// keep the partial answer and surface the error + manual Retry.
+    private static let autoRetrySalvageLimit = 400
+
+    /// One transient failure gets a silent retry: network blips and
+    /// overloaded/5xx responses mid-interview shouldn't require the user to
+    /// notice a dead answer and click Retry while they're talking.
+    /// Auth/4xx request errors are NOT retried — they'd fail identically.
+    private static func isTransient(_ error: Error) -> Bool {
+        if let urlErr = error as? URLError {
+            switch urlErr.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .secureConnectionFailed, .resourceUnavailable, .dataNotAllowed:
+                return true
+            default:
+                return false
+            }
+        }
+        if case .apiError(let status, _)? = error as? AIError {
+            return status == 408 || status == 429 || (500...599).contains(status)
+        }
+        return false
+    }
+
     /// Run a streaming request, mutating the given assistant turn as chunks
     /// arrive. Captures retry state so `retry()` can replay it on failure.
+    /// `autoRetryAttempt` counts silent replays of this same turn — 0 for a
+    /// fresh request; the transient-failure path re-enters once with 1.
     func runStream(userText: String,
                    screenshot: NSImage?,
                    systemPrompt: String,
                    history: [(user: String, assistant: String)],
                    assistantTurnID: UUID,
-                   wasFirstExchange: Bool) {
+                   wasFirstExchange: Bool,
+                   autoRetryAttempt: Int = 0) {
         guard let vm else { return }
 
         // Concurrent answers: a new question does NOT cancel the previous one
@@ -106,6 +135,9 @@ final class AIController {
             // writes so two streams don't starve each other's updates.
             var lastFlush = ContinuousClock.now
             var streamFailed = false
+            // Set when a transient failure earns a silent replay — acted on
+            // AFTER this stream retires so re-registration is clean.
+            var scheduleAutoRetry = false
             // Only the newest stream mirrors onto the shared `aiResponse`
             // (secondary status views show the latest answer). Background
             // answers still update their own turn via the session store.
@@ -173,12 +205,31 @@ final class AIController {
                 mirrorIfCurrent(accumulated)
             } catch {
                 streamFailed = true
-                let errMsg = "Error: \(error.localizedDescription)"
-                let display = accumulated.isEmpty ? errMsg : accumulated + "\n\n" + errMsg
-                // Replace (not append): the throttled store may not have
-                // the full accumulated text yet.
-                vm.sessionStore.setStreamingContent(display, turnID: assistantTurnID)
-                mirrorIfCurrent(display)
+                // Transient failure (network blip, overloaded/5xx) on a
+                // fresh request with little text lost → retry silently
+                // once instead of dying with an error the user must notice
+                // and click mid-interview. The brief backoff rides out the
+                // blip; if the user hits Stop during it, respect that.
+                if autoRetryAttempt == 0,
+                   Self.isTransient(error),
+                   accumulated.count < Self.autoRetrySalvageLimit {
+                    NSLog("[AIController] transient stream failure — silent retry: %@",
+                          error.localizedDescription)
+                    try? await Task.sleep(for: .milliseconds(600))
+                    if !Task.isCancelled {
+                        scheduleAutoRetry = true
+                    } else {
+                        vm.sessionStore.setStreamingContent(accumulated, turnID: assistantTurnID)
+                        mirrorIfCurrent(accumulated)
+                    }
+                } else {
+                    let errMsg = "Error: \(error.localizedDescription)"
+                    let display = accumulated.isEmpty ? errMsg : accumulated + "\n\n" + errMsg
+                    // Replace (not append): the throttled store may not have
+                    // the full accumulated text yet.
+                    vm.sessionStore.setStreamingContent(display, turnID: assistantTurnID)
+                    mirrorIfCurrent(display)
+                }
             }
             // Retire this stream. Guard against a straggler completion for a
             // turn that was already cancelled + replaced (removeAll/nil are
@@ -186,6 +237,19 @@ final class AIController {
             self.activeStreams[assistantTurnID] = nil
             self.streamOrder.removeAll { $0 == assistantTurnID }
             self.syncSendingFlag()
+            if scheduleAutoRetry {
+                // Re-enter AFTER retirement so the fresh registration under
+                // the same turn id can't be clobbered by this task's exit.
+                vm.resetAssistantTurn(id: assistantTurnID)
+                self.runStream(userText: userText,
+                               screenshot: screenshot,
+                               systemPrompt: systemPrompt,
+                               history: history,
+                               assistantTurnID: assistantTurnID,
+                               wasFirstExchange: wasFirstExchange,
+                               autoRetryAttempt: autoRetryAttempt + 1)
+                return
+            }
             if !streamFailed {
                 self.lastRetry = nil
                 // Anything the interviewer said while we were streaming is

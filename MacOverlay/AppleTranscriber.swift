@@ -38,6 +38,18 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
     private var task:          SFSpeechRecognitionTask?
     private var recognizer:    SFSpeechRecognizer? = SFSpeechRecognizer(locale: Locale.current)
     private var engineObserver: NSObjectProtocol?
+    private let deviceMonitor = MicInput.DeviceMonitor()
+
+    /// Detects a tap that installed but never delivered — see MicInput.swift.
+    /// Distinct from the dead-ENGINE watchdog below: this one catches "no
+    /// audio at all", that one catches "audio but no recognition results".
+    private var flowWatchdog: MicFlowWatchdog?
+    private var deadCaptureStreak     = 0
+    private var preferVoiceProcessing = false
+    private var lastStallAt           = Date.distantPast
+    /// Set once any mic audio has been captured this run — lets callers
+    /// tell "you said nothing" apart from "the mic never opened".
+    private(set) var receivedAudio = false
 
     private var scStream:           SCStream?
     private var systemAudioHandler: AppleSystemAudioHandler?
@@ -132,38 +144,49 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         }
 
         if source == .microphone || source == .both {
-            // Rebuild the engine on every start. The same `AVAudioEngine`
-            // can refuse to re-tap after the default input device changes
-            // (e.g. AirPods disconnect) — the node's reported format goes
-            // stale and `installTap` silently produces no buffers. A fresh
-            // engine forces CoreAudio to re-resolve the current input.
-            audioEngine = AVAudioEngine()
-            let node = audioEngine.inputNode
-            let format = node.outputFormat(forBus: 0)
-            NSLog("[AppleTranscriber] mic input format: %@ channels=%u sampleRate=%.0f",
-                  format.description, format.channelCount, format.sampleRate)
-            guard format.channelCount > 0, format.sampleRate > 0 else {
-                throw TranscriptionError.permissionDenied(
-                    "No audio input available. Check that a microphone is selected as the default input in System Settings → Sound → Input, and that thecloser has Microphone permission.")
+            // Escalation state goes stale — see the matching note in
+            // TranscriptionManager.setupMicCapture.
+            if Date().timeIntervalSince(lastStallAt) > 60 {
+                deadCaptureStreak     = 0
+                preferVoiceProcessing = false
             }
-            node.removeTap(onBus: 0)
+            receivedAudio = false
+
+            // `MicInput.startEngine` rebuilds the engine per attempt and
+            // retries through the transient states the input device passes
+            // through when another app (a WhatsApp/Zoom call) grabs or
+            // releases it — where the old code read the format once and
+            // gave up with "No audio input available".
+            let watchdog = MicFlowWatchdog(label: "AppleTranscriber") { [weak self] reason in
+                self?.handleMicStall(reason)
+            }
+            flowWatchdog = watchdog
+
             var bufferCount = 0
-            node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-                self?.request?.append(buf)
-                self?.noteVoiceActivity(buf)
-                bufferCount += 1
-                if bufferCount == 1 || bufferCount % 200 == 0 {
-                    NSLog("[AppleTranscriber] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+            let started = try await MicInput.startEngine(
+                label: "AppleTranscriber",
+                voiceProcessing: preferVoiceProcessing
+            ) { [weak self] engine, format in
+                engine.inputNode.removeTap(onBus: 0)
+                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
+                    watchdog.note(buf)
+                    self?.request?.append(buf)
+                    self?.noteVoiceActivity(buf)
+                    bufferCount += 1
+                    if bufferCount == 1 || bufferCount % 200 == 0 {
+                        NSLog("[AppleTranscriber] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+                    }
+                    if bufferCount == 20 {
+                        // ~1s of audio actually flowing clears the escalation.
+                        DispatchQueue.main.async { [weak self] in
+                            self?.deadCaptureStreak = 0
+                            self?.receivedAudio     = true
+                        }
+                    }
                 }
             }
-            audioEngine.prepare()
-            do {
-                try audioEngine.start()
-                NSLog("[AppleTranscriber] AVAudioEngine started")
-            } catch {
-                NSLog("[AppleTranscriber] AVAudioEngine.start failed: %@", error.localizedDescription)
-                throw error
-            }
+            audioEngine = started.engine
+            watchdog.noteStart()
 
             // Input device changes (AirPods battery dies, headset
             // unplugged) silently stop the engine — without this the UI
@@ -176,6 +199,15 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
             ) { [weak self] _ in
                 guard let self, self.isRunning else { return }
                 NSLog("[AppleTranscriber] engine configuration changed — capture interrupted")
+                self.onCaptureInterrupted?()
+            }
+
+            // A Bluetooth headset entering call mode is a *device swap*,
+            // which AVAudioEngine doesn't always report as a configuration
+            // change.
+            deviceMonitor.start { [weak self] in
+                guard let self, self.isRunning else { return }
+                NSLog("[AppleTranscriber] default input device changed — capture interrupted")
                 self.onCaptureInterrupted?()
             }
         }
@@ -316,6 +348,9 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         isRunning = false
         silenceTimer?.cancel()
         silenceTimer = nil
+        flowWatchdog?.stop()
+        flowWatchdog = nil
+        deviceMonitor.stop()
 
         if let engineObserver {
             NotificationCenter.default.removeObserver(engineObserver)
@@ -340,6 +375,25 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
 
         currentText     = ""
         committedPrefix = ""
+    }
+
+    /// The tap is alive but no audio is coming through it. Escalate rather
+    /// than sitting deaf behind a "Listening" label: restart on a fresh
+    /// engine, then on the voice-processing input unit (which coexists with
+    /// the VP clients call apps install), then tell the user what's holding
+    /// the mic.
+    private func handleMicStall(_ reason: String) {
+        guard isRunning else { return }
+        if Date().timeIntervalSince(lastStallAt) > 60 { deadCaptureStreak = 0 }
+        lastStallAt        = Date()
+        deadCaptureStreak += 1
+        NSLog("[AppleTranscriber] mic stall #%d: %@", deadCaptureStreak, reason)
+        if deadCaptureStreak >= 2 { preferVoiceProcessing = true }
+        if deadCaptureStreak >= 3 {
+            (onError ?? onUpdate)?("Error: \(reason). \(MicInput.troubleHint())")
+        } else {
+            onCaptureInterrupted?()
+        }
     }
 
     /// Parity shim with `TranscriptionManager.stopAudioCapture()` — the

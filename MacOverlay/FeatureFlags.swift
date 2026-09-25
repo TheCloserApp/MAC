@@ -21,12 +21,6 @@ enum FeatureFlags {
 
     // MARK: - Hidden in v1, planned for a later release
 
-    /// Embedded WebKit browser tabs inside the overlay. Heavy + maintenance
-    /// burden, and its system-audio path needs the BlackHole driver +
-    /// output-device reconfiguration — the most error-prone surface in the
-    /// app. Users have a real browser. Plan: re-enable in v2.
-    static let browserEnabled = false
-
     /// Peer Control Server — let a colleague view your overlay and send
     /// messages to the AI over LAN. Cool tech demo, near-zero real-world
     /// demand right now. Plan: re-enable in v2.
@@ -40,6 +34,19 @@ enum FeatureFlags {
     /// app. Flip back on once the editor/output flow is polished. Re-enabling
     /// this only restores UI entry points — no re-implementation needed.
     static let resumesEnabled = true
+
+    /// Embedded WebKit browser tabs inside the overlay — a Browser bar
+    /// surface plus the Tools-menu toggle, both feeding the same
+    /// `BrowserPanelView` (tabs, split view, per-tab WKWebView).
+    ///
+    /// Kept behind a flag because its system-audio path is the most
+    /// error-prone surface in the app: routing system audio into a page
+    /// needs the BlackHole driver plus output-device reconfiguration, and
+    /// `BrowserPanelView` surfaces that as a banner when the driver is
+    /// missing or CoreAudio refuses. None of that blocks plain browsing —
+    /// the routing only engages when the audio source is System Audio and
+    /// a tab is open.
+    static let browserEnabled = true
 
     // MARK: - Hidden in v1, no current plans to bring back
 

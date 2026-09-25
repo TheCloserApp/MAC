@@ -358,6 +358,12 @@ final class OverlayViewModel {
     /// produce any signal for the website to read.
     var browserSystemOutputState: BrowserAudioRouter.SystemOutputState = .notRouted
 
+    /// True while the browser lives in its own window instead of inside the
+    /// overlay shell. Deliberately session-only state: a detached window
+    /// never survives a relaunch, so persisting the flag would point it at a
+    /// window that doesn't exist.
+    var browserDetached: Bool = false
+
     var hasBrowser: Bool { !browserTabs.isEmpty }
 
     func addTab(url: URL = URL(string: "https://www.google.com")!) {
@@ -383,10 +389,39 @@ final class OverlayViewModel {
             browserTabs = []
             activeTabID = nil
             splitCount = 1
+            // Closing the browser closes it everywhere — leaving a detached
+            // window behind with no tabs in it would be a window the user
+            // just asked to be rid of.
+            if browserDetached {
+                browserDetached = false
+                BrowserWindow.shared.dismiss()
+            }
         } else {
             addTab()
         }
         applyBrowserAudioRouting()
+    }
+
+    /// Move the browser out of the overlay shell into its own window, so the
+    /// page and the interview panel are visible at the same time instead of
+    /// taking turns in the one surface slot.
+    func detachBrowser() {
+        if !hasBrowser { addTab() }
+        browserDetached = true
+        BrowserWindow.shared.present(vm: self)
+        // The overlay is on the browser surface at this point, which would
+        // leave it showing a placeholder for the window the user is already
+        // looking at. Hand the freed-up shell to the interview — the reason
+        // for popping the browser out in the first place.
+        if primarySurface == .browser { openInterviewSurface() }
+    }
+
+    /// Put the browser back inside the overlay shell and show it there.
+    func reattachBrowser() {
+        browserDetached = false
+        BrowserWindow.shared.dismiss()
+        primarySurface = .browser
+        if shellStage == .pill { shellStage = .expanded }
     }
 
     /// Called by the browser's audio-source picker. Mirrors `audioSource` for
@@ -625,6 +660,14 @@ final class OverlayViewModel {
         didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
     }
 
+    /// Gate auto-send on "does this need an answer?". On (default) drops
+    /// acknowledgements and fragments so they can't pull a random answer
+    /// over what the user is reading. Off = send every meaningful segment
+    /// (the old behaviour).
+    var interviewResponseGate: Bool {
+        didSet { UserDefaults.standard.set(interviewResponseGate, forKey: "interviewResponseGate") }
+    }
+
     /// Screen-share visibility. `true` (default) excludes every window the
     /// app shows from screen capture — invisible to Zoom / Meet / QuickTime
     /// recordings. Flip it off to let the overlay show up in shared screens
@@ -828,14 +871,48 @@ final class OverlayViewModel {
     }
     @ObservationIgnored var onShellStageChange: ((ShellStage) -> Void)?
 
-    /// Drag-to-resize: the trailing-edge grip reports its cumulative
-    /// horizontal drag translation (points) here on every change, and once
-    /// more with `ended: true` when the drag finishes. AppDelegate widens /
-    /// narrows the host panel to match and remembers the width so it
-    /// survives stage transitions. Width is the panel dimension the user
-    /// controls directly — height is driven by the active stage / surface
-    /// (see AppDelegate.animateShellFrame).
-    @ObservationIgnored var onWidthResize: ((CGFloat, Bool) -> Void)?
+    /// Corner drag-resize: `(cumulative dx, cumulative dy, ended)` in
+    /// screen-space points, reported on every change and once more with
+    /// `ended: true` when the drag finishes. The single resize affordance —
+    /// AppDelegate resizes the panel in BOTH dimensions, keeping the top
+    /// edge pinned so the card stays put while the panel grows downward,
+    /// and remembers the size so it survives stage transitions.
+    @ObservationIgnored var onCornerResize: ((CGFloat, CGFloat, Bool) -> Void)?
+
+    /// Drag-to-move from a `PanelDragArea` handle: same shape as
+    /// `onCornerResize` — `(cumulative dx, cumulative dy, ended)` in
+    /// screen-space points. AppDelegate moves the panel by that offset from
+    /// the origin the drag started at.
+    @ObservationIgnored var onPanelDrag: ((CGFloat, CGFloat, Bool) -> Void)?
+
+    /// Live Focus content-height reports from SwiftUI. AppDelegate matches
+    /// the panel height to the content so the window grows and shrinks
+    /// smoothly with the streamed answer instead of sitting at a fixed
+    /// height with dead space (or clipping) below the card.
+    @ObservationIgnored var onFocusContentHeight: ((CGFloat) -> Void)?
+
+    /// The user explicitly changed what the Live Focus card shows —
+    /// stepped ‹ › to another Q&A pair, or toggled the transcript
+    /// drop-down. AppDelegate listens to resume content-height tracking,
+    /// which a manual drag-resize otherwise freezes: the freeze belongs
+    /// to the answer the user resized on, not to one they navigated to.
+    @ObservationIgnored var onResumeFocusTracking: (() -> Void)?
+
+    /// True while a corner-grip drag-resize is in flight. Views drop
+    /// their layout animations for the duration — the drag itself is the
+    /// animation, and any easing that lags the cursor (the focus card's
+    /// height glide re-triggered by every width-induced text rewrap)
+    /// reads as flicker at the panel's bottom edge.
+    var isUserResizingPanel = false
+
+    /// Single source of truth for "the shell is in Live Focus hugging
+    /// layout" — shared by OverlayView (layout) and AppDelegate (dynamic
+    /// panel height) so the two can never disagree.
+    var focusHuggingActive: Bool {
+        (primarySurface == .interview || primarySurface == .chat)
+            && isInterviewSession
+            && !isInterviewTextOnly && interviewFocusMode
+    }
 
     /// True when shellStage is `.pill` AND a result/status popup wants to
     /// render above the brand pill (resume score, generated resume,
@@ -975,6 +1052,7 @@ final class OverlayViewModel {
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
         showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
         screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
+        interviewResponseGate = UserDefaults.standard.object(forKey: "interviewResponseGate") as? Bool ?? true
         quickAskCustomPrompt = UserDefaults.standard.string(forKey: "quickAskCustomPrompt") ?? ""
         if let data = UserDefaults.standard.data(forKey: "quickAskFiles"),
            let files = try? JSONDecoder().decode([QuickAskFile].self, from: data) {
@@ -1589,6 +1667,24 @@ final class OverlayViewModel {
                      wasFirstExchange: wasFirstExchange)
     }
 
+    /// Default question for a screenshot sent without any typed text.
+    /// Phrased for the common case — a problem, error, or question visible
+    /// on screen — rather than a generic "describe this image".
+    static let screenshotPrompt =
+        "Look at my screen and answer what's there. If it's a question, problem, or error, give the answer or fix directly and concisely. Otherwise describe what matters."
+
+    /// Capture-and-send: attach `image` and dispatch it to the AI in one
+    /// step (the ⌃⇧S hotkey). Any draft the user had already typed is kept
+    /// as the question; otherwise the default screenshot prompt is used so
+    /// the turn reads sensibly in the transcript instead of being blank.
+    func sendScreenshotToAI(_ image: NSImage) {
+        pendingScreenshot = image
+        let typed = manualInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        showManualInput = true
+        if typed.isEmpty { manualInput = Self.screenshotPrompt }
+        sendToAI()
+    }
+
     /// Manually push the current live transcription to the AI — used by the
     /// live-interview "send now" button so the user doesn't have to wait for
     /// a silence boundary or the auto-generate toggle. If the user has typed
@@ -1675,6 +1771,34 @@ final class OverlayViewModel {
             guard self.isInterviewSession, self.interviewAutoGenerate,
                   !self.isInterviewPaused, self.isRecording else { return }
             guard TranscriptFilter.isMeaningful(self.transcription) else { return }
+
+            // Does this actually need an answer? "Okay", "yeah that makes
+            // sense", and mid-thought asides used to sail through
+            // isMeaningful and pull a random answer over whatever the user
+            // was reading. Local triage decides the obvious cases for free;
+            // only the ambiguous band asks a small model.
+            if self.interviewResponseGate {
+                let candidate = self.transcription
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                switch TranscriptFilter.warrantsResponse(candidate) {
+                case .no:
+                    // Not cleared: the text stays in the strip, so if the
+                    // speaker continues ("Okay… so tell me about X") the
+                    // next commit re-schedules with the full segment.
+                    return
+                case .yes:
+                    break
+                case .unsure:
+                    guard await self.classifyNeedsResponse(candidate) else { return }
+                    // New speech during the round-trip cancels this task;
+                    // and if the transcript grew anyway, let the fresher
+                    // commit make the call instead of sending stale text.
+                    guard !Task.isCancelled else { return }
+                    guard TranscriptFilter.normalized(self.transcription)
+                            == TranscriptFilter.normalized(candidate) else { return }
+                }
+            }
+
             // Detach before sending — sendToAI cancels pendingAutoSendTask
             // (to supersede stale sends), and that must not self-cancel
             // this task mid-flight.
@@ -1699,6 +1823,51 @@ final class OverlayViewModel {
         // next commit re-schedules with the full question.
         scheduleAutoSend()
     }
+
+    /// Second-stage gate for the ambiguous middle band: ask a small, fast
+    /// model whether this line actually needs an answer. Only reached when
+    /// `TranscriptFilter.warrantsResponse` returns `.unsure`, so the common
+    /// cases never pay for it.
+    ///
+    /// Fails OPEN on every error path (no key, timeout, network, unparsable
+    /// reply). The two mistakes are not symmetric: a spurious answer is
+    /// noise the user ignores, but a missed question leaves them stranded
+    /// mid-interview. When in doubt, answer.
+    private func classifyNeedsResponse(_ text: String) async -> Bool {
+        guard !apiKey.isEmpty else { return true }
+        do {
+            let raw = try await AIManager.shared.sendMessage(
+                text,
+                apiKey:       apiKey,
+                openAIApiKey: openAIApiKey,
+                model:        "claude-haiku-4-5-20251001",
+                screenshot:   nil,
+                systemPrompt: Self.responseGatePrompt,
+                history:      [],
+                maxTokens:    4,
+                // Tight: this sits on the critical path before an answer
+                // starts. Better to send on a slow classifier than to make
+                // the candidate wait.
+                timeoutInterval: 2.5
+            )
+            let verdict = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            // Only a clear NO suppresses; anything else sends.
+            return !verdict.hasPrefix("NO")
+        } catch {
+            NSLog("[ResponseGate] classify failed, sending anyway: %@",
+                  error.localizedDescription)
+            return true
+        }
+    }
+
+    private static let responseGatePrompt = """
+    You judge single lines from a live interview transcript, spoken by the INTERVIEWER.
+
+    Answer YES if the line is a question, request, or prompt that the candidate is expected to respond to.
+    Answer NO if it is an acknowledgement ("okay", "right, got it"), filler, small talk, a self-interruption, a stalling phrase ("give me a second"), or an incomplete fragment.
+
+    Reply with exactly one word: YES or NO.
+    """
 
     /// Retry the most recent failed request.
     func retryLastResponse() { ai.retry() }
@@ -1765,7 +1934,7 @@ final class OverlayViewModel {
                     return
                 }
                 do {
-                    try quickRecorder.start()
+                    try await quickRecorder.start()
                 } catch {
                     NSLog("[QuickAsk] quickRecorder.start failed: %@", error.localizedDescription)
                     statusMessage    = ""

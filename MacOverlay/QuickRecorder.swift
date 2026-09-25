@@ -30,7 +30,7 @@ class QuickRecorder {
 
     // MARK: - Start
 
-    func start() throws {
+    func start() async throws {
         reset()
         NSLog("[QuickRecorder] start")
 
@@ -49,28 +49,22 @@ class QuickRecorder {
         req.requiresOnDeviceRecognition = false
         request = req
 
-        // Rebuild the engine on every start — see AppleTranscriber for the
-        // same fix. Re-tapping a stale engine after the default input
-        // device changes silently produces no audio buffers.
-        audioEngine = AVAudioEngine()
-        let node = audioEngine.inputNode
-        let format = node.outputFormat(forBus: 0)
-        NSLog("[QuickRecorder] mic input format: channels=%u sampleRate=%.0f",
-              format.channelCount, format.sampleRate)
-        guard format.channelCount > 0, format.sampleRate > 0 else {
-            throw QuickRecorderError.noAudioInput
-        }
+        // `MicInput.startEngine` rebuilds the engine per attempt and retries
+        // through the transient states the input device passes through when
+        // another app grabs or releases it (a WhatsApp/Zoom call starting) —
+        // re-tapping a stale engine silently produces no audio buffers.
         var bufferCount = 0
-        node.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-            self?.request?.append(buf)
-            bufferCount += 1
-            if bufferCount == 1 || bufferCount % 200 == 0 {
-                NSLog("[QuickRecorder] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+        let started = try await MicInput.startEngine(label: "QuickRecorder") { [weak self] engine, format in
+            engine.inputNode.removeTap(onBus: 0)
+            engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
+                self?.request?.append(buf)
+                bufferCount += 1
+                if bufferCount == 1 || bufferCount % 200 == 0 {
+                    NSLog("[QuickRecorder] mic buffer #%d frames=%u", bufferCount, buf.frameLength)
+                }
             }
         }
-        audioEngine.prepare()
-        try audioEngine.start()
-        NSLog("[QuickRecorder] AVAudioEngine started")
+        audioEngine = started.engine
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
             if let error {
@@ -89,16 +83,15 @@ class QuickRecorder {
 
     enum QuickRecorderError: LocalizedError {
         case recognizerUnavailable
-        case noAudioInput
         var errorDescription: String? {
             switch self {
             case .recognizerUnavailable:
                 return "Speech recognition is unavailable. Check your internet connection and that the system language is supported."
-            case .noAudioInput:
-                return "No audio input available. Check your default input device in System Settings → Sound → Input."
             }
         }
     }
+    // Microphone-side failures come from `MicInput.Failure`, which names the
+    // device and whatever is holding it.
 
     // MARK: - Stop
 

@@ -8,6 +8,8 @@ struct PreferencesView: View {
     @State private var tab: Tab = .general
     @State private var showNewWorkspaceSheet = false
     @State private var isSidebarCollapsed = true
+    @State private var launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
+    @State private var launchShortcutError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case general    = "General"
@@ -263,6 +265,12 @@ struct PreferencesView: View {
             Toggle(isOn: $vm.vadEnabled) {
                 labelTwoLine(title: "Auto-send on silence",
                              subtitle: "Sends after ~2s of silence while recording.")
+            }
+            .toggleStyle(.switch)
+
+            Toggle(isOn: $vm.interviewResponseGate) {
+                labelTwoLine(title: "Only answer real questions",
+                             subtitle: "Skips \"okay\", \"got it\" and half-sentences so they can't pull a random answer over what you're reading. Clear questions still send instantly; only genuinely ambiguous lines are double-checked with a fast model.")
             }
             .toggleStyle(.switch)
 
@@ -802,14 +810,66 @@ struct PreferencesView: View {
             VStack(spacing: 2) {
                 shortcut("⌃⌥Space", "Show / hide overlay")
                 shortcut("⌃⌥T",      "Toggle recording + send")
-                shortcut("⌃⌥S",      "Capture screenshot → AI")
+                shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
+                shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
                 shortcut("⌃⌥A",      "Send selected text to AI")
                 shortcut("⌃⌥C",      "Explain clipboard")
                 shortcut("⌃⌥R",      "Tailor resume from clipboard JD")
                 shortcut("⌃⌥ ↑↓←→",  "Move overlay")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
+                shortcut("⌃⌥X",      "Quit thecloser completely")
                 shortcut("⌘N",        "New session")
                 shortcut("⌘,",        "Preferences")
+            }
+        }
+
+        section(title: "Relaunch with \(LaunchShortcutInstaller.displayShortcut)",
+                subtitle: """
+                          \(LaunchShortcutInstaller.displayShortcut) quits thecloser for real — the process ends and \
+                          disappears from Activity Monitor. Nothing that's gone can listen for its own hotkey, so \
+                          installing this hands the same combo to macOS while the app is closed: press it again and \
+                          the app comes back.
+                          """) {
+            HStack(spacing: 8) {
+                Image(systemName: launchShortcutInstalled ? "checkmark.circle.fill" : "circle.dashed")
+                    .font(.system(size: 12))
+                    .foregroundColor(launchShortcutInstalled ? .green : .secondary)
+                Text(launchShortcutInstalled
+                     ? "Installed as a “\(LaunchShortcutInstaller.serviceName)” Quick Action"
+                     : "Not installed — \(LaunchShortcutInstaller.displayShortcut) only quits, it can't reopen")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button(launchShortcutInstalled ? "Remove" : "Install") {
+                    launchShortcutError = nil
+                    do {
+                        if launchShortcutInstalled { try LaunchShortcutInstaller.uninstall() }
+                        else                       { try LaunchShortcutInstaller.install() }
+                    } catch {
+                        launchShortcutError = error.localizedDescription
+                    }
+                    launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
+                }
+            }
+
+            if let launchShortcutError {
+                Text(launchShortcutError)
+                    .font(.system(size: 11))
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if launchShortcutInstalled {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("If the shortcut doesn't reopen the app, open System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ Services and make sure “\(LaunchShortcutInstaller.serviceName)” is checked. macOS sometimes needs that list opened once before a new shortcut starts firing.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open Keyboard Shortcuts…") { LaunchShortcutInstaller.openKeyboardSettings() }
+                        .buttonStyle(.link)
+                        .font(.system(size: 11))
+                }
             }
         }
     }

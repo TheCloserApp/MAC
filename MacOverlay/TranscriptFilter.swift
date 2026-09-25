@@ -60,6 +60,95 @@ enum TranscriptFilter {
         return !danglingConnectives.contains(lastWord)
     }
 
+    /// Pure backchannel — what a listener says to show they're following,
+    /// never a request for information. A segment made ENTIRELY of these
+    /// (plus fillers) is an acknowledgement, not a question, no matter how
+    /// long: "okay, right, yeah, that makes sense".
+    private static let acknowledgments: Set<String> = [
+        "ok", "okay", "kay", "yeah", "yea", "yes", "yep", "yup", "right",
+        "sure", "correct", "exactly", "true", "fine", "good", "great",
+        "nice", "cool", "perfect", "awesome", "excellent", "wonderful",
+        "interesting", "wow", "gotcha", "understood", "understand",
+        "makes", "sense", "sounds", "sound", "got", "get", "see", "i",
+        "that", "it", "this", "thanks", "thank", "you", "alright",
+        "all", "well", "no", "nope", "not", "really", "totally",
+        "absolutely", "definitely", "certainly", "indeed", "cheers",
+        "wait", "hold", "on", "one", "sec", "second", "moment", "just",
+        "let", "me", "think", "hang", "and", "so", "but", "then", "now",
+        "of", "course", "for", "your", "time", "a", "the", "is", "was",
+    ]
+
+    /// Words that, leading a segment, mark it as a question even without a
+    /// question mark — the engine often drops terminal punctuation.
+    private static let interrogativeLeads: Set<String> = [
+        "what", "why", "how", "when", "where", "who", "whom", "whose",
+        "which",
+        // Yes/no question auxiliaries.
+        "can", "could", "would", "will", "do", "does", "did", "is", "are",
+        "was", "were", "have", "has", "had", "should", "shall", "may",
+        "might", "am",
+    ]
+
+    /// Imperative openers that request an answer just as much as a
+    /// question does — the classic interview prompt shape ("tell me
+    /// about…", "walk me through…").
+    private static let requestLeads: Set<String> = [
+        "tell", "walk", "explain", "describe", "share", "discuss",
+        "elaborate", "compare", "define", "list", "name", "imagine",
+        "suppose", "consider", "outline", "summarize", "summarise",
+        "pitch", "sell", "teach",
+    ]
+
+    /// Whether a transcript segment looks like something the candidate
+    /// actually has to answer.
+    enum ResponseVerdict {
+        /// Clear question / request → send now, no model call.
+        case yes
+        /// Clear acknowledgement or fragment → don't send.
+        case no
+        /// Genuinely ambiguous; worth asking a small model. Kept
+        /// deliberately narrow — every `.unsure` costs a round-trip on the
+        /// critical path.
+        case unsure
+    }
+
+    /// Local, instant triage of "does this need an answer?". Deciding the
+    /// obvious cases here is what keeps auto-send fast: real questions go
+    /// straight through, backchannel is dropped for free, and only the
+    /// murky middle pays for a model call.
+    ///
+    /// Ordering matters — a segment with a question mark is a question even
+    /// if it also contains acknowledgement words ("okay, so what's next?").
+    static func warrantsResponse(_ raw: String) -> ResponseVerdict {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return .no }
+        let words = tokenize(t).filter { !fillers.contains($0) }
+        guard !words.isEmpty else { return .no }
+
+        // The engine heard an actual question.
+        if t.contains("?") { return .yes }
+
+        // Nothing but backchannel — "okay", "yeah that makes sense",
+        // "right, got it", "hold on one second".
+        if words.allSatisfy({ acknowledgments.contains($0) }) { return .no }
+
+        // Question / request shape.
+        if let first = words.first,
+           interrogativeLeads.contains(first) || requestLeads.contains(first) {
+            return .yes
+        }
+
+        // Long enough to be a substantive prompt. Interviewers routinely
+        // pose scenarios as statements ("So your team is on call and the
+        // pager goes off at 3am and the database is down").
+        if words.count >= 8 { return .yes }
+
+        // Short, unpunctuated, no question shape — a fragment or an aside.
+        if words.count < 4 { return .no }
+
+        return .unsure
+    }
+
     /// Canonical form of a transcript for change detection: lowercase
     /// alphanumeric words joined by single spaces. Speech engines revise
     /// punctuation and capitalization AFTER the speaker has stopped
