@@ -42,9 +42,17 @@ struct InterviewSurfaceView: View {
 private struct InterviewModeBar: View {
     @Environment(OverlayViewModel.self) private var vm
 
+    private let modes = OverlayViewModel.InterviewSurfaceMode.available
+
     var body: some View {
+        if modes.count > 1 {
+            bar
+        }
+    }
+
+    private var bar: some View {
         HStack(spacing: 6) {
-            ForEach(OverlayViewModel.InterviewSurfaceMode.allCases, id: \.self) { mode in
+            ForEach(modes, id: \.self) { mode in
                 Button {
                     vm.switchInterviewSurfaceMode(mode)
                 } label: {

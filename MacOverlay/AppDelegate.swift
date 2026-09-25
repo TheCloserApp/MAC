@@ -389,8 +389,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let mods    = event.modifierFlags.intersection([.option, .control, .shift, .command, .function])
-        let fnDown  = mods.contains(.function)
-        let optDown = mods.contains(.option) && !mods.contains(.control)
+        let fnDown  = FeatureFlags.quickAskEnabled && mods.contains(.function)
+        let optDown = FeatureFlags.dictationEnabled
+                      && mods.contains(.option) && !mods.contains(.control)
                                               && !mods.contains(.shift)
                                               && !mods.contains(.command)
 

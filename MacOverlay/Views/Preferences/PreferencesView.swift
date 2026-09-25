@@ -46,6 +46,7 @@ struct PreferencesView: View {
                 return false
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
+            case .quickAsk:   return FeatureFlags.quickAskEnabled
             default:          return true
             }
         }
@@ -812,9 +813,19 @@ struct PreferencesView: View {
                 shortcut("⌃⌥T",      "Toggle recording + send")
                 shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
                 shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
-                shortcut("⌃⌥A",      "Send selected text to AI")
-                shortcut("⌃⌥C",      "Explain clipboard")
-                shortcut("⌃⌥R",      "Tailor resume from clipboard JD")
+                if FeatureFlags.clipboardShortcutsEnabled {
+                    shortcut("⌃⌥A",  "Send selected text to AI")
+                    shortcut("⌃⌥C",  "Explain clipboard")
+                }
+                if FeatureFlags.resumesEnabled {
+                    shortcut("⌃⌥R",  "Tailor resume from clipboard JD")
+                }
+                if FeatureFlags.quickAskEnabled {
+                    shortcut("Hold Fn", "Quick Ask by voice")
+                }
+                if FeatureFlags.dictationEnabled {
+                    shortcut("Hold ⌥", "Dictate into the active app")
+                }
                 shortcut("⌃⌥ ↑↓←→",  "Move overlay")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
                 shortcut("⌃⌥X",      "Quit thecloser completely")

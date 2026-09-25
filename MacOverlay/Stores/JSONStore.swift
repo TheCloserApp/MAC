@@ -1,13 +1,15 @@
 import Foundation
 
 /// Thin JSON-on-disk persistence. Stores live in
-/// ~/Library/Application Support/MacOverlay/. Writes are atomic.
+/// ~/Library/Application Support/MacOverlay/ (with a " Dev" or " Beta"
+/// suffix for those builds, so they never touch production data). Writes
+/// are atomic.
 enum JSONStore {
     static let appDirectory: URL = {
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                 ?? fm.temporaryDirectory
-        let dir = base.appendingPathComponent("MacOverlay", isDirectory: true)
+        let dir = base.appendingPathComponent(AppChannel.current.dataDirectoryName, isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()

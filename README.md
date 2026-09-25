@@ -55,9 +55,10 @@ generate a tailored DOCX with before/after scoring).
 
 ### Build
 ```bash
-./build.sh          # compile + ad-hoc sign into build/thecloser.app
-./build.sh --run    # build, kill any running copy, and relaunch
-open build/thecloser.app
+./build.sh                    # Dev build → "build/thecloser Dev.app"
+./build.sh --run              # build Dev, quit any running Dev copy, relaunch
+./build.sh --channel beta     # Beta build → "build/thecloser Beta.app"
+./build.sh --channel prod     # Production build → build/thecloser.app
 ```
 
 > **Intel Macs:** change `-target arm64-apple-macos14.0` to
@@ -73,6 +74,45 @@ open build/thecloser.app
 cp -r build/thecloser.app /Applications/
 ```
 Launch at login: **System Settings → General → Login Items → +**.
+
+---
+
+## Environments & releases
+
+The app ships in three channels, all from the same code. Each has its own
+bundle ID, app name and data folder, so they can be installed side by side
+without sharing settings, sessions or privacy permissions. Dev and Beta show
+a small **DEV** / **BETA** tag on the brand pill.
+
+| Channel | Build | Bundle ID | Data folder | Features |
+|---|---|---|---|---|
+| Dev | `./build.sh` | `tech.thecloser.mac.dev` | `MacOverlay Dev` | Everything, including beta features |
+| Beta | `./build.sh --channel beta` | `tech.thecloser.mac.beta` | `MacOverlay Beta` | Everything, including beta features |
+| Production | `./build.sh --channel prod` | `tech.thecloser.mac` | `MacOverlay` | Interview helper only |
+
+Data folders live in `~/Library/Application Support/`. Only one channel
+should run at a time, because they share the same global hotkeys.
+
+**Beta features** (Regular call, Quick Ask, dictation, clipboard shortcuts,
+résumé tailoring, the browser) are flags in `FeatureFlags.swift` set to
+`previewFeatures`. To ship one to production, set its flag to `true`.
+
+**Branches**
+- Feature branch → pull request into `beta`. CI runs the tests and attaches
+  Dev and Production builds to the pull request (the testing environment).
+- `beta` → pull request into `main` when a beta is ready for everyone.
+
+**Releases**
+```bash
+./package.sh --channel beta   # build/TheCloser-Beta.dmg
+gh release create v3.2-beta.1 build/TheCloser-Beta.dmg --prerelease --target beta
+
+./package.sh --channel prod   # build/TheCloser.dmg
+gh release create v3.2 build/TheCloser.dmg --target main
+```
+Production releases must attach a file named exactly `TheCloser.dmg`: the
+website's Download buttons point at `releases/latest/download/TheCloser.dmg`.
+Pre-releases never count as "latest", so beta builds can't reach the website.
 
 ---
 

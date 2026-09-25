@@ -236,6 +236,29 @@ func testAudioSourceLabels() throws {
 }
 
 @MainActor
+func testAppChannelResolution() throws {
+    try assertEq(AppChannel(infoValue: "dev"), .dev)
+    try assertEq(AppChannel(infoValue: "beta"), .beta)
+    try assertEq(AppChannel(infoValue: "prod"), .production)
+    // Missing or unknown values must never unlock preview features.
+    try assertEq(AppChannel(infoValue: nil), .production)
+    try assertEq(AppChannel(infoValue: "staging"), .production)
+    try assertEq(AppChannel(infoValue: 1), .production)
+    try assertFalse(AppChannel.production.showsPreviewFeatures)
+    try assertTrue(AppChannel.beta.showsPreviewFeatures)
+    try assertTrue(AppChannel.dev.showsPreviewFeatures)
+}
+
+@MainActor
+func testAppChannelKeepsDataApart() throws {
+    // Production keeps the original folder so existing users' data carries over.
+    try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
+    try assertEq(AppChannel.production.badge, nil)
+    let folders = Set(AppChannel.allCases.map(\.dataDirectoryName))
+    try assertEq(folders.count, AppChannel.allCases.count, "each channel needs its own data folder")
+}
+
+@MainActor
 func testTurnIDsAreUnique() throws {
     let turns = (0..<50).map { _ in ChatTurn(role: .user, content: "x") }
     let ids = Set(turns.map(\.id))
@@ -394,6 +417,8 @@ struct TestsMain {
         TestRunner.run("SessionMode has non-empty fields", testSessionModeSystemPromptNotEmpty)
         TestRunner.run("SessionMode has quick actions", testSessionModeQuickActionsExist)
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
+        TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
+        TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)

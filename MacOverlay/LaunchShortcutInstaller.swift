@@ -25,7 +25,7 @@ enum LaunchShortcutInstaller {
     /// Name shown in the Services menu and in System Settings ▸ Keyboard
     /// Shortcuts ▸ Services. Also part of the pbs preference key, so
     /// renaming it orphans any previously registered key equivalent.
-    static let serviceName = "Launch thecloser"
+    static let serviceName = "Launch thecloser" + AppChannel.current.nameSuffix
 
     /// AppKit key-equivalent syntax: ^ = control, ~ = option. Matches the
     /// in-app `HotkeyAction.quitApp` binding so one combo does both halves.
@@ -34,7 +34,7 @@ enum LaunchShortcutInstaller {
     /// Human-readable form of `keyEquivalent`, for UI copy.
     static let displayShortcut = "⌃⌥X"
 
-    private static let bundleIdentifier = "tech.thecloser.mac"
+    private static let bundleIdentifier = Bundle.main.bundleIdentifier ?? "tech.thecloser.mac"
 
     /// pbs stores per-service settings under "<provider bundle id> - <service
     /// name> - <NSMessage>". Workflow services have no provider bundle, so

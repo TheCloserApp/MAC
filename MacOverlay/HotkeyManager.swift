@@ -78,7 +78,9 @@ class HotkeyManager {
         add(kVK_UpArrow,     ctrlOpt,   .moveUp)
         add(kVK_DownArrow,   ctrlOpt,   .moveDown)
         add(kVK_ANSI_S,      ctrlOpt,   .screenshot)
-        add(kVK_ANSI_C,      ctrlOpt,   .clipboard)
+        if FeatureFlags.clipboardShortcutsEnabled {
+            add(kVK_ANSI_C,  ctrlOpt,   .clipboard)
+        }
         add(kVK_Space,       ctrlOpt,   .toggle)
         add(kVK_ANSI_T,      ctrlOpt,   .record)
 
@@ -93,14 +95,18 @@ class HotkeyManager {
         add(kVK_DownArrow,   ctrlShift, .resizeDown)
 
         add(kVK_ANSI_Y,      ctrlOpt,   .pushToTalk)
-        add(kVK_ANSI_A,      ctrlOpt,   .sendSelection)
+        if FeatureFlags.clipboardShortcutsEnabled {
+            add(kVK_ANSI_A,  ctrlOpt,   .sendSelection)
+        }
         // Résumé hotkeys (generate / score) only registered when the résumé
         // surface is enabled — see FeatureFlags.resumesEnabled.
         if FeatureFlags.resumesEnabled {
             add(kVK_ANSI_R,  ctrlOpt,   .resumeGenerate)
             add(kVK_ANSI_M,  ctrlOpt,   .resumeScore)
         }
-        add(kVK_ANSI_Q,      ctrlOpt,   .quickAsk)
+        if FeatureFlags.quickAskEnabled {
+            add(kVK_ANSI_Q,  ctrlOpt,   .quickAsk)
+        }
 
         // Quit outright — leaves nothing running. The reverse direction
         // (relaunch on the same combo) can't be ours to own once the

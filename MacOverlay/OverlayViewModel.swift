@@ -287,6 +287,11 @@ final class OverlayViewModel {
     enum InterviewSurfaceMode: String, Equatable, CaseIterable {
         case interview, regularCall
 
+        /// Modes offered in this build. Production hides Regular call.
+        static var available: [InterviewSurfaceMode] {
+            allCases.filter { $0 != .regularCall || FeatureFlags.regularCallEnabled }
+        }
+
         var displayName: String {
             switch self {
             case .interview:   return "Interview"

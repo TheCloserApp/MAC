@@ -307,6 +307,7 @@ struct InputBarView: View {
             WaveformLogo()
                 .frame(width: 26, height: 26)
                 .frame(width: 44, height: 44)
+                .overlay(alignment: .bottom) { ChannelBadge() }
                 // No scaleEffect on hover — center-anchored scaling makes
                 // the brand visibly grow in both directions, which reads as
                 // the icon "shifting right then snapping back" once the
@@ -756,6 +757,27 @@ struct InputBarView: View {
     private func send() {
         if !vm.manualInput.isEmpty { vm.showManualInput = true }
         vm.sendToAI()
+    }
+}
+
+/// "DEV" / "BETA" tag under the brand logo. The app has no Dock icon, so
+/// this is the only way to tell side-by-side builds apart at a glance.
+/// Production renders nothing.
+private struct ChannelBadge: View {
+    var body: some View {
+        if let label = AppChannel.current.badge {
+            Text(label)
+                .font(.system(size: 7, weight: .heavy, design: .rounded))
+                .tracking(0.4)
+                .foregroundColor(.white)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(
+                    AppChannel.current == .dev ? Design.Accent.amber : Design.Accent.purple
+                ))
+                .offset(y: -3)
+                .allowsHitTesting(false)
+        }
     }
 }
 

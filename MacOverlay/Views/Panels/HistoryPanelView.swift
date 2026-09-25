@@ -15,6 +15,14 @@ struct HistoryPanelView: View {
     enum Segment: Hashable {
         case interview, regularCall, quickAsks
 
+        /// Segments offered in this build. Production shows only Interview.
+        static var available: [Segment] {
+            var segments: [Segment] = [.interview]
+            if FeatureFlags.regularCallEnabled { segments.append(.regularCall) }
+            if FeatureFlags.quickAskEnabled    { segments.append(.quickAsks) }
+            return segments
+        }
+
         var label: String {
             switch self {
             case .interview:   return "Interview"
@@ -126,7 +134,7 @@ struct HistoryPanelView: View {
     /// same store.
     private var segmentPicker: some View {
         HStack(spacing: 4) {
-            ForEach([Segment.interview, .regularCall, .quickAsks], id: \.self) { s in
+            ForEach(Segment.available, id: \.self) { s in
                 segmentChip(label: s.label,
                             icon: s.icon,
                             count: count(for: s),
