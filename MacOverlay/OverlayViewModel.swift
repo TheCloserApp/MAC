@@ -78,7 +78,12 @@ final class OverlayViewModel {
     /// Holds an error message when BlackHole routing failed (e.g. driver not
     /// installed). The browser panel watches this to show a non-modal banner.
     var browserAudioRouterError: String? = nil
-    var isRecording  = false { didSet { scheduleBroadcast() } }
+    var isRecording  = false {
+        didSet {
+            scheduleBroadcast()
+            if isRecording != oldValue { onRecordingChange?(isRecording) }
+        }
+    }
     var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
     var isInterviewSession = false
     /// Interview is active but recording is paused. The transcriber is
@@ -736,6 +741,9 @@ final class OverlayViewModel {
     /// AppDelegate hooks this to flip every window's `sharingType` when the
     /// user toggles screen-share visibility.
     @ObservationIgnored var onScreenShareVisibilityChange: ((Bool) -> Void)?
+    /// Fires when live capture starts or stops. The app delegate uses it to
+    /// switch the live-session hotkeys (⌘⏎, ⌘⇧⏎) on and off.
+    @ObservationIgnored var onRecordingChange: ((Bool) -> Void)?
 
     // MARK: - Onboarding
     var hasCompletedOnboarding: Bool {

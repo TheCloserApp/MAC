@@ -810,6 +810,8 @@ struct PreferencesView: View {
         section(title: "Global shortcuts") {
             VStack(spacing: 2) {
                 shortcut("⌃⌥Space", "Show / hide overlay")
+                shortcut("⌘⏎",       "Get the answer now (during an interview)")
+                shortcut("⌘⇧⏎",      "Screenshot → send to AI (during an interview)")
                 shortcut("⌃⌥T",      "Toggle recording + send")
                 shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
                 shortcut("⌃⇧S",      "Capture screenshot → send to AI now")

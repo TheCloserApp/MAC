@@ -144,6 +144,8 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | Shortcut | Action |
 |----------|--------|
 | `⌃⌥ Space` | Show / hide the overlay |
+| `⌘ ⏎` | Get the answer now, without waiting for the speaker to pause (during a live session) |
+| `⌘ ⇧ ⏎` | Capture a screenshot and send it to the AI (during a live session) |
 | `⌃⌥ T` | Start / stop recording |
 | `⌃⌥ Q` *or* hold `Fn`/🌐 | Quick Ask by voice (push-to-talk) |
 | Hold `⌥` (Option) | Dictate into the active app |
@@ -155,7 +157,9 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | `⌃⌥ X` | Quit thecloser completely (and relaunch it — see below) |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
-Accessibility permission required.
+Accessibility permission required. `⌘ ⏎` and `⌘ ⇧ ⏎` are registered only
+while recording: a global hotkey takes the combo away from every other app,
+and `⌘ ⏎` means "send" in Slack, Gmail and many others.
 
 ### Quit and relaunch with one combo
 

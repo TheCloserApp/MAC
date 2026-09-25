@@ -88,6 +88,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.applyScreenShareVisibility(invisible)
         }
 
+        vm.onRecordingChange = { recording in
+            HotkeyManager.shared.setLiveSessionHotkeys(recording)
+        }
+
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the
         // bar doesn't visibly jump as the panel grows / shrinks.
@@ -284,7 +288,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resizeUp:    if isPressed { self.resizePanel(dw: 0, dh:  self.resizeStep) }
             case .resizeDown:  if isPressed { self.resizePanel(dw: 0, dh: -self.resizeStep) }
             case .screenshot:     if isPressed { self.captureAndAttachScreenshot() }
-            case .screenshotSend: if isPressed { self.captureAndSendScreenshot() }
+            case .screenshotSend, .screenshotSendLive:
+                                  if isPressed { self.captureAndSendScreenshot() }
+            case .answerNow:      if isPressed { self.answerNow() }
             case .clipboard:   if isPressed { self.explainClipboard() }
             case .toggle:      if isPressed { self.toggleOverlay() }
             case .record:      if isPressed { self.hotkeyRecord() }
@@ -368,6 +374,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func hotkeyRecord() {
         DispatchQueue.main.async {
             Task { @MainActor in self.vm.hotkeyToggleRecord() }
+        }
+    }
+
+    /// ⌘⏎ during a live session: answer what's been heard so far without
+    /// waiting for the speaker to pause. Same as the bar's send button.
+    func answerNow() {
+        DispatchQueue.main.async { [self] in
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in self.vm.sendTranscriptManually() }
         }
     }
 
