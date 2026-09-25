@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Speech
 import UniformTypeIdentifiers
 
 /// Tabbed preferences window body. Replaces the cramped gear popover.
@@ -253,6 +254,18 @@ struct PreferencesView: View {
         }
     }
 
+    /// Languages this Mac's speech recognizer supports, plus the current
+    /// choice so the picker never shows a blank selection.
+    private var transcriptionLanguages: [TranscriptionLanguage] {
+        let supported = Set(SFSpeechRecognizer.supportedLocales().map {
+            $0.identifier.replacingOccurrences(of: "_", with: "-")
+        })
+        guard !supported.isEmpty else { return TranscriptionLanguage.all }
+        return TranscriptionLanguage.all.filter {
+            supported.contains($0.id) || $0.id == vm.transcriptionLanguageID
+        }
+    }
+
     @ViewBuilder
     private var generalTab: some View {
         @Bindable var vm = vm
@@ -283,6 +296,21 @@ struct PreferencesView: View {
                 Picker("", selection: $vm.transcriptionPreference) {
                     ForEach(OverlayViewModel.TranscriptionPreference.allCases) { p in
                         Text(p.displayName).tag(p)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 180)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                labelTwoLine(title: "Transcription language",
+                             subtitle: "The language spoken in your interviews. Applies from the next recording.")
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
+                Picker("", selection: $vm.transcriptionLanguageID) {
+                    ForEach(transcriptionLanguages) { language in
+                        Text(language.name).tag(language.id)
                     }
                 }
                 .pickerStyle(.menu)

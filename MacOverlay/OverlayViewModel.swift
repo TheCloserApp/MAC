@@ -575,6 +575,12 @@ final class OverlayViewModel {
             }
         }
     }
+    /// Apple locale identifier of the transcription language. The engines
+    /// read `TranscriptionLanguage.current` (same defaults key) when they
+    /// start, so a change applies from the next recording.
+    var transcriptionLanguageID: String {
+        didSet { UserDefaults.standard.set(transcriptionLanguageID, forKey: TranscriptionLanguage.defaultsKey) }
+    }
     var transcriptionPreference: TranscriptionPreference {
         didSet {
             UserDefaults.standard.set(transcriptionPreference.rawValue,
@@ -1039,6 +1045,7 @@ final class OverlayViewModel {
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
+        transcriptionLanguageID = TranscriptionLanguage.current.id
         // Default résumé generation to DeepSeek V4 Pro (direct api.deepseek.com)
         // — the chunked plan-then-apply path with reasoning disabled tailors
         // every section cheaply, with no NVIDIA rate limits.
@@ -1062,7 +1069,7 @@ final class OverlayViewModel {
         selectedModel = OverlayViewModel.availableModels.contains(where: { $0.id == storedModel })
             ? storedModel : "claude-sonnet-4-6"
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
-        backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
+        backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 0.6
         showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
         screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
         interviewResponseGate = UserDefaults.standard.object(forKey: "interviewResponseGate") as? Bool ?? true

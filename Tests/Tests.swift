@@ -250,6 +250,38 @@ func testAppChannelResolution() throws {
 }
 
 @MainActor
+func testTranscriptionLanguageDefaultsToEnglish() throws {
+    func defaultID(_ locale: String) -> String {
+        TranscriptionLanguage.defaultLanguage(for: Locale(identifier: locale)).id
+    }
+    // English Macs keep their accent model when we list it.
+    try assertEq(defaultID("en_US"), "en-US")
+    try assertEq(defaultID("en_IN"), "en-IN")
+    try assertEq(defaultID("en_GB"), "en-GB")
+    try assertEq(defaultID("en_NZ"), "en-US", "unlisted English variant falls back to US")
+    // Non-English Macs still transcribe English unless the user picks otherwise.
+    try assertEq(defaultID("fr_FR"), "en-US")
+    try assertEq(defaultID("hi_IN"), "en-US")
+
+    let ids = TranscriptionLanguage.all.map(\.id)
+    try assertEq(Set(ids).count, ids.count, "language ids must be unique")
+    try assertTrue(TranscriptionLanguage.all.filter { $0.id.hasPrefix("en-") }.allSatisfy { $0.elevenLabsCode == "en" })
+}
+
+@MainActor
+func testTranscriptionLanguageReadsSavedChoice() throws {
+    let key = TranscriptionLanguage.defaultsKey
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    UserDefaults.standard.set("hi-IN", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id, "hi-IN")
+    try assertEq(TranscriptionLanguage.current.elevenLabsCode, "hi")
+    UserDefaults.standard.set("xx-YY", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id,
+                 TranscriptionLanguage.defaultLanguage(for: .current).id,
+                 "an unknown saved value falls back to the default")
+}
+
+@MainActor
 func testAppChannelKeepsDataApart() throws {
     // Production keeps the original folder so existing users' data carries over.
     try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
@@ -419,6 +451,8 @@ struct TestsMain {
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
         TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
         TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
+        TestRunner.run("TranscriptionLanguage defaults to English", testTranscriptionLanguageDefaultsToEnglish)
+        TestRunner.run("TranscriptionLanguage reads saved choice", testTranscriptionLanguageReadsSavedChoice)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)

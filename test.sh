@@ -29,6 +29,7 @@ SOURCES=(
     "$SRC_DIR/Models/Workspace.swift"
     "$SRC_DIR/Stores/JSONStore.swift"
     "$SRC_DIR/AppChannel.swift"
+    "$SRC_DIR/TranscriptionLanguage.swift"
 )
 
 echo "🧪 Compiling test binary…"
