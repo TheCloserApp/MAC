@@ -307,6 +307,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         // ⌘⇧ + arrows move the overlay only while it's showing.
         panel.onVisibilityChange = { HotkeyManager.shared.setMoveHotkeys($0) }
+        // Dragging the panel's edges goes through `windowWillResize`.
+        panel.delegate = self
         overlayPanel = panel
         overlayPanel.level                      = .statusBar + 1
         overlayPanel.collectionBehavior         = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -559,8 +561,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func resizePanel(dw: CGFloat, dh: CGFloat) {
         DispatchQueue.main.async { [self] in
             let f  = overlayPanel.frame
-            let nw = max(overlayPanel.minSize.width,  f.width  + dw)
-            let nh = max(overlayPanel.minSize.height, f.height + dh)
+            let minimum = minimumPanelSize(for: vm.shellStage)
+            let nw = max(minimum.width,  f.width  + dw)
+            let nh = max(minimum.height, f.height + dh)
             // Anchor top edge: when height grows, origin moves down; when shrinks, moves up
             let newOriginY = f.origin.y + (f.height - nh)
             overlayPanel.setFrame(
@@ -645,8 +648,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Flag only on transition — re-setting it per mouse event would
         // invalidate observers 60+ times a second for no layout change.
         if !vm.isUserResizingPanel { vm.isUserResizingPanel = true }
-        let newW = max(panel.minSize.width,  base.width  + dx)
-        let newH = max(panel.minSize.height, base.height + dy)
+        let minimum = minimumPanelSize(for: vm.shellStage)
+        let newW = max(minimum.width,  base.width  + dx)
+        let newH = max(minimum.height, base.height + dy)
         // Top edge pinned: maxY constant, origin.y follows the height.
         let frame = NSRect(x: base.origin.x,
                            y: base.maxY - newH,
@@ -877,8 +881,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static let expandedCompactMinSize  = NSSize(width: 360, height: 80)
     /// With a surface open the width can't go below the width the layouts
     /// are designed for: narrower, Settings clips its rail and pushes
-    /// switches out of their cards.
+    /// switches out of their cards, and the setup screen's buttons wrap
+    /// one letter per line.
     static let expandedMinSize         = NSSize(width: 440, height: 420)
+
+    /// The smallest the panel may be right now. Every way of resizing
+    /// uses it: stage changes, the corner grip, ⌃⇧ + arrows, and dragging
+    /// the panel's edges (`windowWillResize`). It's worked out from the
+    /// current screen each time rather than read from `minSize`, which is
+    /// only updated on stage and surface changes.
+    @MainActor
+    func minimumPanelSize(for stage: OverlayViewModel.ShellStage) -> NSSize {
+        switch stage {
+        case .pill:
+            return Self.pillMinSize
+        case .expanded:
+            guard vm.primarySurface != nil else { return Self.expandedCompactMinSize }
+            // An answer hugs its text, so it can be short, but it's never
+            // narrower than the other screens: going back to setup from an
+            // answer doesn't resize the panel.
+            return vm.usesResponseHuggingPanel
+                ? NSSize(width: Self.expandedMinSize.width, height: Self.expandedCompactMinSize.height)
+                : Self.expandedMinSize
+        }
+    }
 
     /// Resize the panel for the given shell stage. Within `.expanded`
     /// the height also adapts to whether a `primarySurface` is open:
@@ -944,16 +970,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let minForStage: NSSize
-        switch stage {
-        case .pill:     minForStage = Self.pillMinSize
-        case .expanded:
-            if responseHugging {
-                minForStage = Self.expandedCompactMinSize
-            } else {
-                minForStage = surfaceOpen ? Self.expandedMinSize : Self.expandedCompactMinSize
-            }
-        }
+        let minForStage = minimumPanelSize(for: stage)
         panel.minSize = minForStage
         // A width the user dragged to under an older, smaller minimum (or
         // kept from the compact bar) must not survive into this stage.
@@ -1149,5 +1166,19 @@ extension NSWindow {
     @objc func _sp_makeKeyAndOrderFront(_ sender: Any?) {
         sharingType = NSWindow.desiredSharingType
         _sp_makeKeyAndOrderFront(sender)  // calls original after swap
+    }
+}
+
+// MARK: - Resizing by the panel's edges
+
+extension AppDelegate: NSWindowDelegate {
+    /// Dragging an edge of the panel. AppKit doesn't reliably hold a
+    /// borderless panel to `minSize` here, which let it be dragged narrow
+    /// enough to break every layout, so the minimum is applied directly.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard sender === overlayPanel else { return frameSize }
+        let minimum = MainActor.assumeIsolated { minimumPanelSize(for: vm.shellStage) }
+        return NSSize(width: max(frameSize.width, minimum.width),
+                      height: max(frameSize.height, minimum.height))
     }
 }
