@@ -42,9 +42,17 @@ struct InterviewSurfaceView: View {
 private struct InterviewModeBar: View {
     @Environment(OverlayViewModel.self) private var vm
 
+    private let modes = OverlayViewModel.InterviewSurfaceMode.available
+
     var body: some View {
+        if modes.count > 1 {
+            bar
+        }
+    }
+
+    private var bar: some View {
         HStack(spacing: 6) {
-            ForEach(OverlayViewModel.InterviewSurfaceMode.allCases, id: \.self) { mode in
+            ForEach(modes, id: \.self) { mode in
                 Button {
                     vm.switchInterviewSurfaceMode(mode)
                 } label: {
@@ -454,7 +462,7 @@ private struct InterviewSetupForm: View {
 
     private var startRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if vm.needsKeyForCurrentModel {
+            if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
             HStack {
@@ -475,6 +483,8 @@ private struct InterviewSetupForm: View {
                     .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
+                .disabled(!vm.missingRequiredKeys.isEmpty)
+                .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Start interview (⌘↩)")
             }
@@ -785,7 +795,7 @@ private struct RegularCallSetupForm: View {
 
     private var startRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if vm.needsKeyForCurrentModel {
+            if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
             startButtonRow
@@ -811,6 +821,8 @@ private struct RegularCallSetupForm: View {
                 .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
+            .disabled(!vm.missingRequiredKeys.isEmpty)
+            .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
             .keyboardShortcut(.return, modifiers: .command)
             .help("Start (⌘↩)")
         }
@@ -942,7 +954,7 @@ private struct MissingKeyWarning: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
                     .foregroundColor(Design.Accent.amber)
-                Text("No API key for the selected model — answers won't generate. Click to add one.")
+                Text("Add your \(vm.missingRequiredKeys.joined(separator: " and ")) key\(vm.missingRequiredKeys.count > 1 ? "s" : "") to start. Click to open API keys.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Design.Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)

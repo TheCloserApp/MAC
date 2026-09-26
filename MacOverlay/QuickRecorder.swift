@@ -10,7 +10,7 @@ class QuickRecorder {
     private var audioEngine  = AVAudioEngine()
     private var request:       SFSpeechAudioBufferRecognitionRequest?
     private var task:          SFSpeechRecognitionTask?
-    private let recognizer   = SFSpeechRecognizer(locale: Locale.current)
+    private var recognizer: SFSpeechRecognizer?
 
     private var latestText   = ""
     private var delivered    = false
@@ -34,9 +34,10 @@ class QuickRecorder {
         reset()
         NSLog("[QuickRecorder] start")
 
+        let language = TranscriptionLanguage.current
+        recognizer = SFSpeechRecognizer(locale: language.locale)
         guard let recognizer else {
-            NSLog("[QuickRecorder] SFSpeechRecognizer is nil for locale %@",
-                  Locale.current.identifier)
+            NSLog("[QuickRecorder] SFSpeechRecognizer is nil for locale %@", language.id)
             throw QuickRecorderError.recognizerUnavailable
         }
         guard recognizer.isAvailable else {

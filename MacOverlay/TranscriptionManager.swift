@@ -157,7 +157,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         let qs = "model_id=scribe_v2_realtime" +
                  "&audio_format=pcm_16000" +
                  "&commit_strategy=vad" +
-                 "&language_code=en" +
+                 "&language_code=\(TranscriptionLanguage.current.elevenLabsCode)" +
                  "&vad_silence_threshold_secs=0.6"
 
         guard let url = URL(string: "wss://api.elevenlabs.io/v1/speech-to-text/realtime?\(qs)") else {
