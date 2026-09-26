@@ -184,13 +184,20 @@ struct TopStripView: View {
 
             // Same switch as on the setup screen; it applies straight
             // away, mid-interview included.
-            Button {
-                vm.interviewAutoGenerate.toggle()
-            } label: {
-                HStack {
-                    Text("Auto-generate responses")
-                    if vm.interviewAutoGenerate { Image(systemName: "checkmark") }
+            Menu {
+                ForEach([true, false], id: \.self) { on in
+                    Button {
+                        vm.interviewAutoGenerate = on
+                    } label: {
+                        HStack {
+                            Text(on ? "On" : "Off")
+                            if vm.interviewAutoGenerate == on { Image(systemName: "checkmark") }
+                        }
+                    }
                 }
+            } label: {
+                Label("Auto-generate responses: \(vm.interviewAutoGenerate ? "On" : "Off")",
+                      systemImage: "wand.and.sparkles")
             }
 
             // Model picker — moved out of the bar; switching applies
