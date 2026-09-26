@@ -138,7 +138,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         callDetector.start()
 
-        // Dev and Beta only: `open -a "thecloser Dev" --args -simulateCall Zoom`
+        // Dev and Beta only: `open -a "TheCloser Dev" --args -simulateCall Zoom`
         // fakes a call, to check the prompt and the menu-bar icon without
         // joining one.
         if AppChannel.current != .production,

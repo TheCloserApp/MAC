@@ -410,7 +410,7 @@ struct TopStripView: View {
             Button {
                 NSApp.terminate(nil)
             } label: {
-                Label("Quit thecloser", systemImage: "power")
+                Label("Quit TheCloser", systemImage: "power")
             }
         } label: {
             Image(systemName: "ellipsis")

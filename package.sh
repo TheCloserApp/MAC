@@ -16,8 +16,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$CHANNEL" in
-    beta) APP_NAME="thecloser Beta"; DMG_NAME="TheCloser-Beta.dmg"; VOLUME="TheCloser Beta" ;;
-    prod) APP_NAME="thecloser";      DMG_NAME="TheCloser.dmg";      VOLUME="TheCloser" ;;
+    beta) APP_NAME="TheCloser Beta"; DMG_NAME="TheCloser-Beta.dmg"; VOLUME="TheCloser Beta" ;;
+    prod) APP_NAME="TheCloser";      DMG_NAME="TheCloser.dmg";      VOLUME="TheCloser" ;;
     *) echo "Usage: ./package.sh --channel beta|prod" >&2; exit 1 ;;
 esac
 

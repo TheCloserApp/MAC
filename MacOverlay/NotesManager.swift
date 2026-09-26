@@ -21,7 +21,7 @@ class NotesManager {
     func clear() { entries = [] }
 
     func exportAsMarkdown() throws -> URL {
-        var md = "# thecloser Session Notes\n_Exported \(Date().formatted())_\n\n"
+        var md = "# TheCloser Session Notes\n_Exported \(Date().formatted())_\n\n"
         for e in entries {
             let icon = e.source == .ai ? "🤖" : "✏️"
             md += "### \(icon) \(e.mode.displayName) · \(e.timestamp.formatted(date: .omitted, time: .shortened))\n\n\(e.content)\n\n---\n\n"
@@ -30,7 +30,7 @@ class NotesManager {
     }
 
     func exportAsPlainText() throws -> URL {
-        var txt = "thecloser Session Notes — \(Date().formatted())\n\n"
+        var txt = "TheCloser Session Notes — \(Date().formatted())\n\n"
         for e in entries {
             txt += "[\(e.mode.displayName)] [\(e.source.rawValue.uppercased())] \(e.timestamp.formatted(date: .omitted, time: .shortened))\n\(e.content)\n\n"
         }
@@ -41,7 +41,7 @@ class NotesManager {
         let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let name = "thecloser-Notes-\(formatter.string(from: Date())).\(ext)"
+        let name = "TheCloser-Notes-\(formatter.string(from: Date())).\(ext)"
         let url  = downloads.appendingPathComponent(name)
         try content.write(to: url, atomically: true, encoding: .utf8)
         return url
