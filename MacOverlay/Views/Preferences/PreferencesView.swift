@@ -274,7 +274,7 @@ struct PreferencesView: View {
             if !ProAccount.shared.isActive {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
-                             subtitle: "Apple runs on this Mac. ElevenLabs needs a key.")
+                             subtitle: "Apple runs on this Mac. ElevenLabs and Grok need a key.")
                     .layoutPriority(1)
                 Spacer(minLength: 8)
                 Picker("", selection: $vm.transcriptionPreference) {
@@ -505,10 +505,15 @@ struct PreferencesView: View {
         }
 
         if !pro.isActive {
+        let usesGrok = vm.transcriptionPreference == .grok
         section(title: "API keys",
-                subtitle: "OpenRouter runs the models; ElevenLabs transcribes. Stored only on this Mac.") {
+                subtitle: "OpenRouter runs the models; \(usesGrok ? "xAI" : "ElevenLabs") transcribes. Stored only on this Mac.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
-            KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+            if usesGrok {
+                KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",   text: $vm.grokAPIKey)
+            } else {
+                KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",    text: $vm.elevenLabsAPIKey)
+            }
         }
         }
 

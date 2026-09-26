@@ -729,21 +729,21 @@ struct ChatSurfaceView: View {
     }
 
     private var backendBadge: some View {
-        let isEleven = vm.transcriptionBackend == .elevenLabs
+        let cloud = vm.transcriptionBackend != .apple
         return HStack(spacing: 3) {
-            Image(systemName: isEleven ? "bolt.fill" : "apple.logo")
+            Image(systemName: cloud ? "bolt.fill" : "apple.logo")
                 .font(.system(size: 8))
             Text(vm.transcriptionBackend.rawValue)
                 .font(.system(size: 9, weight: .semibold))
         }
-        .foregroundColor(isEleven ? Design.Accent.chatGPT : Design.Ink.secondary)
+        .foregroundColor(cloud ? Design.Accent.chatGPT : Design.Ink.secondary)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background((isEleven ? Design.Accent.chatGPT : Design.Ink.secondary).opacity(0.12))
+        .background((cloud ? Design.Accent.chatGPT : Design.Ink.secondary).opacity(0.12))
         .clipShape(Capsule())
-        .help(isEleven
-              ? "Using ElevenLabs scribe for live transcription."
-              : "Using Apple on-device speech recognition. Add an ElevenLabs key in Preferences for higher accuracy.")
+        .help(cloud
+              ? "Using \(vm.transcriptionBackend.rawValue) for live transcription."
+              : "Using Apple on-device speech recognition. Add an ElevenLabs or xAI key in Settings → AI for higher accuracy.")
     }
 
     private var placeholderOrTranscription: String {

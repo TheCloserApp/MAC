@@ -455,8 +455,12 @@ final class OverlayViewModel {
     }
     /// xAI / Grok API key. Grok models route through xAI's OpenAI-compatible
     /// endpoint (https://api.x.ai/v1) with this key — see AIManager.
+    /// xAI key: Grok chat models, and Grok transcription.
     var grokAPIKey: String {
-        didSet { UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey") }
+        didSet {
+            UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey")
+            transcriptionManager.grokAPIKey = grokAPIKey
+        }
     }
     /// DeepSeek API key. DeepSeek models route through its OpenAI-compatible
     /// endpoint (https://api.deepseek.com) with this key — see AIManager.
@@ -480,17 +484,18 @@ final class OverlayViewModel {
         }
     }
 
-    /// User-selected transcription backend. `.auto` picks ElevenLabs when a key
-    /// is configured and falls back to Apple otherwise; `.apple` and
-    /// `.elevenLabs` force the choice regardless of key state.
+    /// User-selected transcription backend. `.auto` picks ElevenLabs when a
+    /// key is configured, then Grok, then Apple. The others force their
+    /// engine, falling back to Apple while its key is missing.
     enum TranscriptionPreference: String, CaseIterable, Identifiable {
-        case auto, apple, elevenLabs
+        case auto, apple, elevenLabs, grok
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .auto:       return "Automatic"
             case .apple:      return "Apple (on-device, free)"
             case .elevenLabs: return "ElevenLabs (cloud)"
+            case .grok:       return "Grok Transcribe 2 (cloud)"
             }
         }
     }
@@ -943,14 +948,17 @@ final class OverlayViewModel {
 
     /// Which transcription engine is being used right now. Switches live with
     /// whether the user has configured an ElevenLabs key.
-    enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
+    enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", grok = "Grok", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
         // Pro transcribes on this Mac with Apple's recognizer: no key.
         if ProAccount.shared.isActive { return .apple }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
-        case .auto:       return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+        case .grok:       return grokAPIKey.isEmpty ? .apple : .grok
+        case .auto:
+            if !elevenLabsAPIKey.isEmpty { return .elevenLabs }
+            return grokAPIKey.isEmpty ? .apple : .grok
         }
     }
 
@@ -961,8 +969,14 @@ final class OverlayViewModel {
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
         switch transcriptionBackend {
-        case .elevenLabs: try await transcriptionManager.start(source: source)
-        case .apple:      try await appleTranscriber.start(source: source)
+        case .elevenLabs:
+            transcriptionManager.provider = .elevenLabs
+            try await transcriptionManager.start(source: source)
+        case .grok:
+            transcriptionManager.provider = .grok
+            try await transcriptionManager.start(source: source)
+        case .apple:
+            try await appleTranscriber.start(source: source)
         }
     }
 
@@ -1090,6 +1104,7 @@ final class OverlayViewModel {
         sessionStore.migrateWorkspacelessSessions(to: workspaceStore.activeWorkspaceID)
 
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
+        transcriptionManager.grokAPIKey       = grokAPIKey
 
         // TheCloser Pro: keep the model choice inside the plan, and pick up
         // the subscription (renewing its pass) in the background.
@@ -2308,13 +2323,17 @@ final class OverlayViewModel {
     var hasOpenRouterAccess: Bool { ProAccount.shared.isActive || !openRouterAPIKey.isEmpty }
 
     /// Keys a bring-your-own-key user still has to add before starting an
-    /// interview: OpenRouter runs the models, ElevenLabs transcribes. Pro
-    /// needs neither.
+    /// interview: OpenRouter runs the models, and ElevenLabs transcribes,
+    /// or xAI when Grok is the chosen engine. Pro needs none.
     var missingRequiredKeys: [String] {
         guard !ProAccount.shared.isActive else { return [] }
         var missing: [String] = []
         if openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("OpenRouter") }
-        if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("ElevenLabs") }
+        if transcriptionPreference == .grok {
+            if grokAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("xAI") }
+        } else if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            missing.append("ElevenLabs")
+        }
         return missing
     }
 
