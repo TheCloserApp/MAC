@@ -20,13 +20,21 @@ final class ModelVisibility {
         didSet { persist() }
     }
 
+    /// The models a TheCloser Pro plan includes (set by `ProAccount`), or
+    /// nil for no limit. Models outside it disappear from every picker and
+    /// from Settings, rather than being offered and then refused.
+    var allowed: Set<String>?
+
     private init() {
         let raw = UserDefaults.standard.stringArray(forKey: Self.storageKey) ?? []
         self.hidden = Set(raw)
     }
 
+    /// True when the current plan includes this model id.
+    func isAllowed(_ id: String) -> Bool { allowed?.contains(id) ?? true }
+
     /// True when the picker should show this model id.
-    func isVisible(_ id: String) -> Bool { !hidden.contains(id) }
+    func isVisible(_ id: String) -> Bool { isAllowed(id) && !hidden.contains(id) }
 
     /// True when this id is currently the *only* visible model in `allModelIDs`.
     /// The UI uses this to disable the toggle (with a tooltip) instead of

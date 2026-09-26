@@ -31,6 +31,9 @@ SOURCES=(
     "$SRC_DIR/AppChannel.swift"
     "$SRC_DIR/TranscriptionLanguage.swift"
     "$SRC_DIR/CallDetector.swift"
+    "$SRC_DIR/FeatureFlags.swift"
+    "$SRC_DIR/ProAccount.swift"
+    "$SRC_DIR/Stores/ModelVisibility.swift"
 )
 
 echo "🧪 Compiling test binary…"

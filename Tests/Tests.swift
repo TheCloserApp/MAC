@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 // MARK: - Tiny test runner
@@ -463,6 +464,65 @@ func testChatTurnHiddenContextCodable() throws {
     try assertEq(migrated.replayText, "old")
 }
 
+// MARK: - TheCloser Pro
+
+/// Must match the server's expectations (api/_lib/config.js DEVICE_PATTERN)
+/// and the formula used to find this Mac's subscription.
+func testProFingerprint() throws {
+    try assertEq(ProAccount.fingerprint(platformUUID: "00000000-0000-0000-0000-000000000000") ?? "",
+                 "0c0863a1d1e077935f3dd62e8c1f9677fd514a41ef792698d8bcf315045dc23c")
+    try assertTrue(ProAccount.fingerprint(platformUUID: "") == nil, "no UUID, no fingerprint")
+    let device = ProAccount.device ?? ""
+    try assertTrue(device.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil, "this Mac: \(device)")
+}
+
+func testProUsageFromServer() throws {
+    let json = #"{"plan":"pro","allowanceUSD":8,"usedUSD":5.5,"remainingUSD":2.5,"usedFraction":0.6875,"periodEnd":1792000000,"renews":true}"#
+    let usage = try JSONDecoder().decode(ProAccount.Usage.self, from: Data(json.utf8))
+    try assertEq(usage.percentUsed, 69)
+    try assertFalse(usage.isRunningLow)
+    try assertFalse(usage.isUsedUp)
+    try assertTrue(usage.periodEndText?.hasPrefix("Resets ") == true, usage.periodEndText ?? "nil")
+
+    let cancelled = #"{"plan":"pro","allowanceUSD":8,"usedUSD":8,"remainingUSD":0,"usedFraction":1,"periodEnd":1792000000,"renews":false}"#
+    let ending = try JSONDecoder().decode(ProAccount.Usage.self, from: Data(cancelled.utf8))
+    try assertTrue(ending.isRunningLow && ending.isUsedUp)
+    try assertTrue(ending.periodEndText?.hasPrefix("Ends ") == true, "a cancelled plan ends instead of resetting")
+}
+
+@MainActor
+func testProLimitsModelPickers() throws {
+    let visibility = ModelVisibility.shared
+    let previous = visibility.allowed
+    defer { visibility.allowed = previous }
+    visibility.allowed = ["openrouter/anthropic/claude-sonnet-5"]
+    try assertTrue(visibility.isVisible("openrouter/anthropic/claude-sonnet-5"))
+    try assertFalse(visibility.isVisible("openrouter/anthropic/claude-opus-5.5"), "outside the plan")
+    visibility.allowed = nil
+    try assertTrue(visibility.isAllowed("openrouter/anthropic/claude-opus-5.5"), "no plan, no limit")
+}
+
+/// Pro screenshots go through our server, which takes at most 4 MB.
+func testProScreenshotsAreShrunk() throws {
+    let size = NSSize(width: 3456, height: 2234)
+    let image = NSImage(size: size, flipped: false) { rect in
+        NSGradient(colors: [.systemBlue, .systemOrange])?.draw(in: rect, angle: 30)
+        return true
+    }
+    let encoded = try AIManager.jpegBase64(from: image).unwrap("encodes")
+    let bitmap = try NSBitmapImageRep(data: Data(base64Encoded: encoded) ?? Data()).unwrap("decodes")
+    try assertEq(bitmap.pixelsWide, 1600)
+    try assertEq(bitmap.pixelsHigh, 1034)
+    try assertTrue(encoded.utf8.count < 4_000_000)
+}
+
+extension Optional {
+    func unwrap(_ note: String, file: String = #file, line: Int = #line) throws -> Wrapped {
+        guard let self else { throw TestFailure(message: "unexpected nil: \(note)", file: file, line: line) }
+        return self
+    }
+}
+
 // MARK: - Entry point
 
 @main
@@ -498,6 +558,10 @@ struct TestsMain {
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
+        TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
+        TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
+        TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
+        TestRunner.run("Pro screenshots are shrunk to fit the server", testProScreenshotsAreShrunk)
 
         print("\n──────────────────────────────")
         print("  Passed: \(TestRunner.passed)")

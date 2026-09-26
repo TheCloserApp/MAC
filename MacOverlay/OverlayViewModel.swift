@@ -955,12 +955,18 @@ final class OverlayViewModel {
     /// whether the user has configured an ElevenLabs key.
     enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
+        // Pro transcribes on this Mac with Apple's recognizer: no key.
+        if ProAccount.shared.isActive { return .apple }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
         case .auto:       return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
         }
     }
+
+    /// Whether a Pro plan was active last time it changed, to tell the user
+    /// when it ends.
+    @ObservationIgnored private var wasOnPro = false
 
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
@@ -1096,6 +1102,12 @@ final class OverlayViewModel {
         sessionStore.migrateWorkspacelessSessions(to: workspaceStore.activeWorkspaceID)
 
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
+
+        // TheCloser Pro: keep the model choice inside the plan, and pick up
+        // the subscription (renewing its pass) in the background.
+        ProAccount.shared.onChange = { [weak self] in self?.proPlanChanged() }
+        proPlanChanged()
+        ProAccount.shared.start()
 
         // Apple delivers one growing string per recognition task, so the
         // raw update can replace the live transcript wholesale. New text =
@@ -1818,7 +1830,7 @@ final class OverlayViewModel {
     /// noise the user ignores, but a missed question leaves them stranded
     /// mid-interview. When in doubt, answer.
     private func classifyNeedsResponse(_ text: String) async -> Bool {
-        guard !openRouterAPIKey.isEmpty else { return true }
+        guard hasOpenRouterAccess else { return true }
         do {
             let raw = try await AIManager.shared.sendMessage(
                 text,
@@ -2317,7 +2329,13 @@ final class OverlayViewModel {
     /// and error message stays in sync with `AIManager`'s routing.
     /// API key + provider label for an arbitrary model id.
     func key(for model: String) -> (key: String, provider: String) {
-        if AIManager.shared.isOpenRouterModel(model) { return (openRouterAPIKey, "OpenRouter") }
+        if AIManager.shared.isOpenRouterModel(model) {
+            // Pro needs no key: AIManager sends these models through the
+            // subscription. Callers only check a key is there, so the plan
+            // name stands in for it.
+            if let plan = ProAccount.shared.plan { return ("TheCloser \(plan.name)", "TheCloser Pro") }
+            return (openRouterAPIKey, "OpenRouter")
+        }
         if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaAPIKey, "NVIDIA") }
         if AIManager.shared.isMoonshotModel(model) { return (moonshotAPIKey, "Moonshot") }
         if AIManager.shared.isGrokModel(model)     { return (grokAPIKey, "Grok") }
@@ -2338,12 +2356,33 @@ final class OverlayViewModel {
         keyForSelectedModel.key.isEmpty
     }
 
+    /// OpenRouter models can run: on Pro, or with the user's own key.
+    var hasOpenRouterAccess: Bool { ProAccount.shared.isActive || !openRouterAPIKey.isEmpty }
+
     /// Keys a bring-your-own-key user still has to add before starting an
-    /// interview: OpenRouter runs the models, ElevenLabs transcribes.
+    /// interview: OpenRouter runs the models, ElevenLabs transcribes. Pro
+    /// needs neither.
     var missingRequiredKeys: [String] {
+        guard !ProAccount.shared.isActive else { return [] }
         var missing: [String] = []
         if openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("OpenRouter") }
         if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("ElevenLabs") }
         return missing
+    }
+
+    /// A Pro plan started, changed or ended. Pro keeps the model choice
+    /// inside the plan and uses the default memory settings, which it
+    /// doesn't let the user change.
+    private func proPlanChanged() {
+        let visibility = ModelVisibility.shared
+        if !visibility.isAllowed(selectedModel) {
+            selectedModel = visibility.isAllowed(Self.defaultModel)
+                ? Self.defaultModel
+                : Self.availableModels.first { visibility.isAllowed($0.id) }?.id ?? Self.defaultModel
+        }
+        let onPro = ProAccount.shared.isActive
+        if onPro { sessionStore.useDefaultMemorySettings() }
+        if wasOnPro && !onPro { statusMessage = "Error: \(AIError.proEnded.localizedDescription)" }
+        wasOnPro = onPro
     }
 }

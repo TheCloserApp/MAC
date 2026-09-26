@@ -15,8 +15,9 @@ private let proInterestURL = URL(string: "https://www.thecloser.tech/?utm_source
 /// `sharingType = .none` — invisible to screen shares.
 ///
 /// welcome → choose → keys (bring your own OpenRouter + ElevenLabs keys)
-///                  → plans (we handle everything; coming soon, falls back
-///                           to keys until payments exist)
+///                  → plans (we handle everything: subscribe to Pro in Dev
+///                           and Beta; coming soon in production, which
+///                           falls back to keys)
 struct OnboardingView: View {
     @Environment(OverlayViewModel.self) private var vm
     @Binding var isPresented: Bool
@@ -124,7 +125,7 @@ struct OnboardingView: View {
         case .welcome: return "Get Started"
         case .choose:  return "Continue"
         case .keys:    return vm.missingRequiredKeys.isEmpty ? "Done" : "Skip for now"
-        case .plans:   return "Use my own keys"
+        case .plans:   return ProAccount.shared.isActive ? "Done" : "Use my own keys"
         }
     }
 
@@ -133,7 +134,7 @@ struct OnboardingView: View {
         case .welcome: go(to: .choose)
         case .choose:  go(to: path == .managed ? .plans : .keys)
         case .keys:    finish()
-        case .plans:   go(to: .keys)
+        case .plans:   ProAccount.shared.isActive ? finish() : go(to: .keys)
         }
     }
 
@@ -206,8 +207,8 @@ private struct ChooseStep: View {
 
             ChoiceCard(icon: "sparkles",
                        title: "We handle everything",
-                       badge: "Coming soon",
-                       detail: "No keys, no setup. The best models and transcription, managed for you. From $19/month.",
+                       badge: FeatureFlags.proSubscriptionsEnabled ? "Pro" : "Coming soon",
+                       detail: "No keys, no setup. Top models and transcription, managed for you. From $19/month.",
                        selected: path == .managed) { path = .managed }
 
             Spacer(minLength: 0)
@@ -353,72 +354,36 @@ private struct KeyInput: View {
 
 private struct PlansStep: View {
     var body: some View {
+        let account = ProAccount.shared
         VStack(alignment: .leading, spacing: 12) {
-            StepHeader(title: "We handle everything",
-                       subtitle: "Coming soon. Until then, the free version with your own keys has the same interview helper.")
+            if let plan = account.plan {
+                StepHeader(title: "You're on \(plan.name)",
+                           subtitle: "No keys needed. Models and transcription are included, and this Mac is ready for your next interview.")
+                ProPlanCard(plan: plan)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if FeatureFlags.proSubscriptionsEnabled {
+                StepHeader(title: "We handle everything",
+                           subtitle: "Pick a plan. Checkout opens in your browser, and the app switches over as soon as it's paid.")
+                ProPlanPicker()
+            } else {
+                StepHeader(title: "We handle everything",
+                           subtitle: "Coming soon. Until then, the free version with your own keys has the same interview helper.")
 
-            HStack(alignment: .top, spacing: 10) {
-                PlanCard(name: "Pro", price: "$19",
-                         points: ["No API keys needed", "Top models included",
-                                  "Best transcription, set up for you", "Request new models"])
-                PlanCard(name: "Pro Max", price: "$39",
-                         points: ["Everything in Pro", "The most powerful models",
-                                  "2.5× the monthly usage"])
-            }
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(ProAccount.Plan.allCases) { ProPlanCard(plan: $0) }
+                }
+                .fixedSize(horizontal: false, vertical: true)
 
-            Link(destination: proInterestURL) {
-                Text("I'm interested. Tell me when it launches →")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Design.Accent.chatGPT)
+                Link(destination: proInterestURL) {
+                    Text("I'm interested. Tell me when it launches →")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Design.Accent.chatGPT)
+                }
             }
 
             Spacer(minLength: 0)
         }
         .padding(24)
-    }
-}
-
-private struct PlanCard: View {
-    let name: String
-    let price: String
-    let points: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Text(name)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Design.Ink.primary)
-                Badge(text: "Soon")
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(price)
-                    .font(.system(size: 20, weight: .semibold, design: .rounded))
-                    .foregroundColor(Design.Ink.primary)
-                Text("/month")
-                    .font(.system(size: 10))
-                    .foregroundColor(Design.Ink.tertiary)
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                ForEach(points, id: \.self) { point in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(Design.Accent.green)
-                        Text(point)
-                            .font(.system(size: 10.5))
-                            .foregroundColor(Design.Ink.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Design.Surface.raisedFill))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(Design.Surface.hairline, lineWidth: 0.75))
     }
 }
 
