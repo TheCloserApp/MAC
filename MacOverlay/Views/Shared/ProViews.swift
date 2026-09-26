@@ -64,12 +64,19 @@ struct ProPlanPicker: View {
     }
 }
 
-/// One plan: name, price and what it includes. Without `subscribe` it's
-/// shown as coming soon.
+/// One plan: name, price and what it includes. With `subscribe` it has a
+/// Subscribe button; `isCurrent` marks the plan the Mac is on; otherwise
+/// it's shown as coming soon.
 struct ProPlanCard: View {
     let plan: ProAccount.Plan
+    var isCurrent = false
     var isDisabled = false
     var subscribe: (() -> Void)?
+
+    private var badge: String? {
+        if isCurrent { return "Current plan" }
+        return subscribe == nil ? "Soon" : nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -77,8 +84,8 @@ struct ProPlanCard: View {
                 Text(plan.name)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Design.Ink.primary)
-                if subscribe == nil {
-                    Text("Soon")
+                if let badge {
+                    Text(badge)
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(Design.Ink.secondary)
                         .padding(.horizontal, 6)

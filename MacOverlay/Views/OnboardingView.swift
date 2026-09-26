@@ -21,8 +21,20 @@ private let proInterestURL = URL(string: "https://www.thecloser.tech/?utm_source
 struct OnboardingView: View {
     @Environment(OverlayViewModel.self) private var vm
     @Binding var isPresented: Bool
-    @State private var step: Step = .welcome
-    @State private var path: Path?
+    @State private var step: Step = Self.firstStep
+    @State private var path: Path? = Self.firstPath
+
+    #if PREVIEW
+    /// Where the tour starts, to render any step off-screen. Only in builds
+    /// compiled with `-D PREVIEW`.
+    static var previewStep: Step = .welcome
+    static var previewPath: Path?
+    private static var firstStep: Step { previewStep }
+    private static var firstPath: Path? { previewPath }
+    #else
+    private static let firstStep: Step = .welcome
+    private static let firstPath: Path? = nil
+    #endif
 
     enum Step {
         case welcome, choose, keys, plans
@@ -91,10 +103,17 @@ struct OnboardingView: View {
                     .buttonStyle(.secondary)
             }
 
-            Button(primaryLabel) { advance() }
-                .buttonStyle(.primary)
-                .disabled(step == .choose && path == nil)
-                .keyboardShortcut(.defaultAction)
+            // On the plans step, Subscribe is the main action, so the way
+            // out ("Use my own keys") is the quieter button.
+            if step == .plans && !ProAccount.shared.isActive {
+                Button(primaryLabel) { advance() }
+                    .buttonStyle(.secondary)
+            } else {
+                Button(primaryLabel) { advance() }
+                    .buttonStyle(.primary)
+                    .disabled(step == .choose && path == nil)
+                    .keyboardShortcut(.defaultAction)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
@@ -168,24 +187,46 @@ private struct WelcomeStep: View {
             .opacity(animateIn ? 1 : 0)
             .offset(y: animateIn ? 0 : 10)
 
-            // Said up front, before macOS asks for the microphone.
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 9))
-                Text("Your sessions are saved only on this Mac. TheCloser keeps no copy of your audio or conversations.")
-                    .font(.system(size: 11))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+            // What it does, before macOS asks for the microphone and screen.
+            VStack(alignment: .leading, spacing: 10) {
+                WelcomePoint(icon: "waveform", text: "Hears the interviewer and answers as they ask")
+                WelcomePoint(icon: "eye.slash", text: "Hidden from screen shares and recordings")
+                WelcomePoint(icon: "video", text: "Works with Zoom, Meet, Teams and any call app")
+                WelcomePoint(icon: "lock", text: "Sessions stay on this Mac. We keep no copy of your audio or conversations.")
             }
-            .foregroundColor(Design.Ink.tertiary)
-            .frame(maxWidth: 320)
+            .padding(14)
+            .frame(maxWidth: 320, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Design.Surface.raisedFill))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Design.Surface.hairline, lineWidth: 0.75))
+            .padding(.top, 6)
             .opacity(animateIn ? 1 : 0)
+            .offset(y: animateIn ? 0 : 14)
         }
         .padding(24)
         .onAppear {
             withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.05)) {
                 animateIn = true
             }
+        }
+    }
+}
+
+private struct WelcomePoint: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(Design.Ink.secondary)
+                .frame(width: 16)
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundColor(Design.Ink.primary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -198,7 +239,7 @@ private struct ChooseStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             StepHeader(title: "How do you want to use it?",
-                       subtitle: "Pick one to get started.")
+                       subtitle: "You can switch later in Settings.")
 
             ChoiceCard(icon: "key.fill",
                        title: "Bring your own keys",
@@ -286,7 +327,7 @@ private struct KeyStep: View {
             HStack(spacing: 4) {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 9))
-                Text("Stored on this Mac. Never uploaded anywhere.")
+                Text("Stored only on this Mac, and sent only to OpenRouter and ElevenLabs.")
                     .font(.system(size: 10))
             }
             .foregroundColor(Design.Ink.tertiary)
@@ -360,7 +401,7 @@ private struct PlansStep: View {
             if let plan = account.plan {
                 StepHeader(title: "You're on \(plan.name)",
                            subtitle: "No keys needed. You're ready for your next interview.")
-                ProPlanCard(plan: plan)
+                ProPlanCard(plan: plan, isCurrent: true)
                     .fixedSize(horizontal: false, vertical: true)
             } else if FeatureFlags.proSubscriptionsEnabled {
                 StepHeader(title: "We handle everything",
