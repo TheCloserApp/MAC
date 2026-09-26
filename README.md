@@ -30,6 +30,10 @@ you can read while you talk.
   ElevenLabs keys.
 - ⌨️ **Global hotkeys** — ⌘⏎ answer now and ⌘⇧⏎ screenshot to the AI during
   an interview, plus show/hide and move/resize the panel.
+- 📞 **Call prompt** — when Zoom, Google Meet, Teams, FaceTime or another call
+  app starts using the microphone, the overlay offers to start your interview.
+  It only asks Core Audio which apps are using the mic (macOS 14.2+); nothing
+  is recorded until you start. Toggle in Preferences → General → Recording.
 
 ### Session modes
 
@@ -153,26 +157,12 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | `⌃⌥ T` | Start / stop recording |
 | `⌃⌥ S` | Capture a screenshot and attach it |
 | `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
-| `⌃⌥ X` | Quit thecloser completely (and relaunch it — see below) |
+| `⌃⌥ X` | Quit thecloser completely |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
 Accessibility permission required. `⌘ ⏎` and `⌘ ⇧ ⏎` are registered only
 while recording: a global hotkey takes the combo away from every other app,
 and `⌘ ⏎` means "send" in Slack, Gmail and many others.
-
-### Quit and relaunch with one combo
-
-`⌃⌥ Space` only hides the window — the app keeps running. `⌃⌥ X` ends the
-process outright: no window, no menu-bar item, nothing left in Activity
-Monitor.
-
-Nothing that has exited can listen for its own hotkey, so the way back has to
-belong to macOS. **Preferences ▸ Shortcuts ▸ Install** writes a no-input Quick
-Action to `~/Library/Services` and binds `⌃⌥ X` to it, which relaunches the
-app. While thecloser is running, its own Carbon hotkey takes the keystroke
-first, so the same combo quits; once the process is gone, the Quick Action
-picks it up and opens the app again. The Quick Action runs only for the
-instant the key is pressed — it leaves nothing resident.
 
 ---
 

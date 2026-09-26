@@ -57,10 +57,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationManager: DictationManager?
     private var sigtermSource: DispatchSourceSignal?
     private var lastFrontAppPID: pid_t = 0
+    private let callDetector = CallDetector()
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.global(qos: .utility).async { LegacyLaunchShortcutCleanup.removeIfInstalled() }
         vm = OverlayViewModel()
         NSApp.setActivationPolicy(.accessory)
         // Seed the screen-share gate BEFORE any window is created so the
@@ -91,6 +93,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vm.onRecordingChange = { recording in
             HotkeyManager.shared.setLiveSessionHotkeys(recording)
         }
+
+        // Offer to start an interview when a call app starts using the mic.
+        // A hidden overlay comes back so the prompt can actually be seen.
+        callDetector.onChange = { [weak self] app in
+            guard let self else { return }
+            self.vm.callAppDidChange(app)
+            if self.vm.detectedCallApp != nil, !self.overlayPanel.isVisible {
+                self.overlayPanel.orderFrontRegardless()
+            }
+        }
+        vm.onSuggestSessionOnCallChange = { [weak self] enabled in
+            if enabled { self?.callDetector.start() } else { self?.callDetector.stop() }
+        }
+        if vm.suggestSessionOnCall { callDetector.start() }
 
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the

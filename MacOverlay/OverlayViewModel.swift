@@ -72,6 +72,7 @@ final class OverlayViewModel {
         didSet {
             scheduleBroadcast()
             if isRecording != oldValue { onRecordingChange?(isRecording) }
+            if isRecording { detectedCallApp = nil }
         }
     }
     var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
@@ -857,9 +858,58 @@ final class OverlayViewModel {
         guard shellStage == .pill else { return false }
         return isScoringResume || isGeneratingResume || resumeScore != nil
             || resumeFileURL != nil || isQuickAskSending
-            || !quickAskResponse.isEmpty
+            || !quickAskResponse.isEmpty || detectedCallApp != nil
     }
     @ObservationIgnored var onPillPopupChange: ((Bool) -> Void)?
+
+    // MARK: - Call detection
+
+    /// Name of the call app that just started using the microphone
+    /// ("Zoom"), while the "start your interview?" prompt is showing.
+    var detectedCallApp: String?
+
+    /// Set when the user dismisses the prompt, so the same call doesn't ask
+    /// again. Cleared when the call ends.
+    @ObservationIgnored private var callPromptDismissed = false
+
+    /// Preferences toggle for the call prompt. On by default.
+    var suggestSessionOnCall: Bool {
+        didSet {
+            UserDefaults.standard.set(suggestSessionOnCall, forKey: "suggestSessionOnCall")
+            if !suggestSessionOnCall { detectedCallApp = nil }
+            onSuggestSessionOnCallChange?(suggestSessionOnCall)
+        }
+    }
+    @ObservationIgnored var onSuggestSessionOnCallChange: ((Bool) -> Void)?
+
+    /// Fed by `CallDetector`: the call app now using the mic, or nil when
+    /// no call app is.
+    func callAppDidChange(_ app: String?) {
+        guard let app else {
+            detectedCallApp = nil
+            callPromptDismissed = false
+            return
+        }
+        guard suggestSessionOnCall, !isRecording, !callPromptDismissed else { return }
+        detectedCallApp = app
+    }
+
+    func dismissCallPrompt() {
+        detectedCallApp = nil
+        callPromptDismissed = true
+    }
+
+    /// "Start" on the call prompt: the same as Start interview on the setup
+    /// screen, with whatever résumé and prompt the setup already has.
+    /// Without both keys it stops at the setup screen, which says what's
+    /// missing.
+    func startInterviewFromCallPrompt() {
+        dismissCallPrompt()
+        shellStage = .expanded
+        openInterviewSurface()
+        guard missingRequiredKeys.isEmpty else { return }
+        beginInterviewFromSetup()
+    }
 
     /// Backward-compat read-only shim. New code should test
     /// `shellStage == .expanded` directly.
@@ -962,6 +1012,7 @@ final class OverlayViewModel {
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
         transcriptionLanguageID = TranscriptionLanguage.current.id
+        suggestSessionOnCall = UserDefaults.standard.object(forKey: "suggestSessionOnCall") as? Bool ?? true
         // Default résumé generation to DeepSeek V4 Pro (direct api.deepseek.com)
         // — the chunked plan-then-apply path with reasoning disabled tailors
         // every section cheaply, with no NVIDIA rate limits.

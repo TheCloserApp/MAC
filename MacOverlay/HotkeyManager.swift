@@ -113,9 +113,8 @@ class HotkeyManager {
             add(kVK_ANSI_Q,  ctrlOpt,   .quickAsk)
         }
 
-        // Quit outright — leaves nothing running. The reverse direction
-        // (relaunch on the same combo) can't be ours to own once the
-        // process is gone; see LaunchShortcutInstaller.
+        // Quit outright — leaves nothing running. The app has no Dock or
+        // menu-bar icon, so this is the only quick way to quit it.
         add(kVK_ANSI_X,      ctrlOpt,   .quitApp)
     }
 

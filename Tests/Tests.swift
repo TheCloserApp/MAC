@@ -282,6 +282,21 @@ func testTranscriptionLanguageReadsSavedChoice() throws {
 }
 
 @MainActor
+func testCallDetectorRecognisesCallApps() throws {
+    try assertEq(CallDetector.callAppName(bundleID: "us.zoom.xos"), "Zoom")
+    try assertEq(CallDetector.callAppName(bundleID: "com.microsoft.teams2"), "Microsoft Teams")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.FaceTime"), "FaceTime")
+    // Browser helper processes are what actually hold the mic for Meet.
+    try assertEq(CallDetector.callAppName(bundleID: "com.google.Chrome.helper"), "Chrome")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.WebKit.GPU"), "Safari")
+    // Mic users that are not calls must never trigger the prompt.
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.CoreSpeech"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac.dev"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: nil), nil)
+}
+
+@MainActor
 func testAppChannelKeepsDataApart() throws {
     // Production keeps the original folder so existing users' data carries over.
     try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
@@ -451,6 +466,7 @@ struct TestsMain {
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
         TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
         TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
+        TestRunner.run("CallDetector recognises call apps", testCallDetectorRecognisesCallApps)
         TestRunner.run("TranscriptionLanguage defaults to English", testTranscriptionLanguageDefaultsToEnglish)
         TestRunner.run("TranscriptionLanguage reads saved choice", testTranscriptionLanguageReadsSavedChoice)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
