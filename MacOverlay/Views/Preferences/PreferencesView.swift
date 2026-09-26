@@ -455,6 +455,30 @@ struct PreferencesView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
+                if plan == .pro {
+                    Divider().opacity(0.4)
+                    HStack {
+                        if pro.isWaitingForUpgrade {
+                            ProgressView().controlSize(.small)
+                            Text("Confirm in your browser. This updates once it's done.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Cancel") { pro.stopWaitingForUpgrade() }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Pro Max: the most powerful models and 2.5× the usage.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Upgrade to Pro Max") { Task { await pro.upgradeToProMax() } }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        }
+                    }
+                }
                 if let problem = pro.problem {
                     Text(problem)
                         .font(.system(size: 10))
@@ -552,70 +576,6 @@ struct PreferencesView: View {
             )
         }
         } // if FeatureFlags.resumesEnabled
-
-        section(title: "Usage") {
-            Toggle(isOn: $vm.showTokenCounts) {
-                labelTwoLine(title: "Show live token count",
-                             subtitle: "Shown in the top strip.")
-            }
-            .toggleStyle(.switch)
-
-            if vm.showTokenCounts {
-                let s = vm.sessionStore.activeSession
-                HStack(spacing: 14) {
-                    tokenStat(label: "In",    value: s.totalInputTokens,  color: .blue)
-                    tokenStat(label: "Out",   value: s.totalOutputTokens, color: .green)
-                    tokenStat(label: "Total", value: s.totalTokens,       color: .accentColor)
-                    Spacer()
-                }
-                .padding(.top, 4)
-            }
-        }
-
-        section(title: "Active prompt",
-                subtitle: "Overrides the mode's default system prompt.") {
-            HStack {
-                Menu {
-                    Button {
-                        store.activePresetID = nil
-                    } label: {
-                        HStack {
-                            Text("Use \(vm.sessionMode.displayName) default")
-                            if store.activePresetID == nil { Image(systemName: "checkmark") }
-                        }
-                    }
-                    Divider()
-                    ForEach(store.presets) { p in
-                        Button {
-                            store.activePresetID = p.id
-                        } label: {
-                            HStack {
-                                Text(p.name)
-                                if store.activePresetID == p.id { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(store.activePreset?.name ?? "\(vm.sessionMode.displayName) default")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .menuStyle(.borderlessButton)
-
-                Button("Manage…") {
-                    vm.primarySurface = .prompts
-                }
-                .buttonStyle(.bordered)
-            }
-        }
     }
 
     /// The website's model request form. Says which plan is asking, and
@@ -939,23 +899,6 @@ struct PreferencesView: View {
                 .foregroundColor(.secondary)
                 .frame(width: 40, alignment: .trailing)
         }
-    }
-
-    private func tokenStat(label: String, value: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
-            Text("\(value)")
-                .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundColor(color)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func labelTwoLine(title: String, subtitle: String) -> some View {

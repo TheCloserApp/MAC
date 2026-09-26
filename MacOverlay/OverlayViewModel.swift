@@ -590,10 +590,6 @@ final class OverlayViewModel {
     var backgroundOpacity: Double {
         didSet { UserDefaults.standard.set(backgroundOpacity, forKey: "backgroundOpacity") }
     }
-    /// When true, show live token counts in the top strip and per-session.
-    var showTokenCounts: Bool {
-        didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
-    }
 
     /// Screen-share visibility. `true` (default) excludes every window the
     /// app shows from screen capture — invisible to Zoom / Meet / QuickTime
@@ -1043,7 +1039,6 @@ final class OverlayViewModel {
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 0.6
         textScale          = min(max(UserDefaults.standard.object(forKey: "textScale") as? Double ?? 1.0, 0.8), 1.6)
-        showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
         screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
         quickAskCustomPrompt = UserDefaults.standard.string(forKey: "quickAskCustomPrompt") ?? ""
         if let data = UserDefaults.standard.data(forKey: "quickAskFiles"),

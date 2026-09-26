@@ -182,6 +182,17 @@ struct TopStripView: View {
                 Divider()
             }
 
+            // Same switch as on the setup screen; it applies straight
+            // away, mid-interview included.
+            Button {
+                vm.interviewAutoGenerate.toggle()
+            } label: {
+                HStack {
+                    Text("Auto-generate responses")
+                    if vm.interviewAutoGenerate { Image(systemName: "checkmark") }
+                }
+            }
+
             // Model picker — moved out of the bar; switching applies
             // from the next answer.
             Menu {
@@ -307,8 +318,30 @@ struct TopStripView: View {
                       systemImage: "rectangle.on.rectangle")
             }
 
+            // Answer text size — the same setting as the slider in
+            // Settings → General.
+            Menu {
+                ForEach([0.9, 1.0, 1.15, 1.3, 1.5], id: \.self) { level in
+                    Button {
+                        vm.textScale = level
+                    } label: {
+                        HStack {
+                            Text("\(Int((level * 100).rounded()))%")
+                            if abs(vm.textScale - level) < 0.01 {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Text size: \(Int((vm.textScale * 100).rounded()))%",
+                      systemImage: "textformat.size")
+            }
+
             // Which speech engine is doing the transcribing — switchable
-            // here so the strip doesn't need a badge for it.
+            // here so the strip doesn't need a badge for it. Pro always
+            // transcribes on this Mac, so it has nothing to pick.
+            if !ProAccount.shared.isActive {
             Menu {
                 ForEach(OverlayViewModel.TranscriptionPreference.allCases) { pref in
                     Button {
@@ -325,6 +358,7 @@ struct TopStripView: View {
             } label: {
                 Label("Transcription: \(vm.transcriptionBackend.rawValue)",
                       systemImage: "waveform.badge.mic")
+            }
             }
 
             if vm.isInterviewSession && !vm.isInterviewTextOnly {
@@ -347,12 +381,6 @@ struct TopStripView: View {
                         if vm.interviewFocusMode { Image(systemName: "checkmark") }
                     }
                 }
-            }
-
-            if vm.showTokenCounts {
-                Divider()
-                let s = vm.sessionStore.activeSession
-                Text("\(s.totalInputTokens) in · \(s.totalOutputTokens) out · \(s.totalTokens) total")
             }
 
             Divider()
