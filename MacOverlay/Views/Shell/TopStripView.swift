@@ -186,7 +186,7 @@ struct TopStripView: View {
             // from the next answer.
             Menu {
                 let visibility = ModelVisibility.shared
-                ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"], id: \.self) { provider in
+                ForEach(OverlayViewModel.modelProviders, id: \.self) { provider in
                     let models = OverlayViewModel.availableModels
                         .filter { $0.provider == provider && visibility.isVisible($0.id) }
                     if !models.isEmpty {

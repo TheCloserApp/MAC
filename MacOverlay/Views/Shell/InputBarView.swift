@@ -398,7 +398,7 @@ struct InputBarView: View {
             surfaceButton(.browser, icon: "globe", label: "Browser")
         }
         surfaceButton(.settings, icon: "person.crop.circle", label: "Profile",
-                      attention: vm.needsKeyForCurrentModel)
+                      attention: !vm.missingRequiredKeys.isEmpty)
     }
 
     private func surfaceButton(_ surface: OverlayViewModel.PrimarySurface,
@@ -542,7 +542,7 @@ struct InputBarView: View {
     private func modelMenuItems() -> [PopUpItem] {
         var items: [PopUpItem] = []
         let visibility = ModelVisibility.shared
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
+        let providers = OverlayViewModel.modelProviders
         for provider in providers {
             let models = OverlayViewModel.availableModels
                 .filter { $0.provider == provider && visibility.isVisible($0.id) }

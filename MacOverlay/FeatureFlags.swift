@@ -33,16 +33,18 @@ enum FeatureFlags {
     /// plus its History tab.
     static let regularCallEnabled = previewFeatures
 
+    // MARK: - Off in every build while v1 focuses on the interview helper
+
     /// Quick Ask: hold Fn/🌐 (or ⌃⌥Q) to ask by voice, plus its Preferences
     /// tab and History tab.
-    static let quickAskEnabled = previewFeatures
+    static let quickAskEnabled = false
 
-    /// Hold ⌥ to dictate into the frontmost app. Off in production also
-    /// means production never asks for Accessibility permission.
-    static let dictationEnabled = previewFeatures
+    /// Hold ⌥ to dictate into the frontmost app. Off also means the app
+    /// never asks for Accessibility permission.
+    static let dictationEnabled = false
 
     /// ⌃⌥C explain clipboard and ⌃⌥A send selection to the AI.
-    static let clipboardShortcutsEnabled = previewFeatures
+    static let clipboardShortcutsEnabled = false
 
     // MARK: - Hidden in v1, planned for a later release
 
@@ -58,22 +60,16 @@ enum FeatureFlags {
     /// text_editor loop) still compiles and is exercised by the rest of the
     /// app. Flip back on once the editor/output flow is polished. Re-enabling
     /// this only restores UI entry points — no re-implementation needed.
-    /// The interview setup has its own résumé picker, so production can
-    /// attach a résumé to an interview with this off.
-    static let resumesEnabled = previewFeatures
+    /// The interview setup has its own résumé picker, so an interview can
+    /// still use a résumé with this off. Off in every build, scoring
+    /// hotkeys included.
+    static let resumesEnabled = false
 
     /// Embedded WebKit browser tabs inside the overlay — a Browser bar
     /// surface plus the Tools-menu toggle, both feeding the same
-    /// `BrowserPanelView` (tabs, split view, per-tab WKWebView).
-    ///
-    /// Kept behind a flag because its system-audio path is the most
-    /// error-prone surface in the app: routing system audio into a page
-    /// needs the BlackHole driver plus output-device reconfiguration, and
-    /// `BrowserPanelView` surfaces that as a banner when the driver is
-    /// missing or CoreAudio refuses. None of that blocks plain browsing —
-    /// the routing only engages when the audio source is System Audio and
-    /// a tab is open.
-    static let browserEnabled = previewFeatures
+    /// `BrowserPanelView` (tabs, split view, per-tab WKWebView). Plain
+    /// browsing only; like every panel it's hidden from screen sharing.
+    static let browserEnabled = true
 
     // MARK: - Hidden in v1, no current plans to bring back
 

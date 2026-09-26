@@ -18,31 +18,33 @@ you can read while you talk.
   opens are marked `sharingType = .none`, so Zoom / Meet / Teams / QuickTime
   capture the screen *without* the overlay. No menu-bar icon either.
 - 🎧 **Live transcription** — captures your mic or system audio and converts
-  speech to text in real time (on-device Apple Speech, or ElevenLabs Scribe).
+  speech to text in real time with ElevenLabs Scribe (Apple Speech is also
+  available). English by default; other languages in Preferences.
 - 🤖 **Streaming AI answers** — pipes the live transcript to the model and
   streams a reply formatted for instant scanning. Interview mode leads with a
   verbatim opening line plus a few tight bullets.
 - 🪟 **Floats everywhere** — stays on top, visible on all Spaces, and over
   other apps' full-screen mode. Draggable; movable & resizable on screen.
-- 🧠 **Multi-provider** — one picker across Anthropic, OpenAI, Kimi (Moonshot),
-  Grok (xAI), DeepSeek, NVIDIA NIM, and OpenRouter. Bring your own keys.
-- ⌨️ **Global hotkeys** — Quick Ask (push-to-talk), dictation into the active
-  app, screenshot-and-explain, explain-clipboard, move/resize the panel.
+- 🧠 **One key, many models** — every model runs through OpenRouter: Claude,
+  GPT, Gemini, Grok and Kimi from one picker. Bring your own OpenRouter and
+  ElevenLabs keys.
+- ⌨️ **Global hotkeys** — ⌘⏎ answer now and ⌘⇧⏎ screenshot to the AI during
+  an interview, plus show/hide and move/resize the panel.
 
 ### Session modes
 
 | Mode | Use |
 |------|-----|
 | **Interview** | Live interview copilot — verbatim opening line + scannable bullets, grounded in your résumé/JD context. |
-| **Meeting**   | Summaries, action items, decisions, and suggested questions. |
-| **Call**      | Real-time assist on a regular call. |
-| **General**   | A concise floating assistant for anything else. |
+| **Regular call** | Beta builds only: real-time assist on a regular call. |
 
-Also included: **Quick Ask** (hold Fn/Globe to ask by voice without leaving
-your app), **dictation** (hold Option to dictate straight into the focused
-app), **screenshot → explain**, **clipboard → explain**, **session history**,
-a **prompt library**, and **résumé tailoring** (import a résumé, paste a JD,
-generate a tailored DOCX with before/after scoring).
+Also included: **screenshot → explain**, **session history**, a **prompt
+library**, and a built-in **browser** with tabs (hidden from screen sharing
+like everything else).
+
+Quick Ask, dictation, the clipboard shortcuts and résumé tailoring are still
+in the code but switched off in every build while v1 focuses on the
+interview helper. See `FeatureFlags.swift`.
 
 ---
 
@@ -86,16 +88,16 @@ a small **DEV** / **BETA** tag on the brand pill.
 
 | Channel | Build | Bundle ID | Data folder | Features |
 |---|---|---|---|---|
-| Dev | `./build.sh` | `tech.thecloser.mac.dev` | `MacOverlay Dev` | Everything, including beta features |
-| Beta | `./build.sh --channel beta` | `tech.thecloser.mac.beta` | `MacOverlay Beta` | Everything, including beta features |
+| Dev | `./build.sh` | `tech.thecloser.mac.dev` | `MacOverlay Dev` | Interview helper + beta features |
+| Beta | `./build.sh --channel beta` | `tech.thecloser.mac.beta` | `MacOverlay Beta` | Interview helper + beta features |
 | Production | `./build.sh --channel prod` | `tech.thecloser.mac` | `MacOverlay` | Interview helper only |
 
 Data folders live in `~/Library/Application Support/`. Only one channel
 should run at a time, because they share the same global hotkeys.
 
-**Beta features** (Regular call, Quick Ask, dictation, clipboard shortcuts,
-résumé tailoring, the browser) are flags in `FeatureFlags.swift` set to
-`previewFeatures`. To ship one to production, set its flag to `true`.
+**Beta features** (currently just Regular call) are flags in
+`FeatureFlags.swift` set to `previewFeatures`. To ship one to production, set
+its flag to `true`. Flags set to `false` are off in every build.
 
 **Branches**
 - Feature branch → pull request into `beta`. CI runs the tests and attaches
@@ -118,16 +120,18 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 
 ## First-run Setup
 
-1. **Add an API key.** Open the panel (hover/click the brand pill) → **Profile
-   / Settings → AI**, and paste a key for any provider you want to use. Keys
-   are stored locally in `UserDefaults`. For ElevenLabs Scribe transcription,
-   add an ElevenLabs key too (otherwise on-device Apple Speech is used).
-2. **Grant permissions when prompted:**
+1. **Choose how to run it.** First launch offers **Bring your own keys**
+   (free) or **We handle everything** (paid plans, coming soon).
+2. **Add your keys.** Bring-your-own-key needs an
+   [OpenRouter key](https://openrouter.ai/keys) for the AI models and an
+   [ElevenLabs key](https://elevenlabs.io/app/settings/api-keys) for
+   transcription; **Start interview** stays disabled until both are set.
+   Change them later under **Profile → Preferences → AI**. Keys are stored
+   locally in `UserDefaults`.
+3. **Grant permissions when prompted:**
    - **Microphone** + **Speech Recognition** — live transcription.
    - **Screen Recording** — screenshots and system-audio capture
      (ScreenCaptureKit). Pre-warmed at launch.
-   - **Accessibility** — only for Option-key dictation (so it can paste into
-     the active app). Requested lazily on first use.
 
 ---
 
@@ -147,12 +151,7 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | `⌘ ⏎` | Get the answer now, without waiting for the speaker to pause (during a live session) |
 | `⌘ ⇧ ⏎` | Capture a screenshot and send it to the AI (during a live session) |
 | `⌃⌥ T` | Start / stop recording |
-| `⌃⌥ Q` *or* hold `Fn`/🌐 | Quick Ask by voice (push-to-talk) |
-| Hold `⌥` (Option) | Dictate into the active app |
 | `⌃⌥ S` | Capture a screenshot and attach it |
-| `⌃⌥ C` | Explain whatever's on the clipboard |
-| `⌃⌥ A` | Send the current selection from the front app to the AI |
-| `⌃⌥ R` / `⌃⌥ M` | Generate / score a résumé from the clipboard |
 | `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
 | `⌃⌥ X` | Quit thecloser completely (and relaunch it — see below) |
 
@@ -228,8 +227,7 @@ MacOverlay/
 | Blocked by Gatekeeper | System Settings → Privacy & Security → **Open Anyway**. |
 | Overlay shows up in screen share | Should never happen — every window is `sharingType = .none`. File it if you see it. |
 | No transcription | Grant Microphone + Speech Recognition; for system audio, grant Screen Recording. |
-| Dictation does nothing | Grant Accessibility (prompted on first Option-dictation). |
-| "Add an API key" | Settings → AI; the selected model's provider needs a key. |
+| "Add your OpenRouter and ElevenLabs keys" | Profile → Preferences → AI. Both are required to start an interview. |
 
 ---
 

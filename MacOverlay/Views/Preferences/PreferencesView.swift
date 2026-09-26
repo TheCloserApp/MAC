@@ -471,13 +471,7 @@ struct PreferencesView: View {
         }
 
         section(title: "API keys",
-                subtitle: "Stored locally. Never uploaded.") {
-            KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
-            KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
-            KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
-            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
-            KeyFieldView(label: "DeepSeek",   placeholder: "sk-…",        text: $vm.deepSeekAPIKey)
-            KeyFieldView(label: "NVIDIA",     placeholder: "nvapi-…",     text: $vm.nvidiaAPIKey)
+                subtitle: "Both are required. OpenRouter runs every AI model; ElevenLabs transcribes the interview. Stored on this Mac, never uploaded.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
@@ -620,7 +614,7 @@ struct PreferencesView: View {
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
         let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
+        let providers = OverlayViewModel.modelProviders
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in
