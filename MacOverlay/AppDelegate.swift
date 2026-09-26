@@ -1061,6 +1061,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { BrowserWindow.shared.setVisible(true) }
     }
 
+    /// Opening the app while it's already running (Finder, Spotlight, the
+    /// Dock's Applications folder) brings the overlay back. The app has no
+    /// Dock icon or windows macOS knows to show, so without this a closed or
+    /// hidden overlay made the app look like it wouldn't open.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showOverlay()
+        return false
+    }
+
     private func startInterviewFromCallPrompt() {
         showOverlay()
         MainActor.assumeIsolated { vm.startInterviewFromCallPrompt() }
