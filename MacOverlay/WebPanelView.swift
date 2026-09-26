@@ -99,7 +99,7 @@ struct WebPanelView: NSViewRepresentable {
             }
         case .denied, .restricted:
             NSLog("[WebPanel] mic access denied at OS level — websites will get a silent stream. " +
-                  "Open System Settings → Privacy & Security → Microphone and enable thecloser.")
+                  "Open System Settings → Privacy & Security → Microphone and enable TheCloser.")
         case .authorized:
             break
         @unknown default:

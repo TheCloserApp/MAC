@@ -1,4 +1,4 @@
-# thecloser — Invisible AI Copilot for macOS
+# TheCloser — Invisible AI Copilot for macOS
 
 A native Swift overlay that floats above every app — including full-screen
 calls — and is **excluded from screen capture**, so it's there for you but
@@ -36,7 +36,7 @@ you can read while you talk.
   start your interview. It only asks Core Audio which apps are using the mic
   (macOS 14.2+); nothing is recorded until you start. Toggle in Preferences →
   General → Recording or the menu-bar menu.
-- 🔝 **Menu-bar icon while idle** — closing the overlay (`⌃⌥ X`) keeps the app
+- 🔝 **Menu-bar icon while idle** — closing the overlay (⋯ → Close) keeps the app
   running in the menu bar so it can still notice calls. The icon hides the
   moment a call starts, because the menu bar is part of every screen share.
   Quit from its menu, or from ⋯ in the overlay.
@@ -67,10 +67,10 @@ interview helper. See `FeatureFlags.swift`.
 
 ### Build
 ```bash
-./build.sh                    # Dev build → "build/thecloser Dev.app"
+./build.sh                    # Dev build → "build/TheCloser Dev.app"
 ./build.sh --run              # build Dev, quit any running Dev copy, relaunch
-./build.sh --channel beta     # Beta build → "build/thecloser Beta.app"
-./build.sh --channel prod     # Production build → build/thecloser.app
+./build.sh --channel beta     # Beta build → "build/TheCloser Beta.app"
+./build.sh --channel prod     # Production build → build/TheCloser.app
 ```
 
 > **Intel Macs:** change `-target arm64-apple-macos14.0` to
@@ -83,7 +83,7 @@ interview helper. See `FeatureFlags.swift`.
 
 ### Install
 ```bash
-cp -r build/thecloser.app /Applications/
+cp -r build/TheCloser.app /Applications/
 ```
 Launch at login: **System Settings → General → Login Items → +**.
 
@@ -148,10 +148,10 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 ## Controls
 
 - **Open / collapse:** hover or click the brand pill.
-- **Move:** drag the pill anywhere, or `⌃⌥ + arrows`.
+- **Move:** drag the pill anywhere, or `⌘⇧ + arrows`.
 - **Resize:** drag the grip on the panel's right edge to widen/narrow it
   (the layout grows the text field to fill the space), or `⌃⇧ + arrows`.
-- **New session:** `⌘N` · **Preferences:** `⌘,` (while the panel is focused).
+- **New session:** `⌘N` (while the panel is focused).
 
 ### Global hotkeys
 
@@ -160,15 +160,14 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | `⌃⌥ Space` | Show / hide the overlay |
 | `⌘ ⏎` | Get the answer now, without waiting for the speaker to pause (during a live session) |
 | `⌘ ⇧ ⏎` | Capture a screenshot and send it to the AI (during a live session) |
-| `⌃⌥ T` | Start / stop recording |
-| `⌃⌥ S` | Capture a screenshot and attach it |
-| `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
-| `⌃⌥ X` | Close to the menu bar (keeps watching for calls) |
+| `⌘⇧ arrows` | Move the panel (while it's showing) · `⌃⇧ arrows` resize it |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
-Accessibility permission required. `⌘ ⏎` and `⌘ ⇧ ⏎` are registered only
-while recording: a global hotkey takes the combo away from every other app,
-and `⌘ ⏎` means "send" in Slack, Gmail and many others.
+Accessibility permission required. A global hotkey takes the combo away from
+every other app, so some are only registered when they're needed: `⌘ ⏎` and
+`⌘ ⇧ ⏎` while recording (`⌘ ⏎` means "send" in Slack, Gmail and many
+others), and `⌘⇧ arrows` while the overlay is showing (it's "select to the
+start / end of the line" in every text field).
 
 ---
 

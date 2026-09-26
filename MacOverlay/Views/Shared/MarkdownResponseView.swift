@@ -10,6 +10,9 @@ struct MarkdownResponseView: View {
     /// live-interview Focus view can render answers slightly larger for
     /// read-while-speaking without touching every call site.
     var baseSize: CGFloat = 12
+    /// Code block text size. Scaled with `baseSize` by the text size
+    /// setting.
+    var codeSize: CGFloat = 11
 
     enum Block {
         case code(lang: String, body: String)
@@ -40,7 +43,7 @@ struct MarkdownResponseView: View {
     private func renderBlock(_ block: Block) -> some View {
         switch block {
         case .code(let lang, let body):
-            CodeBlockView(language: lang, code: body)
+            CodeBlockView(language: lang, code: body, fontSize: codeSize)
 
         case .heading(let level, let text):
             inlineText(text)
@@ -182,6 +185,7 @@ final class MarkdownParseCache {
 private struct CodeBlockView: View {
     let language: String
     let code: String
+    var fontSize: CGFloat = 11
     @State private var copied = false
     /// Pending "Copied → Copy" reset task. Stored so a second copy within
     /// the dwell cancels the previous reset, otherwise the in-flight reset
@@ -238,7 +242,7 @@ private struct CodeBlockView: View {
     /// makes indented blocks look flush-left.
     private var codeBody: some View {
         Text(normalize(code))
-            .font(.system(size: 11, design: .monospaced))
+            .font(.system(size: fontSize, design: .monospaced))
             .foregroundColor(Design.Ink.primary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)

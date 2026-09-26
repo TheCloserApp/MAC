@@ -41,7 +41,8 @@ struct AIResponsePanelView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
                 } else {
-                    MarkdownResponseView(text: vm.aiResponse)
+                    MarkdownResponseView(text: vm.aiResponse, baseSize: 12 * vm.textScale,
+                                         codeSize: 11 * vm.textScale)
                         .padding(12)
                         .transition(.opacity)
                 }

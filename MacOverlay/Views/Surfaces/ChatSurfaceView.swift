@@ -330,7 +330,8 @@ struct ChatSurfaceView: View {
         let hasText = !(turn?.content ?? "").isEmpty
         return VStack(alignment: .leading, spacing: 0) {
             if let turn, hasText {
-                MarkdownResponseView(text: turn.content, baseSize: 13.5)
+                MarkdownResponseView(text: turn.content, baseSize: 13.5 * vm.textScale,
+                                     codeSize: 11 * vm.textScale)
             } else {
                 // Waiting on the first token: pin to ONE line's worth of
                 // height. Growing the panel for "Thinking…" was pure noise
@@ -372,7 +373,8 @@ struct ChatSurfaceView: View {
     private func completedAnswer(_ turn: ChatTurn, isLatest: Bool) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                MarkdownResponseView(text: turn.content, baseSize: 13.5)
+                MarkdownResponseView(text: turn.content, baseSize: 13.5 * vm.textScale,
+                                     codeSize: 11 * vm.textScale)
                 focusActionRow(for: turn, isLatest: isLatest)
             }
             .padding(.horizontal, 22)
@@ -534,15 +536,16 @@ struct ChatSurfaceView: View {
                     // Inline timer sits flush against the transcription
                     // text — same line as the words being captured —
                     // instead of in its own row. Stays visible while
-                    // paused so the user sees the frozen duration.
-                    if vm.isInterviewSession {
+                    // paused so the user sees the frozen duration. A
+                    // text-only chat never records, so it has none.
+                    if vm.isInterviewSession && !vm.isInterviewTextOnly {
                         LiveSessionTimer()
                     }
                     // During an interview the transcript stays on ONE line
                     // and scrolls — head truncation keeps the newest words
                     // visible — so it never pushes the answer around.
                     Text(placeholderOrTranscription)
-                        .font(Design.Font.body)
+                        .font(.system(size: 12 * vm.textScale))
                         .foregroundStyle(vm.transcription.isEmpty
                                          ? AnyShapeStyle(Design.Ink.tertiary)
                                          : AnyShapeStyle(Design.Ink.primary))
@@ -981,9 +984,9 @@ struct ChatSurfaceView: View {
     }
 
     /// "Continue session" affordance pinned after the last assistant
-    /// turn. Clicking enters paused-live state — the bar's call
-    /// controls (text + model + play + stop) appear so the user can
-    /// resume the mic or pick up typing.
+    /// turn. Clicking goes live on this session again straight away,
+    /// the same as Start on the setup screen, with the timer counting
+    /// from 00:00.
     private func continueSessionRow(session: ChatSession) -> some View {
         let label: String = {
             switch session.kind {
@@ -995,7 +998,7 @@ struct ChatSurfaceView: View {
         return HStack {
             Spacer()
             Button {
-                vm.enterPausedLiveState()
+                vm.startInterviewSession()
             } label: {
                 HStack(spacing: 7) {
                     Image(systemName: "play.circle.fill")
@@ -1020,6 +1023,7 @@ struct ChatSurfaceView: View {
 // MARK: - Turn bubble
 
 private struct TurnBubble: View {
+    @Environment(OverlayViewModel.self) private var vm
     let turn: ChatTurn
     var isStreaming = false
     var onRetry: () -> Void = {}
@@ -1047,7 +1051,7 @@ private struct TurnBubble: View {
             }
             if !turn.content.isEmpty {
                 Text(turn.content)
-                    .font(Design.Font.body)
+                    .font(.system(size: 12 * vm.textScale))
                     .foregroundColor(Design.Ink.primary)
                     .textSelection(.enabled)
                     .multilineTextAlignment(.leading)
@@ -1075,7 +1079,8 @@ private struct TurnBubble: View {
                     StreamingPlaceholderRow()
                 }
             } else {
-                MarkdownResponseView(text: turn.content)
+                MarkdownResponseView(text: turn.content, baseSize: 12 * vm.textScale,
+                                     codeSize: 11 * vm.textScale)
                 actionRow
             }
         }
