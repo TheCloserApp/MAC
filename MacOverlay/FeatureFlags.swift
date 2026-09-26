@@ -33,6 +33,11 @@ enum FeatureFlags {
     /// plus its History tab.
     static let regularCallEnabled = previewFeatures
 
+    /// Subscribing to TheCloser Pro from the app. Dev and Beta only while
+    /// the Stripe prices are the $1 test prices; production shows the plans
+    /// as coming soon.
+    static let proSubscriptionsEnabled = previewFeatures
+
     // MARK: - Off in every build while v1 focuses on the interview helper
 
     /// Quick Ask: hold Fn/🌐 (or ⌃⌥Q) to ask by voice, plus its Preferences

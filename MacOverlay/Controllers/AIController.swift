@@ -308,7 +308,7 @@ final class AIController {
         guard let vm else { return }
         guard !session.titleManuallySet else { return }
         guard !session.turns.isEmpty else { return }
-        guard !vm.openRouterAPIKey.isEmpty else { return }
+        guard vm.hasOpenRouterAccess else { return }
 
         let transcript = session.turns.prefix(8).map {
             "\($0.role.rawValue.capitalized): \($0.content)"

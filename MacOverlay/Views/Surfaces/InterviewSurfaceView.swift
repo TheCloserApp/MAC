@@ -465,6 +465,7 @@ private struct InterviewSetupForm: View {
             if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
+            ProUsageNotice()
             HStack {
                 Spacer()
                 Button {
@@ -487,6 +488,8 @@ private struct InterviewSetupForm: View {
                 .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Start interview (⌘↩)")
+                // Fresh usage for the Pro notice above.
+                .task { await ProAccount.shared.refreshUsage() }
             }
         }
     }
@@ -798,6 +801,7 @@ private struct RegularCallSetupForm: View {
             if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
+            ProUsageNotice()
             startButtonRow
         }
     }
@@ -825,6 +829,8 @@ private struct RegularCallSetupForm: View {
             .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
             .keyboardShortcut(.return, modifiers: .command)
             .help("Start (⌘↩)")
+            // Fresh usage for the Pro notice above.
+            .task { await ProAccount.shared.refreshUsage() }
         }
     }
 

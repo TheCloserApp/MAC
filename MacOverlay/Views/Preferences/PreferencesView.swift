@@ -39,10 +39,12 @@ struct PreferencesView: View {
         /// Whether this tab should be visible in the rail. Gated tabs are
         /// kept in the enum (and their `case` arms below still resolve) so
         /// flipping the corresponding FeatureFlag is a one-line change.
-        var isVisible: Bool {
+        @MainActor var isVisible: Bool {
             switch self {
             case .panel, .profile:
                 return false
+            // Pro manages memory itself.
+            case .memory:     return !ProAccount.shared.isActive
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
             case .quickAsk:   return FeatureFlags.quickAskEnabled
@@ -292,6 +294,8 @@ struct PreferencesView: View {
             }
             .toggleStyle(.switch)
 
+            // Pro always transcribes on this Mac, so there's nothing to pick.
+            if !ProAccount.shared.isActive {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
                              subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
@@ -305,6 +309,7 @@ struct PreferencesView: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .frame(width: 160)
+            }
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -468,16 +473,52 @@ struct PreferencesView: View {
     private var aiTab: some View {
         @Bindable var vm = vm
         let store = vm.promptStore
+        let pro = ProAccount.shared
+
+        if let plan = pro.plan {
+            section(title: "TheCloser \(plan.name)",
+                    subtitle: "No keys needed: models and transcription are included. The subscription belongs to this Mac.") {
+                if let usage = pro.usage {
+                    ProUsageMeter(usage: usage)
+                } else {
+                    Text("Checking this month's usage…")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("Change plan, update your card, or cancel.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Manage subscription") { Task { await pro.openManageSubscription() } }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                if let problem = pro.problem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
+            }
+            .task { await pro.refreshUsage() }
+        } else if FeatureFlags.proSubscriptionsEnabled {
+            section(title: "TheCloser Pro",
+                    subtitle: "Skip the keys: we run the models and transcription for a monthly price.") {
+                ProPlanPicker()
+            }
+        }
 
         section(title: "Model picker",
                 subtitle: "Choose which models appear in the bar's model picker. The full list is always usable from here — toggling just controls what shows up in the chip menu.") {
             modelCatalog
         }
 
+        if !pro.isActive {
         section(title: "API keys",
                 subtitle: "Both are required. OpenRouter runs every AI model; ElevenLabs transcribes the interview. Stored on this Mac, never uploaded.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+        }
         }
 
         if FeatureFlags.resumesEnabled {
@@ -617,13 +658,14 @@ struct PreferencesView: View {
     @ViewBuilder
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
-        let allIDs = OverlayViewModel.availableModels.map(\.id)
+        // On Pro, only the plan's models.
+        let allIDs = OverlayViewModel.availableModels.map(\.id).filter(visibility.isAllowed)
         let providers = OverlayViewModel.modelProviders
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in
                 let models = OverlayViewModel.availableModels
-                    .filter { $0.provider == provider }
+                    .filter { $0.provider == provider && visibility.isAllowed($0.id) }
                 if !models.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(provider)

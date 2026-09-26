@@ -84,6 +84,16 @@ final class SessionStore {
         self.crossSessionWindow        = UserDefaults.standard.object(forKey: "crossSessionWindow") as? Int ?? 3
     }
 
+    /// Back to the memory defaults above. TheCloser Pro uses these and hides
+    /// the Memory settings.
+    func useDefaultMemorySettings() {
+        memorySyncEnabled = true
+        crossSessionMemoryEnabled = false
+        memoryWindow = 6
+        memoryIncludeAll = false
+        crossSessionWindow = 3
+    }
+
     // MARK: - Active session helpers
 
     var activeSession: ChatSession {
