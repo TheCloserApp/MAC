@@ -358,16 +358,16 @@ private struct PlansStep: View {
         VStack(alignment: .leading, spacing: 12) {
             if let plan = account.plan {
                 StepHeader(title: "You're on \(plan.name)",
-                           subtitle: "No keys needed. Models and transcription are included, and this Mac is ready for your next interview.")
+                           subtitle: "No keys needed. You're ready for your next interview.")
                 ProPlanCard(plan: plan)
                     .fixedSize(horizontal: false, vertical: true)
             } else if FeatureFlags.proSubscriptionsEnabled {
                 StepHeader(title: "We handle everything",
-                           subtitle: "Pick a plan. Checkout opens in your browser, and the app switches over as soon as it's paid.")
+                           subtitle: "Checkout opens in your browser. The app switches over once it's paid.")
                 ProPlanPicker()
             } else {
                 StepHeader(title: "We handle everything",
-                           subtitle: "Coming soon. Until then, the free version with your own keys has the same interview helper.")
+                           subtitle: "Coming soon. Until then, it's free with your own keys.")
 
                 HStack(alignment: .top, spacing: 10) {
                     ForEach(ProAccount.Plan.allCases) { ProPlanCard(plan: $0) }

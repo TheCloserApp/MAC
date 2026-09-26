@@ -43,6 +43,24 @@ class UnconstrainedPanel: NSPanel {
     }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Told whenever the panel is shown or hidden, whichever call did it.
+    var onVisibilityChange: ((Bool) -> Void)?
+
+    override func orderFrontRegardless() {
+        super.orderFrontRegardless()
+        onVisibilityChange?(isVisible)
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        super.order(place, relativeTo: otherWin)
+        onVisibilityChange?(isVisible)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        super.orderOut(sender)
+        onVisibilityChange?(isVisible)
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -280,13 +298,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sf = screen.visibleFrame
         let frame = NSRect(x: sf.midX - w / 2, y: sf.maxY - h - 20, width: w, height: h)
 
-        overlayPanel = UnconstrainedPanel(
+        let panel = UnconstrainedPanel(
             contentRect: frame,
             // No .fullSizeContentView — that lets us resize height freely
             styleMask:   [.nonactivatingPanel, .resizable],
             backing:     .buffered,
             defer:       false
         )
+        // ⌘⇧ + arrows move the overlay only while it's showing.
+        panel.onVisibilityChange = { HotkeyManager.shared.setMoveHotkeys($0) }
+        overlayPanel = panel
         overlayPanel.level                      = .statusBar + 1
         overlayPanel.collectionBehavior         = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         overlayPanel.isOpaque                   = false
@@ -323,7 +344,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Carbon RegisterEventHotKey: global, no Accessibility needed, never auto-disabled
         HotkeyManager.shared.onAction = { [weak self] action, isPressed in
             guard let self else { return }
-            // Most actions only fire on press; pushToTalk uses both press and release
+            // Every action fires on press
             switch action {
             case .moveLeft:    if isPressed { self.movePanel(dx: -self.moveStep, dy: 0) }
             case .moveRight:   if isPressed { self.movePanel(dx:  self.moveStep, dy: 0) }
@@ -333,19 +354,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resizeRight: if isPressed { self.resizePanel(dw:  self.resizeStep, dh: 0) }
             case .resizeUp:    if isPressed { self.resizePanel(dw: 0, dh:  self.resizeStep) }
             case .resizeDown:  if isPressed { self.resizePanel(dw: 0, dh: -self.resizeStep) }
-            case .screenshot:     if isPressed { self.captureAndAttachScreenshot() }
-            case .screenshotSend, .screenshotSendLive:
+            case .screenshotSendLive:
                                   if isPressed { self.captureAndSendScreenshot() }
             case .answerNow:      if isPressed { self.answerNow() }
             case .clipboard:   if isPressed { self.explainClipboard() }
             case .toggle:      if isPressed { self.toggleOverlay() }
-            case .record:      if isPressed { self.hotkeyRecord() }
-            case .pushToTalk:  if isPressed { self.hotkeyRecord() }
             case .sendSelection:  if isPressed { self.sendSelection() }
             case .resumeGenerate: if isPressed { self.resumeFromClipboard() }
             case .resumeScore:    if isPressed { self.scoreResumeFromClipboard() }
             case .quickAsk:       break   // handled via Fn flagsChanged monitor
-            case .closeToMenuBar: if isPressed { self.closeToMenuBar() }
             }
         }
         HotkeyManager.shared.register()
@@ -363,19 +380,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Local monitor as fallback when overlay panel is key
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Handle ⌘, for preferences and ⌘N for new session while the
-            // overlay is key. Return nil to consume the event so it doesn't
-            // propagate to text fields.
+            // Handle ⌘N for new session while the overlay is key. Return
+            // nil to consume the event so it doesn't propagate to text
+            // fields.
             if let self,
                event.modifierFlags.contains(.command),
                let chars = event.charactersIgnoringModifiers {
-                if chars == "," {
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        PreferencesWindowController.shared.show(vm: self.vm)
-                    }
-                    return nil
-                }
                 if chars == "n" {
                     Task { @MainActor [weak self] in
                         self?.vm.startNewSession()
@@ -414,12 +424,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.vm.manualInput     = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.vm.sendToAI()
             }
-        }
-    }
-
-    func hotkeyRecord() {
-        DispatchQueue.main.async {
-            Task { @MainActor in self.vm.hotkeyToggleRecord() }
         }
     }
 
@@ -519,15 +523,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleKey(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection([.control, .option, .shift, .command])
         let code  = event.keyCode
-        if flags == [.control, .option] {
+        if flags == [.command, .shift] {
             switch code {
             case 123: movePanel(dx: -moveStep, dy: 0)
             case 124: movePanel(dx:  moveStep, dy: 0)
             case 125: movePanel(dx: 0, dy: -moveStep)
             case 126: movePanel(dx: 0, dy:  moveStep)
-            case 1:   captureAndAttachScreenshot()     // S
-            case 8:   explainClipboard()               // C
-            case 17:  hotkeyRecord()  // T
+            default: break
+            }
+        } else if flags == [.control, .option] {
+            switch code {
+            case 8 where FeatureFlags.clipboardShortcutsEnabled:
+                explainClipboard()                     // C
             case 49:  toggleOverlay()                  // Space
             default: break
             }
@@ -1024,7 +1031,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.setFrameOrigin(NSPoint(x: sf.midX - pf.width / 2, y: sf.maxY - pf.height - 20))
     }
 
-    /// ⌃⌥X and "Close" in the ⋯ menu: hide everything but keep running in
+    /// "Close" in the ⋯ menu: hide everything but keep running in
     /// the menu bar, so calls are still noticed. Quitting for real lives in
     /// the menu-bar menu.
     @objc func closeToMenuBar() {

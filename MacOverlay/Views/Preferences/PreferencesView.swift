@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import Speech
 import UniformTypeIdentifiers
 
 /// Tabbed preferences window body. Replaces the cramped gear popover.
@@ -254,18 +253,6 @@ struct PreferencesView: View {
         }
     }
 
-    /// Languages this Mac's speech recognizer supports, plus the current
-    /// choice so the picker never shows a blank selection.
-    private var transcriptionLanguages: [TranscriptionLanguage] {
-        let supported = Set(SFSpeechRecognizer.supportedLocales().map {
-            $0.identifier.replacingOccurrences(of: "_", with: "-")
-        })
-        guard !supported.isEmpty else { return TranscriptionLanguage.all }
-        return TranscriptionLanguage.all.filter {
-            supported.contains($0.id) || $0.id == vm.transcriptionLanguageID
-        }
-    }
-
     @ViewBuilder
     private var generalTab: some View {
         @Bindable var vm = vm
@@ -273,24 +260,13 @@ struct PreferencesView: View {
             sliderRow("Opacity", value: $vm.opacity, range: 0.2...1.0)
             sliderRow("Background", value: $vm.backgroundOpacity, range: 0.0...1.0,
                       display: { $0 == 0 ? "Off" : "\(Int($0 * 100))%" })
+            sliderRow("Text size", value: $vm.textScale, range: 0.8...1.6)
         }
 
         section(title: "Recording") {
             Toggle(isOn: $vm.suggestSessionOnCall) {
                 labelTwoLine(title: "Offer to start when a call begins",
-                             subtitle: "When Zoom, Meet, Teams or another call app starts using your microphone, a prompt asks if you want to start your interview. It only checks which app is using the mic; nothing is recorded until you start.")
-            }
-            .toggleStyle(.switch)
-
-            Toggle(isOn: $vm.vadEnabled) {
-                labelTwoLine(title: "Auto-send on silence",
-                             subtitle: "Sends after ~2s of silence while recording.")
-            }
-            .toggleStyle(.switch)
-
-            Toggle(isOn: $vm.interviewResponseGate) {
-                labelTwoLine(title: "Only answer real questions",
-                             subtitle: "Skips \"okay\", \"got it\" and half-sentences so they can't pull a random answer over what you're reading. Clear questions still send instantly; only genuinely ambiguous lines are double-checked with a fast model.")
+                             subtitle: "When Zoom, Meet or Teams starts using your mic.")
             }
             .toggleStyle(.switch)
 
@@ -298,7 +274,7 @@ struct PreferencesView: View {
             if !ProAccount.shared.isActive {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
-                             subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
+                             subtitle: "Apple runs on this Mac. ElevenLabs needs a key.")
                     .layoutPriority(1)
                 Spacer(minLength: 8)
                 Picker("", selection: $vm.transcriptionPreference) {
@@ -311,27 +287,12 @@ struct PreferencesView: View {
                 .frame(width: 160)
             }
             }
-
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                labelTwoLine(title: "Transcription language",
-                             subtitle: "The language spoken in your interviews. Applies from the next recording.")
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                Picker("", selection: $vm.transcriptionLanguageID) {
-                    ForEach(transcriptionLanguages) { language in
-                        Text(language.name).tag(language.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 160)
-            }
         }
 
         section(title: "Privacy") {
             Toggle(isOn: $vm.screenShareInvisible) {
                 labelTwoLine(title: "Hide from screen sharing",
-                             subtitle: "On: the overlay is excluded from screen shares and recordings (Zoom, Meet, QuickTime). Off: it shows up in shared screens.")
+                             subtitle: "Keeps the overlay out of screen shares and recordings.")
             }
             .toggleStyle(.switch)
         }
@@ -477,7 +438,7 @@ struct PreferencesView: View {
 
         if let plan = pro.plan {
             section(title: "TheCloser \(plan.name)",
-                    subtitle: "No keys needed: models and transcription are included. The subscription belongs to this Mac.") {
+                    subtitle: "Models and transcription included. Tied to this Mac.") {
                 if let usage = pro.usage {
                     ProUsageMeter(usage: usage)
                 } else {
@@ -486,7 +447,7 @@ struct PreferencesView: View {
                         .foregroundColor(.secondary)
                 }
                 HStack {
-                    Text("Change plan, update your card, or cancel.")
+                    Text("Change plan, card, or cancel.")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                     Spacer()
@@ -503,19 +464,25 @@ struct PreferencesView: View {
             .task { await pro.refreshUsage() }
         } else if FeatureFlags.proSubscriptionsEnabled {
             section(title: "TheCloser Pro",
-                    subtitle: "Skip the keys: we run the models and transcription for a monthly price.") {
+                    subtitle: "No keys: we run the models and transcription.") {
                 ProPlanPicker()
             }
         }
 
         section(title: "Model picker",
-                subtitle: "Choose which models appear in the bar's model picker. The full list is always usable from here — toggling just controls what shows up in the chip menu.") {
+                subtitle: "Choose which models show in the model menu.") {
             modelCatalog
+            HStack(spacing: 4) {
+                Text("Missing a model?")
+                    .foregroundColor(.secondary)
+                Link("Request it", destination: modelRequestURL)
+            }
+            .font(.system(size: 11))
         }
 
         if !pro.isActive {
         section(title: "API keys",
-                subtitle: "Both are required. OpenRouter runs every AI model; ElevenLabs transcribes the interview. Stored on this Mac, never uploaded.") {
+                subtitle: "OpenRouter runs the models; ElevenLabs transcribes. Stored only on this Mac.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
@@ -589,7 +556,7 @@ struct PreferencesView: View {
         section(title: "Usage") {
             Toggle(isOn: $vm.showTokenCounts) {
                 labelTwoLine(title: "Show live token count",
-                             subtitle: "Displays running token usage in the top strip. Updates as the AI streams.")
+                             subtitle: "Shown in the top strip.")
             }
             .toggleStyle(.switch)
 
@@ -649,6 +616,17 @@ struct PreferencesView: View {
                 .buttonStyle(.bordered)
             }
         }
+    }
+
+    /// The website's model request form. Says which plan is asking, and
+    /// nothing about who.
+    private var modelRequestURL: URL {
+        var components = URLComponents(string: "https://www.thecloser.tech/request-model")!
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "app"),
+            URLQueryItem(name: "plan", value: ProAccount.shared.plan?.rawValue ?? "own_keys"),
+        ]
+        return components.url!
     }
 
     /// Per-provider grid of model toggles, used by the AI tab. Reads
@@ -880,9 +858,6 @@ struct PreferencesView: View {
                 shortcut("⌃⌥Space", "Show / hide overlay")
                 shortcut("⌘⏎",       "Get the answer now (during an interview)")
                 shortcut("⌘⇧⏎",      "Screenshot → send to AI (during an interview)")
-                shortcut("⌃⌥T",      "Toggle recording + send")
-                shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
-                shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
                 if FeatureFlags.clipboardShortcutsEnabled {
                     shortcut("⌃⌥A",  "Send selected text to AI")
                     shortcut("⌃⌥C",  "Explain clipboard")
@@ -896,11 +871,9 @@ struct PreferencesView: View {
                 if FeatureFlags.dictationEnabled {
                     shortcut("Hold ⌥", "Dictate into the active app")
                 }
-                shortcut("⌃⌥ ↑↓←→",  "Move overlay")
+                shortcut("⌘⇧ ↑↓←→",  "Move overlay (while it's showing)")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
-                shortcut("⌃⌥X",      "Close to the menu bar")
                 shortcut("⌘N",        "New session")
-                shortcut("⌘,",        "Preferences")
             }
         }
     }
