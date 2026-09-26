@@ -868,7 +868,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// for every visible bar element).
     static let pillMinSize             = NSSize(width: 240, height: 60)
     static let expandedCompactMinSize  = NSSize(width: 360, height: 80)
-    static let expandedMinSize         = NSSize(width: 360, height: 420)
+    /// With a surface open the width can't go below the width the layouts
+    /// are designed for: narrower, Settings clips its rail and pushes
+    /// switches out of their cards.
+    static let expandedMinSize         = NSSize(width: 440, height: 420)
 
     /// Resize the panel for the given shell stage. Within `.expanded`
     /// the height also adapts to whether a `primarySurface` is open:
@@ -905,7 +908,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             preservedWidth = lastFullSize.width
         }
 
-        let target: NSSize
+        var target: NSSize
         switch stage {
         case .pill:
             target = vm.hasPillPopup ? Self.pillWithPopupSize : Self.collapsedSize
@@ -945,6 +948,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         panel.minSize = minForStage
+        // A width the user dragged to under an older, smaller minimum (or
+        // kept from the compact bar) must not survive into this stage.
+        target.width  = max(target.width,  minForStage.width)
+        target.height = max(target.height, minForStage.height)
 
         // Response-sized panels are fixed-height and top-anchored: the
         // answer card's top edge stays visually locked, and streamed text

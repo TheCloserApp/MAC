@@ -304,7 +304,7 @@ struct PreferencesView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 180)
+                .frame(width: 160)
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -319,7 +319,7 @@ struct PreferencesView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 180)
+                .frame(width: 160)
             }
         }
 
