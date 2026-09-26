@@ -9,11 +9,16 @@ import SwiftUI
 final class CallPromptPanel {
     private var panel: NSPanel?
 
-    func show(appName: String, onStart: @escaping () -> Void, onDismiss: @escaping () -> Void) {
+    /// `vm` goes into the SwiftUI environment: `WaveformLogo` reads it, and
+    /// a missing environment object is a crash, not a blank view.
+    func show(appName: String, vm: OverlayViewModel,
+              onStart: @escaping () -> Void, onDismiss: @escaping () -> Void) {
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
-        let host = NSHostingView(rootView: CallPromptCard(appName: appName, onStart: onStart, onDismiss: onDismiss))
+        let card = CallPromptCard(appName: appName, onStart: onStart, onDismiss: onDismiss)
+            .environment(vm)
+        let host = NSHostingView(rootView: card)
         panel.contentView = host
         panel.setContentSize(host.fittingSize)
         panel.sharingType = NSWindow.screenShareInvisible ? .none : .readOnly
@@ -27,6 +32,7 @@ final class CallPromptPanel {
         }
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSLog("[CallPrompt] showing for %@ at %@", appName, NSStringFromRect(panel.frame))
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             panel.animator().alphaValue = 1

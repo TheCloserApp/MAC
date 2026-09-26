@@ -18,7 +18,12 @@ final class CallDetector {
     private var state = CallState()
 
     func start() {
-        guard #available(macOS 14.2, *), timer == nil else { return }
+        guard #available(macOS 14.2, *) else {
+            NSLog("[CallDetector] unavailable: needs macOS 14.2")
+            return
+        }
+        guard timer == nil else { return }
+        NSLog("[CallDetector] started")
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: .seconds(2), leeway: .milliseconds(500))
         timer.setEventHandler { [weak self] in self?.poll() }
@@ -37,6 +42,7 @@ final class CallDetector {
         guard #available(macOS 14.2, *) else { return }
         guard state.update(micApp: Self.callAppUsingMicrophone(), now: Date()) else { return }
         let app = state.current
+        NSLog("[CallDetector] call app now: %@", app ?? "none")
         DispatchQueue.main.async { [weak self] in self?.onChange?(app) }
     }
 

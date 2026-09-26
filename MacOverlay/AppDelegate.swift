@@ -111,7 +111,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vm.onDetectedCallAppChange = { [weak self] app in
             guard let self else { return }
             if let app {
-                self.callPrompt?.show(appName: app,
+                self.callPrompt?.show(appName: app, vm: self.vm,
                                      onStart: { [weak self] in self?.startInterviewFromCallPrompt() },
                                      onDismiss: { [weak self] in self?.vm.dismissCallPrompt() })
             } else {
@@ -120,10 +120,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         callDetector.start()
 
+        // Dev and Beta only: `open -a "thecloser Dev" --args -simulateCall Zoom`
+        // fakes a call, to check the prompt and the menu-bar icon without
+        // joining one.
+        if AppChannel.current != .production,
+           let app = UserDefaults.standard.string(forKey: "simulateCall") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.callDetector.onChange?(app)
+            }
+        }
+
         menuBar = MenuBarController(
             onOpen: { [weak self] in self?.showOverlay() },
             isCallPromptOn: { [weak self] in self?.vm.suggestSessionOnCall ?? false },
             setCallPrompt: { [weak self] on in self?.vm.suggestSessionOnCall = on })
+        // Set explicitly: macOS remembers a status item's visibility across
+        // launches, so a quit mid-call would otherwise start it hidden.
+        updateMenuBarVisibility()
 
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the

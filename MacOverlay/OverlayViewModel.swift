@@ -892,7 +892,11 @@ final class OverlayViewModel {
             callPromptDismissed = false
             return
         }
-        guard suggestSessionOnCall, !isRecording, !callPromptDismissed else { return }
+        guard suggestSessionOnCall, !isRecording, !callPromptDismissed else {
+            NSLog("[CallPrompt] %@ call not prompted: enabled=%@ recording=%@ dismissed=%@",
+                  app, "\(suggestSessionOnCall)", "\(isRecording)", "\(callPromptDismissed)")
+            return
+        }
         detectedCallApp = app
     }
 
