@@ -64,53 +64,44 @@ struct CallPromptCard: View {
     let onStart: () -> Void
     let onDismiss: () -> Void
 
+    /// One slim row: logo, question, Start, ✕ ("Not now"). Width follows the
+    /// app name so "Microsoft Teams" fits without wrapping.
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                WaveformLogo()
-                    .frame(width: 16, height: 16)
-                Text("On a call in \(appName)?")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Design.Ink.primary)
-                Spacer(minLength: 8)
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(Design.Ink.secondary)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.plain)
-                .help("Not now")
+        HStack(spacing: 10) {
+            WaveformLogo()
+                .frame(width: 16, height: 16)
+            Text("On a call in \(appName)?")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundColor(Design.Ink.primary)
+                .lineLimit(1)
+                .fixedSize()
+            Spacer(minLength: 4)
+            Button(action: onStart) {
+                Text("Start interview")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundColor(Design.Ink.inverse)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Design.Ink.primary))
             }
-            Text("Start your interview and TheCloser will listen and answer.")
-                .font(.system(size: 11))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button(action: onStart) {
-                    Text("Start interview")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Design.Ink.inverse)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Design.Ink.primary))
-                }
-                .buttonStyle(.plain)
-                Button(action: onDismiss) {
-                    Text("Not now")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Design.Ink.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
+            .buttonStyle(.plain)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(Design.Ink.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Not now")
         }
-        .padding(14)
-        .frame(width: 300, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .frame(minWidth: 280)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Design.Surface.shellFill))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(Design.Surface.hairline, lineWidth: 0.75))
         .padding(12)   // room for the shadow inside the borderless panel
         .designShadow(Design.Shadow.raised)
