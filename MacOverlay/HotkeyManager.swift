@@ -20,7 +20,7 @@ enum HotkeyAction: Int {
     case resumeScore    = 16   // Ctrl+Opt+M — clipboard as JD → score current resume
     case quickAsk       = 17   // Ctrl+Opt+Q — push-to-talk quick ask
     case screenshotSend = 18   // Ctrl+Shift+S — screenshot straight to AI
-    case quitApp        = 19   // Ctrl+Opt+X — quit the app outright
+    case closeToMenuBar = 19   // Ctrl+Opt+X — close to the menu bar (keeps watching for calls)
     case answerNow      = 20   // Cmd+Return — send the live transcript now (live sessions only)
     case screenshotSendLive = 21   // Cmd+Shift+Return — screenshot straight to AI (live sessions only)
 }
@@ -113,9 +113,9 @@ class HotkeyManager {
             add(kVK_ANSI_Q,  ctrlOpt,   .quickAsk)
         }
 
-        // Quit outright — leaves nothing running. The app has no Dock or
-        // menu-bar icon, so this is the only quick way to quit it.
-        add(kVK_ANSI_X,      ctrlOpt,   .quitApp)
+        // Close to the menu bar. The app keeps running so it still notices
+        // calls; Quit is in the menu-bar menu.
+        add(kVK_ANSI_X,      ctrlOpt,   .closeToMenuBar)
     }
 
     /// ⌘⏎ and ⌘⇧⏎ exist only while a live session is recording. A global

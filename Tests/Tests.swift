@@ -297,6 +297,26 @@ func testCallDetectorRecognisesCallApps() throws {
 }
 
 @MainActor
+func testCallStateWaitsBeforeEndingACall() throws {
+    var state = CallState(endGracePeriod: 90)
+    let start = Date(timeIntervalSince1970: 0)
+    try assertTrue(state.update(micApp: "Zoom", now: start), "call starts")
+    try assertEq(state.current, "Zoom")
+    try assertFalse(state.update(micApp: "Zoom", now: start + 2), "same call, no event")
+    // Muted for a minute: the mic goes free, but the call isn't over.
+    try assertFalse(state.update(micApp: nil, now: start + 60))
+    try assertEq(state.current, "Zoom")
+    // Unmuting inside the grace period must not count as a new call.
+    try assertFalse(state.update(micApp: "Zoom", now: start + 70))
+    // Free for longer than the grace period: now it's over.
+    try assertFalse(state.update(micApp: nil, now: start + 100))
+    try assertTrue(state.update(micApp: nil, now: start + 161), "call ends after 90s free")
+    try assertTrue(state.current == nil)
+    try assertFalse(state.update(micApp: nil, now: start + 200), "no repeat end event")
+    try assertTrue(state.update(micApp: "Chrome", now: start + 300), "next call starts")
+}
+
+@MainActor
 func testAppChannelKeepsDataApart() throws {
     // Production keeps the original folder so existing users' data carries over.
     try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
@@ -467,6 +487,7 @@ struct TestsMain {
         TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
         TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
         TestRunner.run("CallDetector recognises call apps", testCallDetectorRecognisesCallApps)
+        TestRunner.run("CallState waits before ending a call", testCallStateWaitsBeforeEndingACall)
         TestRunner.run("TranscriptionLanguage defaults to English", testTranscriptionLanguageDefaultsToEnglish)
         TestRunner.run("TranscriptionLanguage reads saved choice", testTranscriptionLanguageReadsSavedChoice)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)

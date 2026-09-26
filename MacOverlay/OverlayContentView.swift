@@ -111,7 +111,7 @@ struct OverlayView: View {
         // results render here so the user never loses status just
         // because they haven't manually expanded the bar.
         .overlay(alignment: .bottomLeading) {
-            if vm.shellStage == .pill && (hasAmbientStatus || vm.detectedCallApp != nil) {
+            if vm.shellStage == .pill && hasAmbientStatus {
                 pillFloatingPopup
                     .padding(.leading, Self.panelInsetLeading + 4)
                     .padding(.bottom, 60)
@@ -154,9 +154,6 @@ struct OverlayView: View {
     private var pillFloatingPopup: some View {
         @Bindable var vm = vm
         VStack(alignment: .leading, spacing: 6) {
-            if let app = vm.detectedCallApp {
-                CallPromptCard(appName: app)
-            }
             HStack(spacing: 6) {
                 if vm.isScoringResume {
                     ResumeIndicatorPill(kind: .scoring)
@@ -649,67 +646,5 @@ struct BrowserShellSurface: View {
         }
         .buttonStyle(.plain)
         .help(help ?? title)
-    }
-}
-
-// MARK: - Call prompt
-
-/// Shown above the collapsed pill when a call app starts using the mic.
-/// Lives in the overlay panel, so like everything else it's invisible to
-/// screen sharing — a system notification would not be.
-private struct CallPromptCard: View {
-    @Environment(OverlayViewModel.self) private var vm
-    let appName: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "phone.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Design.Accent.green)
-                Text("On a call in \(appName)?")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Design.Ink.primary)
-                Spacer(minLength: 8)
-                Button { vm.dismissCallPrompt() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(Design.Ink.secondary)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.plain)
-                .help("Not now")
-            }
-            Text("Start your interview and TheCloser will listen and answer.")
-                .font(.system(size: 11))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button { vm.startInterviewFromCallPrompt() } label: {
-                    Text("Start interview")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Design.Ink.inverse)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Design.Ink.primary))
-                }
-                .buttonStyle(.plain)
-                Button { vm.dismissCallPrompt() } label: {
-                    Text("Not now")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Design.Ink.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(12)
-        .frame(width: 290, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Design.Surface.shellFill))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Design.Surface.hairline, lineWidth: 0.75))
-        .designShadow(Design.Shadow.raised)
     }
 }

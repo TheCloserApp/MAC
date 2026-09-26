@@ -58,6 +58,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigtermSource: DispatchSourceSignal?
     private var lastFrontAppPID: pid_t = 0
     private let callDetector = CallDetector()
+    private var callPrompt: CallPromptPanel?
+    private var menuBar: MenuBarController?
+    private var isOnCall = false
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
 
@@ -90,23 +93,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.applyScreenShareVisibility(invisible)
         }
 
-        vm.onRecordingChange = { recording in
+        vm.onRecordingChange = { [weak self] recording in
             HotkeyManager.shared.setLiveSessionHotkeys(recording)
+            self?.updateMenuBarVisibility()
         }
 
-        // Offer to start an interview when a call app starts using the mic.
-        // A hidden overlay comes back so the prompt can actually be seen.
+        // Calls. The detector always runs: besides the "start your
+        // interview?" prompt, it's what hides the menu-bar icon during calls,
+        // and that has to happen even with the prompt switched off.
+        callPrompt = CallPromptPanel()
         callDetector.onChange = { [weak self] app in
             guard let self else { return }
+            self.isOnCall = app != nil
             self.vm.callAppDidChange(app)
-            if self.vm.detectedCallApp != nil, !self.overlayPanel.isVisible {
-                self.overlayPanel.orderFrontRegardless()
+            self.updateMenuBarVisibility()
+        }
+        vm.onDetectedCallAppChange = { [weak self] app in
+            guard let self else { return }
+            if let app {
+                self.callPrompt?.show(appName: app,
+                                     onStart: { [weak self] in self?.startInterviewFromCallPrompt() },
+                                     onDismiss: { [weak self] in self?.vm.dismissCallPrompt() })
+            } else {
+                self.callPrompt?.hide()
             }
         }
-        vm.onSuggestSessionOnCallChange = { [weak self] enabled in
-            if enabled { self?.callDetector.start() } else { self?.callDetector.stop() }
-        }
-        if vm.suggestSessionOnCall { callDetector.start() }
+        callDetector.start()
+
+        menuBar = MenuBarController(
+            onOpen: { [weak self] in self?.showOverlay() },
+            isCallPromptOn: { [weak self] in self?.vm.suggestSessionOnCall ?? false },
+            setCallPrompt: { [weak self] on in self?.vm.suggestSessionOnCall = on })
 
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the
@@ -315,7 +332,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resumeGenerate: if isPressed { self.resumeFromClipboard() }
             case .resumeScore:    if isPressed { self.scoreResumeFromClipboard() }
             case .quickAsk:       break   // handled via Fn flagsChanged monitor
-            case .quitApp:        if isPressed { self.quitApp() }
+            case .closeToMenuBar: if isPressed { self.closeToMenuBar() }
             }
         }
         HotkeyManager.shared.register()
@@ -987,12 +1004,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.setFrameOrigin(NSPoint(x: sf.midX - pf.width / 2, y: sf.maxY - pf.height - 20))
     }
 
-    @objc func quitApp() { NSApp.terminate(nil) }
+    /// ⌃⌥X and "Close" in the ⋯ menu: hide everything but keep running in
+    /// the menu bar, so calls are still noticed. Quitting for real lives in
+    /// the menu-bar menu.
+    @objc func closeToMenuBar() {
+        overlayPanel.orderOut(nil)
+        MainActor.assumeIsolated { BrowserWindow.shared.setVisible(false) }
+    }
 
-    /// Quit cleanly on SIGTERM instead of dying where we stand. The launch
-    /// Quick Action uses `pkill` as its "app is already running" branch, and
-    /// the default SIGTERM disposition would skip applicationWillTerminate —
-    /// losing whatever the session store hasn't flushed yet.
+    func showOverlay() {
+        overlayPanel.orderFrontRegardless()
+        MainActor.assumeIsolated { BrowserWindow.shared.setVisible(true) }
+    }
+
+    private func startInterviewFromCallPrompt() {
+        showOverlay()
+        MainActor.assumeIsolated { vm.startInterviewFromCallPrompt() }
+    }
+
+    /// The menu-bar icon shows only while idle: the menu bar is part of
+    /// every screen share, so it hides during calls and interviews.
+    private func updateMenuBarVisibility() {
+        MainActor.assumeIsolated { menuBar?.setHidden(isOnCall || vm.isRecording) }
+    }
+
+    /// Quit cleanly on SIGTERM instead of dying where we stand. The default
+    /// SIGTERM disposition would skip applicationWillTerminate — losing
+    /// whatever the session store hasn't flushed yet.
     private func installTerminationSignalHandler() {
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)

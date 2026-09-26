@@ -16,7 +16,8 @@ you can read while you talk.
 
 - 🫥 **Invisible to screen sharing** — the panel and every popover/menu it
   opens are marked `sharingType = .none`, so Zoom / Meet / Teams / QuickTime
-  capture the screen *without* the overlay. No menu-bar icon either.
+  capture the screen *without* the overlay. The menu-bar icon hides during
+  calls and interviews.
 - 🎧 **Live transcription** — captures your mic or system audio and converts
   speech to text in real time with ElevenLabs Scribe (Apple Speech is also
   available). English by default; other languages in Preferences.
@@ -31,9 +32,14 @@ you can read while you talk.
 - ⌨️ **Global hotkeys** — ⌘⏎ answer now and ⌘⇧⏎ screenshot to the AI during
   an interview, plus show/hide and move/resize the panel.
 - 📞 **Call prompt** — when Zoom, Google Meet, Teams, FaceTime or another call
-  app starts using the microphone, the overlay offers to start your interview.
-  It only asks Core Audio which apps are using the mic (macOS 14.2+); nothing
-  is recorded until you start. Toggle in Preferences → General → Recording.
+  app starts using the microphone, a prompt in the top-right corner offers to
+  start your interview. It only asks Core Audio which apps are using the mic
+  (macOS 14.2+); nothing is recorded until you start. Toggle in Preferences →
+  General → Recording or the menu-bar menu.
+- 🔝 **Menu-bar icon while idle** — closing the overlay (`⌃⌥ X`) keeps the app
+  running in the menu bar so it can still notice calls. The icon hides the
+  moment a call starts, because the menu bar is part of every screen share.
+  Quit from its menu, or from ⋯ in the overlay.
 
 ### Session modes
 
@@ -157,7 +163,7 @@ Pre-releases never count as "latest", so beta builds can't reach the website.
 | `⌃⌥ T` | Start / stop recording |
 | `⌃⌥ S` | Capture a screenshot and attach it |
 | `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
-| `⌃⌥ X` | Quit thecloser completely |
+| `⌃⌥ X` | Close to the menu bar (keeps watching for calls) |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
 Accessibility permission required. `⌘ ⏎` and `⌘ ⇧ ⏎` are registered only

@@ -15,7 +15,7 @@ final class CallDetector {
 
     private let queue = DispatchQueue(label: "CallDetector", qos: .utility)
     private var timer: DispatchSourceTimer?
-    private var current: String?
+    private var state = CallState()
 
     func start() {
         guard #available(macOS 14.2, *), timer == nil else { return }
@@ -29,15 +29,14 @@ final class CallDetector {
     func stop() {
         timer?.cancel()
         timer = nil
-        queue.async { [weak self] in self?.current = nil }
+        queue.async { [weak self] in self?.state = CallState() }
         DispatchQueue.main.async { [weak self] in self?.onChange?(nil) }
     }
 
     private func poll() {
         guard #available(macOS 14.2, *) else { return }
-        let app = Self.callAppUsingMicrophone()
-        guard app != current else { return }
-        current = app
+        guard state.update(micApp: Self.callAppUsingMicrophone(), now: Date()) else { return }
+        let app = state.current
         DispatchQueue.main.async { [weak self] in self?.onChange?(app) }
     }
 
@@ -115,5 +114,36 @@ final class CallDetector {
         AudioObjectPropertyAddress(mSelector: selector,
                                    mScope: kAudioObjectPropertyScopeGlobal,
                                    mElement: kAudioObjectPropertyElementMain)
+    }
+}
+
+/// Turns raw "which call app has the mic right now" polls into call start
+/// and end events.
+///
+/// A call only ends after the mic has been free for `endGracePeriod`.
+/// Muting in Google Meet can release the mic; without the grace period the
+/// menu-bar icon would reappear mid-call (possibly mid screen share) and
+/// the prompt would ask again on unmute.
+struct CallState {
+    let endGracePeriod: TimeInterval
+    private(set) var current: String?
+    private var lastSeen: Date?
+
+    init(endGracePeriod: TimeInterval = 90) {
+        self.endGracePeriod = endGracePeriod
+    }
+
+    /// Feeds one poll result. Returns true when `current` changed.
+    mutating func update(micApp: String?, now: Date) -> Bool {
+        if let micApp {
+            lastSeen = now
+            guard micApp != current else { return false }
+            current = micApp
+            return true
+        }
+        guard current != nil, let lastSeen, now.timeIntervalSince(lastSeen) >= endGracePeriod else { return false }
+        current = nil
+        self.lastSeen = nil
+        return true
     }
 }

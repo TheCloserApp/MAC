@@ -856,7 +856,7 @@ struct PreferencesView: View {
                 }
                 shortcut("⌃⌥ ↑↓←→",  "Move overlay")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
-                shortcut("⌃⌥X",      "Quit thecloser completely")
+                shortcut("⌃⌥X",      "Close to the menu bar")
                 shortcut("⌘N",        "New session")
                 shortcut("⌘,",        "Preferences")
             }

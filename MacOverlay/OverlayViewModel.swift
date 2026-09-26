@@ -858,7 +858,7 @@ final class OverlayViewModel {
         guard shellStage == .pill else { return false }
         return isScoringResume || isGeneratingResume || resumeScore != nil
             || resumeFileURL != nil || isQuickAskSending
-            || !quickAskResponse.isEmpty || detectedCallApp != nil
+            || !quickAskResponse.isEmpty
     }
     @ObservationIgnored var onPillPopupChange: ((Bool) -> Void)?
 
@@ -866,7 +866,11 @@ final class OverlayViewModel {
 
     /// Name of the call app that just started using the microphone
     /// ("Zoom"), while the "start your interview?" prompt is showing.
-    var detectedCallApp: String?
+    var detectedCallApp: String? {
+        didSet { if detectedCallApp != oldValue { onDetectedCallAppChange?(detectedCallApp) } }
+    }
+    /// The app delegate shows and hides the top-right prompt window from this.
+    @ObservationIgnored var onDetectedCallAppChange: ((String?) -> Void)?
 
     /// Set when the user dismisses the prompt, so the same call doesn't ask
     /// again. Cleared when the call ends.
@@ -877,10 +881,8 @@ final class OverlayViewModel {
         didSet {
             UserDefaults.standard.set(suggestSessionOnCall, forKey: "suggestSessionOnCall")
             if !suggestSessionOnCall { detectedCallApp = nil }
-            onSuggestSessionOnCallChange?(suggestSessionOnCall)
         }
     }
-    @ObservationIgnored var onSuggestSessionOnCallChange: ((Bool) -> Void)?
 
     /// Fed by `CallDetector`: the call app now using the mic, or nil when
     /// no call app is.

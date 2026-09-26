@@ -365,12 +365,18 @@ struct TopStripView: View {
 
             Divider()
 
-            // App-level controls — there's no menu-bar icon (it would be
-            // visible to others during screen shares), so these live here.
+            // App-level controls. The menu-bar icon hides during calls (the
+            // menu bar is in every screen share), so these live here too.
             Button {
                 (NSApp.delegate as? AppDelegate)?.resetPosition()
             } label: {
                 Label("Reset overlay position", systemImage: "arrow.uturn.backward")
+            }
+
+            Button {
+                (NSApp.delegate as? AppDelegate)?.closeToMenuBar()
+            } label: {
+                Label("Close to menu bar", systemImage: "menubar.arrow.up.rectangle")
             }
 
             Button {
