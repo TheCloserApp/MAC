@@ -912,6 +912,16 @@ final class OverlayViewModel {
         beginInterviewFromSetup()
     }
 
+    /// How see-through the open screen is. The Background setting is for
+    /// answers shown over a call; setup, Settings, History, Prompts and the
+    /// browser are read up close, and text from the window behind showing
+    /// through them looks broken, so they're solid.
+    var surfaceOpacity: Double {
+        let live = primarySurface == .chat
+            || (primarySurface == .interview && interviewSurfaceShowsChat)
+        return live ? backgroundOpacity : 1
+    }
+
     /// Backward-compat read-only shim. New code should test
     /// `shellStage == .expanded` directly.
     var isShellExpanded: Bool { shellStage == .expanded }

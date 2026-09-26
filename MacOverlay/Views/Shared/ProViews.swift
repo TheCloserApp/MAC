@@ -49,7 +49,7 @@ struct ProPlanPicker: View {
                         .foregroundColor(Design.Ink.tertiary)
                     Button("Restore") { Task { await account.restore() } }
                         .buttonStyle(.plain)
-                        .foregroundColor(Design.Accent.chatGPT)
+                        .foregroundColor(Design.Accent.brand)
                 }
                 .font(.system(size: 11))
             }
@@ -99,7 +99,7 @@ struct ProPlanCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Image(systemName: "checkmark")
                             .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(Design.Accent.green)
+                            .foregroundColor(Design.Ink.secondary)
                         Text(point)
                             .font(.system(size: 10.5))
                             .foregroundColor(Design.Ink.secondary)
@@ -110,16 +110,10 @@ struct ProPlanCard: View {
             if let subscribe {
                 Spacer(minLength: 0)
                 Button(action: subscribe) {
-                    Text("Subscribe")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundColor(Design.Ink.inverse)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(Design.Ink.primary))
+                    Text("Subscribe").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.primaryCompact)
                 .disabled(isDisabled)
-                .opacity(isDisabled ? 0.45 : 1)
             }
         }
         .padding(12)
