@@ -86,18 +86,25 @@ cp "$SRC_DIR/Info.plist" "$PLIST"
 # Developer ID Application identity that's been provisioned for the
 # `tech.thecloser.mac` bundle ID with the Sign in with Apple
 # capability enabled in Apple Developer's Identifiers panel.
-ENTITLEMENTS="$SRC_DIR/MacOverlay.entitlements"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-echo "🔏 Signing (identity=$SIGN_IDENTITY)..."
-# Hardened Runtime (`--options runtime`) is intentionally NOT enabled. It's
-# only required for notarization, and turning it on with ad-hoc signing
-# trips launchd (POSIX 163) because the app uses microphone, screen
-# recording, calendar, etc. without the matching hardened-runtime
-# entitlements declared. Add it back alongside a Developer ID identity +
-# the full entitlement set when you're ready to notarize for distribution.
-codesign -f -s "$SIGN_IDENTITY" \
-    --entitlements "$ENTITLEMENTS" \
-    "$APP_DIR" 2>/dev/null || true
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    # Ad-hoc: fine for local builds. No Hardened Runtime: with an ad-hoc
+    # signature it can stop the app launching (launchd POSIX 163).
+    echo "🔏 Signing ad-hoc (set CODESIGN_IDENTITY to sign for release)..."
+    codesign -f -s - \
+        --entitlements "$SRC_DIR/MacOverlay.entitlements" \
+        "$APP_DIR" 2>/dev/null || true
+else
+    # Developer ID: Hardened Runtime and a secure timestamp, which Apple
+    # requires to notarize. Release.entitlements lets the Hardened Runtime
+    # allow the microphone. package.sh notarizes the DMG afterwards.
+    echo "🔏 Signing with $SIGN_IDENTITY (Hardened Runtime)..."
+    codesign -f -s "$SIGN_IDENTITY" \
+        --options runtime --timestamp \
+        --entitlements "$SRC_DIR/Release.entitlements" \
+        "$APP_DIR"
+    codesign --verify --strict --verbose=2 "$APP_DIR"
+fi
 
 echo ""
 echo "✅ Build complete!"
