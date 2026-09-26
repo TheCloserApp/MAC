@@ -520,7 +520,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         } catch {
             throw TranscriptionError.permissionDenied(
                 "System audio error: \((error as NSError).localizedDescription). " +
-                "Open System Settings → Privacy & Security → Screen Recording → enable thecloser," +
+                "Open System Settings → Privacy & Security → Screen Recording → enable TheCloser," +
                 "then QUIT and relaunch the app."
             )
         }

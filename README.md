@@ -1,4 +1,4 @@
-# thecloser — Invisible AI Copilot for macOS
+# TheCloser — Invisible AI Copilot for macOS
 
 A native Swift overlay that floats above every app — including full-screen
 calls — and is **excluded from screen capture**, so it's there for you but
@@ -67,10 +67,10 @@ interview helper. See `FeatureFlags.swift`.
 
 ### Build
 ```bash
-./build.sh                    # Dev build → "build/thecloser Dev.app"
+./build.sh                    # Dev build → "build/TheCloser Dev.app"
 ./build.sh --run              # build Dev, quit any running Dev copy, relaunch
-./build.sh --channel beta     # Beta build → "build/thecloser Beta.app"
-./build.sh --channel prod     # Production build → build/thecloser.app
+./build.sh --channel beta     # Beta build → "build/TheCloser Beta.app"
+./build.sh --channel prod     # Production build → build/TheCloser.app
 ```
 
 > **Intel Macs:** change `-target arm64-apple-macos14.0` to
@@ -83,7 +83,7 @@ interview helper. See `FeatureFlags.swift`.
 
 ### Install
 ```bash
-cp -r build/thecloser.app /Applications/
+cp -r build/TheCloser.app /Applications/
 ```
 Launch at login: **System Settings → General → Login Items → +**.
 

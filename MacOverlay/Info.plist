@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>thecloser</string>
+    <string>TheCloser</string>
     <key>CFBundleDisplayName</key>
-    <string>thecloser</string>
+    <string>TheCloser</string>
     <key>CFBundleIdentifier</key>
     <string>tech.thecloser.mac</string>
     <key>CFBundleVersion</key>
@@ -25,9 +25,9 @@
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>thecloser needs microphone access to transcribe your speech in real time.</string>
+    <string>TheCloser needs microphone access to transcribe your speech in real time.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>thecloser uses speech recognition to convert audio to text.</string>
+    <string>TheCloser uses speech recognition to convert audio to text.</string>
     <!--
       Calendar permission strings deliberately omitted in v1. The Calendar
       feature is hidden behind FeatureFlags.calendarEnabled; without these

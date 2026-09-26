@@ -168,7 +168,7 @@ private struct WelcomeStep: View {
             .opacity(animateIn ? 1 : 0)
 
             VStack(spacing: 6) {
-                Text("thecloser")
+                Text("TheCloser")
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
                     .foregroundColor(Design.Ink.primary)
                 Text("An AI that listens, thinks, and hides on screen share.")
