@@ -38,15 +38,17 @@ enum FeatureFlags {
     /// as coming soon.
     static let proSubscriptionsEnabled = previewFeatures
 
-    // MARK: - Off in every build while v1 focuses on the interview helper
+    // MARK: - Off in Beta and Production while v1 focuses on the interview helper
 
     /// Quick Ask: hold Fn/🌐 (or ⌃⌥Q) to ask by voice, plus its Preferences
-    /// tab and History tab.
-    static let quickAskEnabled = false
+    /// tab and History tab. On in Dev only while it's being tried out
+    /// (2026-09-26); off in Beta and Production.
+    static let quickAskEnabled = AppChannel.current == .dev
 
-    /// Hold ⌥ to dictate into the frontmost app. Off also means the app
+    /// Hold ⌥ to dictate into the frontmost app. On in Dev only while it's
+    /// being tried out; off in Beta and Production, where the app therefore
     /// never asks for Accessibility permission.
-    static let dictationEnabled = false
+    static let dictationEnabled = AppChannel.current == .dev
 
     /// ⌃⌥C explain clipboard and ⌃⌥A send selection to the AI.
     static let clipboardShortcutsEnabled = false
