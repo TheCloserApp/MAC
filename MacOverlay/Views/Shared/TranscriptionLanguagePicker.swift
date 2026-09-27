@@ -35,7 +35,10 @@ struct TranscriptionLanguagePicker: View {
             .background(Capsule().fill(Design.Surface.controlFill))
             .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
         }
-        .menuStyle(.borderlessButton)
+        // `.button` + plain keeps the capsule label; `.borderlessButton`
+        // draws only its text, in the tint colour.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("The language spoken in the interview")

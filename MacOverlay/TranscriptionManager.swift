@@ -31,7 +31,20 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
     /// Audio capture died underneath us (input device disconnected,
     /// system-audio stream stopped). The owner should restart capture.
     var onCaptureInterrupted: (() -> Void)?
+
+    /// The cloud engine audio is streamed to. Both take the same 16 kHz
+    /// PCM; they differ only in the WebSocket protocol.
+    enum Provider {
+        case elevenLabs
+        /// xAI's Grok Voice Transcribe 2.0. See GrokTranscription.swift.
+        case grok
+
+        var name: String { self == .elevenLabs ? "ElevenLabs" : "Grok" }
+    }
+    /// Set before `start`; takes effect from the next connection.
+    var provider: Provider = .elevenLabs
     var elevenLabsAPIKey: String = ""
+    var grokAPIKey: String = ""
 
     private(set) var isRunning = false
 
@@ -50,6 +63,16 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession:    URLSession?
+
+    /// Grok takes no audio until it says `transcript.created`. Until then
+    /// audio waits here (up to 3 s), so the first words aren't lost.
+    /// Guarded by `grokLock`: audio arrives on the capture threads.
+    private var grokReady = false
+    private var grokPending = Data()
+    private let grokLock = NSLock()
+    private static let grokPendingLimit = 96_000   // 3 s of 16 kHz PCM16
+    /// The utterance being stitched from Grok's chunks. Main queue only.
+    private var grokUtterance = GrokTranscription.Utterance()
 
     private var audioEngine  = AVAudioEngine()
     private var converter:    AVAudioConverter?
@@ -137,13 +160,55 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
     /// buffered. Call this right after stopping audio capture so the final
     /// committed_transcript arrives before we close the WebSocket.
     func sendCommit() {
-        let msg = "{\"message_type\":\"input_audio_chunk\",\"audio_base_64\":\"\",\"commit\":true,\"sample_rate\":16000}"
+        let msg: String
+        switch provider {
+        case .elevenLabs:
+            msg = "{\"message_type\":\"input_audio_chunk\",\"audio_base_64\":\"\",\"commit\":true,\"sample_rate\":16000}"
+        case .grok:
+            msg = "{\"type\":\"finalize\"}"
+        }
         webSocketTask?.send(.string(msg)) { _ in }
     }
 
     // MARK: - WebSocket
 
     private func openWebSocket() throws {
+        let request: URLRequest
+        switch provider {
+        case .elevenLabs: request = try elevenLabsRequest()
+        case .grok:       request = try grokRequest()
+        }
+
+        // Tear down the previous session before replacing it (see stop()).
+        urlSession?.finishTasksAndInvalidate()
+        let session = URLSession(configuration: .default)
+        urlSession    = session
+        let task = session.webSocketTask(with: request)
+        webSocketTask = task
+        task.resume()
+
+        receiveLoop()
+    }
+
+    private func grokRequest() throws -> URLRequest {
+        guard !grokAPIKey.isEmpty else {
+            throw TranscriptionError.permissionDenied("xAI API key not set. Add it in Settings → AI.")
+        }
+        guard let url = GrokTranscription.streamURL(language: TranscriptionLanguage.current.elevenLabsCode) else {
+            throw TranscriptionError.unavailable
+        }
+        grokLock.lock()
+        grokReady = false
+        grokPending.removeAll()
+        grokLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.grokUtterance = GrokTranscription.Utterance() }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(grokAPIKey)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    private func elevenLabsRequest() throws -> URLRequest {
         guard !elevenLabsAPIKey.isEmpty else {
             throw TranscriptionError.permissionDenied("ElevenLabs API key not set. Add it in Settings (gear icon).")
         }
@@ -166,16 +231,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
         var request = URLRequest(url: url)
         request.setValue(elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
-
-        // Tear down the previous session before replacing it (see stop()).
-        urlSession?.finishTasksAndInvalidate()
-        let session = URLSession(configuration: .default)
-        urlSession    = session
-        let task = session.webSocketTask(with: request)
-        webSocketTask = task
-        task.resume()
-
-        receiveLoop()
+        return request
     }
 
     private func receiveLoop() {
@@ -190,12 +246,15 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
                 if case .string(let text) = message {
                     // Don't log message bodies — they carry the user's
                     // (and interviewer's) spoken words.
-                    self.handleResponse(text)
+                    switch self.provider {
+                    case .elevenLabs: self.handleResponse(text)
+                    case .grok:       self.handleGrokEvent(text)
+                    }
                 }
                 self.receiveLoop()
 
             case .failure(let error):
-                print("[ElevenLabs] WebSocket error: \(error.localizedDescription)")
+                print("[\(self.provider.name)] WebSocket error: \(error.localizedDescription)")
                 DispatchQueue.main.async { [weak self] in
                     self?.handleSocketFailure(error)
                 }
@@ -222,7 +281,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         NSLog("[TranscriptionManager] socket failed (%@); reconnect attempt %d in %.1fs",
               error.localizedDescription, attempt, delay)
         if attempt == reconnectAttemptsBeforeWarning {
-            let msg = "Transcription connection lost: \(error.localizedDescription). Still retrying — check your network and ElevenLabs key."
+            let msg = "Transcription connection lost: \(error.localizedDescription). Still retrying — check your network and \(provider == .grok ? "xAI" : "ElevenLabs") key."
             if let onConnectionEvent {
                 onConnectionEvent(.failed(msg))
             } else {
@@ -293,9 +352,73 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         }
     }
 
-    // Audio → base64 JSON chunk (ElevenLabs format)
+    /// Grok's events. Stitching happens on the main queue, where the
+    /// callbacks run.
+    private func handleGrokEvent(_ json: String) {
+        guard let event = GrokTranscription.Event.parse(json) else { return }
+        switch event.type {
+        case "transcript.created":
+            grokLock.lock()
+            grokReady = true
+            let pending = grokPending
+            grokPending.removeAll()
+            grokLock.unlock()
+            if !pending.isEmpty { webSocketTask?.send(.data(pending)) { _ in } }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if self.reconnectAttempts > 0 { self.onConnectionEvent?(.reconnected) }
+                self.reconnectAttempts = 0
+            }
+
+        case "transcript.partial":
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                switch self.grokUtterance.handle(event) {
+                case .partial(let text)?:
+                    self.onUpdate?(text)
+                    self.onPartial?(text)
+                case .commit(let text)?:
+                    if !text.isEmpty {
+                        self.onUpdate?(text)
+                        self.onCommit?(text)
+                    }
+                    self.onSilence?()
+                case nil:
+                    break
+                }
+            }
+
+        case "error":
+            let detail = event.message ?? "unknown error"
+            print("[Grok] Error: \(detail)")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                (self.onError ?? self.onUpdate)?("Grok: \(detail)")
+            }
+
+        default:
+            break
+        }
+    }
+
+    // Audio → the provider's format: base64 JSON chunks for ElevenLabs,
+    // raw binary frames for Grok (held back until it's ready).
     private func sendAudio(_ pcm16: Data) {
         guard isRunning else { return }
+        if provider == .grok {
+            grokLock.lock()
+            guard grokReady else {
+                grokPending.append(pcm16)
+                if grokPending.count > Self.grokPendingLimit {
+                    grokPending.removeFirst(grokPending.count - Self.grokPendingLimit)
+                }
+                grokLock.unlock()
+                return
+            }
+            grokLock.unlock()
+            webSocketTask?.send(.data(pcm16)) { _ in }
+            return
+        }
         let payload = ElevenLabsAudioChunk(audio_base_64: pcm16.base64EncodedString())
         guard let json = try? JSONEncoder().encode(payload),
               let str  = String(data: json, encoding: .utf8) else { return }

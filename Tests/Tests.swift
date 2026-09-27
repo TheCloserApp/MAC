@@ -516,6 +516,49 @@ func testProScreenshotsAreShrunk() throws {
     try assertTrue(encoded.utf8.count < 4_000_000)
 }
 
+// MARK: - Grok transcription
+
+func testGrokStreamURL() throws {
+    let url = try GrokTranscription.streamURL(language: "en").unwrap("builds")
+    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+    try assertEq(url.host ?? "", "api.x.ai")
+    try assertEq(query["model"] ?? "", "grok-voice-transcribe-2.0")
+    try assertEq(query["sample_rate"] ?? "", "16000")
+    try assertEq(query["encoding"] ?? "", "pcm")
+    try assertEq(query["interim_results"] ?? "", "true")
+    try assertEq(query["language"] ?? "", "en")
+    let chinese = try GrokTranscription.streamURL(language: "zh").unwrap("builds")
+    try assertFalse(chinese.absoluteString.contains("language="), "no formatting language xAI doesn't list")
+}
+
+func testGrokStitchesAnUtterance() throws {
+    func event(_ json: String) throws -> GrokTranscription.Event {
+        try GrokTranscription.Event.parse(json).unwrap(json)
+    }
+    var utterance = GrokTranscription.Utterance()
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.created"}"#)) == nil)
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about","is_final":false,"speech_final":false}"#))
+                   == .partial("Tell me about"))
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about a time","is_final":true,"speech_final":false}"#))
+                   == .partial("Tell me about a time"))
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"you failed","is_final":false,"speech_final":false}"#))
+                   == .partial("Tell me about a time you failed"), "interim text follows the locked chunk")
+    // Documented: the final event is the whole stitched utterance.
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about a time you failed.","is_final":true,"speech_final":true}"#))
+                   == .commit("Tell me about a time you failed."))
+    try assertEq(utterance.locked, [], "the next utterance starts clean")
+}
+
+func testGrokKeepsLockedChunksIfTheFinalOmitsThem() throws {
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Walk me through", "your last project"], final: "and what you'd change."),
+                 "Walk me through your last project and what you'd change.")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Why this role?"], final: "why this role? And why now?"),
+                 "why this role? And why now?", "an already stitched final is used as is")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: [], final: "Hi."), "Hi.")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Okay."], final: ""), "Okay.")
+}
+
 extension Optional {
     func unwrap(_ note: String, file: String = #file, line: Int = #line) throws -> Wrapped {
         guard let self else { throw TestFailure(message: "unexpected nil: \(note)", file: file, line: line) }
@@ -562,6 +605,9 @@ struct TestsMain {
         TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
         TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
         TestRunner.run("Pro screenshots are shrunk to fit the server", testProScreenshotsAreShrunk)
+        TestRunner.run("Grok stream URL", testGrokStreamURL)
+        TestRunner.run("Grok stitches an utterance from its chunks", testGrokStitchesAnUtterance)
+        TestRunner.run("Grok keeps locked chunks the final leaves out", testGrokKeepsLockedChunksIfTheFinalOmitsThem)
 
         print("\n──────────────────────────────")
         print("  Passed: \(TestRunner.passed)")
