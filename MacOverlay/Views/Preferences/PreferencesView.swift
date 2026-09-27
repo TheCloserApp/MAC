@@ -247,8 +247,7 @@ struct PreferencesView: View {
             HStack {
                 Spacer()
                 Button("Reset to defaults") { bar.resetToDefaults() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.secondaryCompact)
             }
         }
     }
@@ -299,7 +298,7 @@ struct PreferencesView: View {
 
         section(title: "Onboarding") {
             Button("Replay welcome tour") { vm.showOnboarding = true }
-                .buttonStyle(.bordered)
+                .buttonStyle(.secondaryCompact)
         }
     }
 
@@ -452,8 +451,7 @@ struct PreferencesView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                     Button("Manage subscription") { Task { await pro.openManageSubscription() } }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(.secondaryCompact)
                 }
                 if plan == .pro {
                     Divider().opacity(0.4)
@@ -474,8 +472,7 @@ struct PreferencesView: View {
                                 .foregroundColor(.secondary)
                             Spacer()
                             Button("Upgrade to Pro Max") { Task { await pro.upgradeToProMax() } }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
+                                .buttonStyle(.primaryCompact)
                         }
                     }
                 }
@@ -630,8 +627,7 @@ struct PreferencesView: View {
             HStack {
                 Spacer()
                 Button("Show all") { visibility.showAll() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.secondaryCompact)
                     .disabled(visibility.hidden.isEmpty)
             }
         }

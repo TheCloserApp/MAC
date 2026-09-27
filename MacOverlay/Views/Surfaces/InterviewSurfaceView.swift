@@ -206,7 +206,8 @@ private struct InterviewSetupForm: View {
                         lineWidth: 0.5
                     ))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
@@ -429,7 +430,8 @@ private struct InterviewSetupForm: View {
                     .background(Capsule().fill(Design.Surface.controlFill))
                     .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
 
@@ -749,7 +751,8 @@ private struct RegularCallSetupForm: View {
                     .background(Capsule().fill(Design.Surface.controlFill))
                     .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
 

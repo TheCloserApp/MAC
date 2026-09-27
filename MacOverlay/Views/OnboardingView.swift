@@ -59,9 +59,9 @@ struct OnboardingView: View {
             footer
         }
         .background {
+            // Solid: first impressions shouldn't show the window behind.
             RoundedRectangle(cornerRadius: 14)
                 .fill(Design.Surface.shellFill)
-                .opacity(vm.backgroundOpacity)
         }
         .overlay(
             RoundedRectangle(cornerRadius: 14)
@@ -88,24 +88,12 @@ struct OnboardingView: View {
 
             if step != .welcome {
                 Button("Back") { go(to: previousStep) }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Design.Ink.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.secondary)
             }
 
             Button(primaryLabel) { advance() }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(Design.Ink.inverse)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 7)
-                .background(Design.Ink.primary)
-                .clipShape(Capsule())
+                .buttonStyle(.primary)
                 .disabled(step == .choose && path == nil)
-                .opacity(step == .choose && path == nil ? 0.45 : 1)
                 .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 18)
@@ -179,6 +167,19 @@ private struct WelcomeStep: View {
             }
             .opacity(animateIn ? 1 : 0)
             .offset(y: animateIn ? 0 : 10)
+
+            // Said up front, before macOS asks for the microphone.
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9))
+                Text("Your sessions are saved only on this Mac. TheCloser keeps no copy of your audio or conversations.")
+                    .font(.system(size: 11))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .foregroundColor(Design.Ink.tertiary)
+            .frame(maxWidth: 320)
+            .opacity(animateIn ? 1 : 0)
         }
         .padding(24)
         .onAppear {
@@ -252,7 +253,7 @@ private struct ChoiceCard: View {
 
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 15))
-                    .foregroundColor(selected ? Design.Accent.green : Design.Ink.muted)
+                    .foregroundColor(selected ? Design.Ink.primary : Design.Ink.muted)
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -316,7 +317,7 @@ private struct KeyInput: View {
                 Spacer()
                 Link("Get a key →", destination: link)
                     .font(.system(size: 10))
-                    .foregroundColor(Design.Accent.chatGPT)
+                    .foregroundColor(Design.Accent.brand)
             }
             HStack(spacing: 4) {
                 Group {
@@ -335,7 +336,7 @@ private struct KeyInput: View {
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7)
-                        .stroke(text.isEmpty ? Design.Surface.hairline : Design.Accent.green.opacity(0.45), lineWidth: 1)
+                        .stroke(text.isEmpty ? Design.Surface.hairline : Design.Surface.strongHairline, lineWidth: 1)
                 )
 
                 Button { visible.toggle() } label: {
@@ -377,7 +378,7 @@ private struct PlansStep: View {
                 Link(destination: proInterestURL) {
                     Text("I'm interested. Tell me when it launches →")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Design.Accent.chatGPT)
+                        .foregroundColor(Design.Accent.brand)
                 }
             }
 

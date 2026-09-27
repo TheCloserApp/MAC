@@ -40,10 +40,10 @@ struct ChatSurfaceView: View {
 
     private var dropOverlay: some View {
         RoundedRectangle(cornerRadius: Design.Radius.lg)
-            .stroke(Design.Accent.chatGPT, style: StrokeStyle(lineWidth: 2, dash: [6]))
+            .stroke(Design.Accent.brand, style: StrokeStyle(lineWidth: 2, dash: [6]))
             .background(
                 RoundedRectangle(cornerRadius: Design.Radius.lg)
-                    .fill(Design.Accent.chatGPT.opacity(0.08))
+                    .fill(Design.Accent.brand.opacity(0.08))
             )
             .overlay {
                 VStack(spacing: Design.Space.sm) {
@@ -55,7 +55,7 @@ struct ChatSurfaceView: View {
                         .font(Design.Font.small)
                         .foregroundColor(Design.Ink.secondary)
                 }
-                .foregroundColor(Design.Accent.chatGPT)
+                .foregroundColor(Design.Accent.brand)
             }
             .padding(Design.Space.sm)
             .allowsHitTesting(false)
@@ -736,10 +736,10 @@ struct ChatSurfaceView: View {
             Text(vm.transcriptionBackend.rawValue)
                 .font(.system(size: 9, weight: .semibold))
         }
-        .foregroundColor(cloud ? Design.Accent.chatGPT : Design.Ink.secondary)
+        .foregroundColor(cloud ? Design.Accent.brand : Design.Ink.secondary)
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
-        .background((cloud ? Design.Accent.chatGPT : Design.Ink.secondary).opacity(0.12))
+        .background((cloud ? Design.Accent.brand : Design.Ink.secondary).opacity(0.12))
         .clipShape(Capsule())
         .help(cloud
               ? "Using \(vm.transcriptionBackend.rawValue) for live transcription."

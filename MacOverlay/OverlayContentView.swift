@@ -36,7 +36,7 @@ struct OverlayView: View {
                    alignment: .topLeading)
             .padding(Design.Space.sm)
             .preferredColorScheme(.dark)
-            .tint(Design.Accent.chatGPT)
+            .tint(Design.Accent.brand)
             .foregroundStyle(Design.Ink.primary)
             .onChange(of: vm.showOnboarding) { wasShowing, isShowing in
                 if wasShowing && !isShowing {
@@ -214,7 +214,7 @@ struct OverlayView: View {
                         revealOnHover(floatingHeaderBar)
                             .padding(.bottom, 6)
                         topCard
-                            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+                            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.surfaceOpacity)
                             .transition(.opacity)
                     }
                     .padding(.leading, Self.panelInsetLeading)
@@ -230,7 +230,7 @@ struct OverlayView: View {
                     Spacer(minLength: 0)
                 } else {
                     topCard
-                        .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+                        .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.surfaceOpacity)
                         .padding(.leading, Self.panelInsetLeading)
                         .padding(.trailing, Self.panelInsetTrailing)
                         .frame(maxHeight: .infinity)
@@ -285,7 +285,7 @@ struct OverlayView: View {
     /// nor shifts the answer.
     private var floatingHeaderBar: some View {
         TopStripView()
-            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.backgroundOpacity)
+            .cardSurface(topRadius: 16, bottomRadius: 16, opacity: vm.surfaceOpacity)
     }
 
     @ViewBuilder
@@ -595,7 +595,7 @@ struct BrowserShellSurface: View {
                 Image(systemName: "arrow.right.circle.fill")
                     .font(.system(size: 14))
                     .foregroundColor(customURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                     ? Design.Ink.muted : Design.Accent.chatGPT)
+                                     ? Design.Ink.muted : Design.Accent.brand)
             }
             .buttonStyle(.plain)
             .disabled(customURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
