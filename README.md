@@ -126,6 +126,32 @@ Production releases must attach a file named exactly `TheCloser.dmg`: the
 website's Download buttons point at `releases/latest/download/TheCloser.dmg`.
 Pre-releases never count as "latest", so beta builds can't reach the website.
 
+### Signing and notarizing
+
+Unsigned builds make macOS warn that it can't check the app for malware.
+Signed and notarized ones open without a warning. One-time setup:
+
+1. Join the [Apple Developer Program](https://developer.apple.com/programs/) ($99/year).
+2. In Xcode → Settings → Accounts → Manage Certificates, add a
+   **Developer ID Application** certificate. It goes into your keychain.
+   `security find-identity -v -p codesigning` shows its full name.
+3. Create an app-specific password at [account.apple.com](https://account.apple.com)
+   (Sign-In and Security → App-Specific Passwords), then store it for
+   `notarytool`:
+   ```bash
+   xcrun notarytool store-credentials thecloser-notary --apple-id you@example.com --team-id TEAMID
+   ```
+
+Then every release is:
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE=thecloser-notary ./package.sh --channel prod
+```
+This signs the app with the Hardened Runtime (`Release.entitlements` lets it
+use the microphone), signs the DMG, waits for Apple to notarize it (usually a
+few minutes), and staples the ticket. Without `CODESIGN_IDENTITY`, builds stay
+ad-hoc signed, as before.
+
 ---
 
 ## First-run Setup
