@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import Speech
 import UniformTypeIdentifiers
 
 /// Tabbed preferences window body. Replaces the cramped gear popover.
@@ -39,10 +38,12 @@ struct PreferencesView: View {
         /// Whether this tab should be visible in the rail. Gated tabs are
         /// kept in the enum (and their `case` arms below still resolve) so
         /// flipping the corresponding FeatureFlag is a one-line change.
-        var isVisible: Bool {
+        @MainActor var isVisible: Bool {
             switch self {
             case .panel, .profile:
                 return false
+            // Pro manages memory itself.
+            case .memory:     return !ProAccount.shared.isActive
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
             case .quickAsk:   return FeatureFlags.quickAskEnabled
@@ -252,18 +253,6 @@ struct PreferencesView: View {
         }
     }
 
-    /// Languages this Mac's speech recognizer supports, plus the current
-    /// choice so the picker never shows a blank selection.
-    private var transcriptionLanguages: [TranscriptionLanguage] {
-        let supported = Set(SFSpeechRecognizer.supportedLocales().map {
-            $0.identifier.replacingOccurrences(of: "_", with: "-")
-        })
-        guard !supported.isEmpty else { return TranscriptionLanguage.all }
-        return TranscriptionLanguage.all.filter {
-            supported.contains($0.id) || $0.id == vm.transcriptionLanguageID
-        }
-    }
-
     @ViewBuilder
     private var generalTab: some View {
         @Bindable var vm = vm
@@ -271,30 +260,21 @@ struct PreferencesView: View {
             sliderRow("Opacity", value: $vm.opacity, range: 0.2...1.0)
             sliderRow("Background", value: $vm.backgroundOpacity, range: 0.0...1.0,
                       display: { $0 == 0 ? "Off" : "\(Int($0 * 100))%" })
+            sliderRow("Text size", value: $vm.textScale, range: 0.8...1.6)
         }
 
         section(title: "Recording") {
             Toggle(isOn: $vm.suggestSessionOnCall) {
                 labelTwoLine(title: "Offer to start when a call begins",
-                             subtitle: "When Zoom, Meet, Teams or another call app starts using your microphone, a prompt asks if you want to start your interview. It only checks which app is using the mic; nothing is recorded until you start.")
+                             subtitle: "When Zoom, Meet or Teams starts using your mic.")
             }
             .toggleStyle(.switch)
 
-            Toggle(isOn: $vm.vadEnabled) {
-                labelTwoLine(title: "Auto-send on silence",
-                             subtitle: "Sends after ~2s of silence while recording.")
-            }
-            .toggleStyle(.switch)
-
-            Toggle(isOn: $vm.interviewResponseGate) {
-                labelTwoLine(title: "Only answer real questions",
-                             subtitle: "Skips \"okay\", \"got it\" and half-sentences so they can't pull a random answer over what you're reading. Clear questions still send instantly; only genuinely ambiguous lines are double-checked with a fast model.")
-            }
-            .toggleStyle(.switch)
-
+            // Pro always transcribes on this Mac, so there's nothing to pick.
+            if !ProAccount.shared.isActive {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
-                             subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
+                             subtitle: "Apple runs on this Mac. ElevenLabs needs a key.")
                     .layoutPriority(1)
                 Spacer(minLength: 8)
                 Picker("", selection: $vm.transcriptionPreference) {
@@ -306,27 +286,13 @@ struct PreferencesView: View {
                 .labelsHidden()
                 .frame(width: 160)
             }
-
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                labelTwoLine(title: "Transcription language",
-                             subtitle: "The language spoken in your interviews. Applies from the next recording.")
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                Picker("", selection: $vm.transcriptionLanguageID) {
-                    ForEach(transcriptionLanguages) { language in
-                        Text(language.name).tag(language.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 160)
             }
         }
 
         section(title: "Privacy") {
             Toggle(isOn: $vm.screenShareInvisible) {
                 labelTwoLine(title: "Hide from screen sharing",
-                             subtitle: "On: the overlay is excluded from screen shares and recordings (Zoom, Meet, QuickTime). Off: it shows up in shared screens.")
+                             subtitle: "Keeps the overlay out of screen shares and recordings.")
             }
             .toggleStyle(.switch)
         }
@@ -468,16 +434,82 @@ struct PreferencesView: View {
     private var aiTab: some View {
         @Bindable var vm = vm
         let store = vm.promptStore
+        let pro = ProAccount.shared
 
-        section(title: "Model picker",
-                subtitle: "Choose which models appear in the bar's model picker. The full list is always usable from here — toggling just controls what shows up in the chip menu.") {
-            modelCatalog
+        if let plan = pro.plan {
+            section(title: "TheCloser \(plan.name)",
+                    subtitle: "Models and transcription included. Tied to this Mac.") {
+                if let usage = pro.usage {
+                    ProUsageMeter(usage: usage)
+                } else {
+                    Text("Checking this month's usage…")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("Change plan, card, or cancel.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Manage subscription") { Task { await pro.openManageSubscription() } }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                if plan == .pro {
+                    Divider().opacity(0.4)
+                    HStack {
+                        if pro.isWaitingForUpgrade {
+                            ProgressView().controlSize(.small)
+                            Text("Confirm in your browser. This updates once it's done.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Cancel") { pro.stopWaitingForUpgrade() }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Pro Max: the most powerful models and 2.5× the usage.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Upgrade to Pro Max") { Task { await pro.upgradeToProMax() } }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                if let problem = pro.problem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
+            }
+            .task { await pro.refreshUsage() }
+        } else if FeatureFlags.proSubscriptionsEnabled {
+            section(title: "TheCloser Pro",
+                    subtitle: "No keys: we run the models and transcription.") {
+                ProPlanPicker()
+            }
         }
 
+        section(title: "Model picker",
+                subtitle: "Choose which models show in the model menu.") {
+            modelCatalog
+            HStack(spacing: 4) {
+                Text("Missing a model?")
+                    .foregroundColor(.secondary)
+                Link("Request it", destination: modelRequestURL)
+            }
+            .font(.system(size: 11))
+        }
+
+        if !pro.isActive {
         section(title: "API keys",
-                subtitle: "Both are required. OpenRouter runs every AI model; ElevenLabs transcribes the interview. Stored on this Mac, never uploaded.") {
+                subtitle: "OpenRouter runs the models; ElevenLabs transcribes. Stored only on this Mac.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+        }
         }
 
         if FeatureFlags.resumesEnabled {
@@ -544,70 +576,17 @@ struct PreferencesView: View {
             )
         }
         } // if FeatureFlags.resumesEnabled
+    }
 
-        section(title: "Usage") {
-            Toggle(isOn: $vm.showTokenCounts) {
-                labelTwoLine(title: "Show live token count",
-                             subtitle: "Displays running token usage in the top strip. Updates as the AI streams.")
-            }
-            .toggleStyle(.switch)
-
-            if vm.showTokenCounts {
-                let s = vm.sessionStore.activeSession
-                HStack(spacing: 14) {
-                    tokenStat(label: "In",    value: s.totalInputTokens,  color: .blue)
-                    tokenStat(label: "Out",   value: s.totalOutputTokens, color: .green)
-                    tokenStat(label: "Total", value: s.totalTokens,       color: .accentColor)
-                    Spacer()
-                }
-                .padding(.top, 4)
-            }
-        }
-
-        section(title: "Active prompt",
-                subtitle: "Overrides the mode's default system prompt.") {
-            HStack {
-                Menu {
-                    Button {
-                        store.activePresetID = nil
-                    } label: {
-                        HStack {
-                            Text("Use \(vm.sessionMode.displayName) default")
-                            if store.activePresetID == nil { Image(systemName: "checkmark") }
-                        }
-                    }
-                    Divider()
-                    ForEach(store.presets) { p in
-                        Button {
-                            store.activePresetID = p.id
-                        } label: {
-                            HStack {
-                                Text(p.name)
-                                if store.activePresetID == p.id { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(store.activePreset?.name ?? "\(vm.sessionMode.displayName) default")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .menuStyle(.borderlessButton)
-
-                Button("Manage…") {
-                    vm.primarySurface = .prompts
-                }
-                .buttonStyle(.bordered)
-            }
-        }
+    /// The website's model request form. Says which plan is asking, and
+    /// nothing about who.
+    private var modelRequestURL: URL {
+        var components = URLComponents(string: "https://www.thecloser.tech/request-model")!
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "app"),
+            URLQueryItem(name: "plan", value: ProAccount.shared.plan?.rawValue ?? "own_keys"),
+        ]
+        return components.url!
     }
 
     /// Per-provider grid of model toggles, used by the AI tab. Reads
@@ -617,13 +596,14 @@ struct PreferencesView: View {
     @ViewBuilder
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
-        let allIDs = OverlayViewModel.availableModels.map(\.id)
+        // On Pro, only the plan's models.
+        let allIDs = OverlayViewModel.availableModels.map(\.id).filter(visibility.isAllowed)
         let providers = OverlayViewModel.modelProviders
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in
                 let models = OverlayViewModel.availableModels
-                    .filter { $0.provider == provider }
+                    .filter { $0.provider == provider && visibility.isAllowed($0.id) }
                 if !models.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(provider)
@@ -838,9 +818,6 @@ struct PreferencesView: View {
                 shortcut("⌃⌥Space", "Show / hide overlay")
                 shortcut("⌘⏎",       "Get the answer now (during an interview)")
                 shortcut("⌘⇧⏎",      "Screenshot → send to AI (during an interview)")
-                shortcut("⌃⌥T",      "Toggle recording + send")
-                shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
-                shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
                 if FeatureFlags.clipboardShortcutsEnabled {
                     shortcut("⌃⌥A",  "Send selected text to AI")
                     shortcut("⌃⌥C",  "Explain clipboard")
@@ -854,11 +831,9 @@ struct PreferencesView: View {
                 if FeatureFlags.dictationEnabled {
                     shortcut("Hold ⌥", "Dictate into the active app")
                 }
-                shortcut("⌃⌥ ↑↓←→",  "Move overlay")
+                shortcut("⌘⇧ ↑↓←→",  "Move overlay (while it's showing)")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
-                shortcut("⌃⌥X",      "Close to the menu bar")
                 shortcut("⌘N",        "New session")
-                shortcut("⌘,",        "Preferences")
             }
         }
     }
@@ -924,23 +899,6 @@ struct PreferencesView: View {
                 .foregroundColor(.secondary)
                 .frame(width: 40, alignment: .trailing)
         }
-    }
-
-    private func tokenStat(label: String, value: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
-            Text("\(value)")
-                .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundColor(color)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func labelTwoLine(title: String, subtitle: String) -> some View {

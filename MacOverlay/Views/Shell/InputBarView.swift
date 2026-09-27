@@ -566,13 +566,19 @@ struct InputBarView: View {
         OverlayViewModel.availableModels.first { $0.id == vm.selectedModel }?.name ?? "Model"
     }
 
+    /// A paused live session (Pause in the ⋯ menu). Text-only chats also
+    /// count as paused, but have no microphone to resume.
+    private var isResumable: Bool {
+        vm.isInterviewSession && vm.isInterviewPaused && !vm.isInterviewTextOnly
+    }
+
     private var micButton: some View {
         let streaming = vm.isSendingToAI
-        let recording = vm.isInterviewSession || vm.isRecording
+        let recording = (vm.isInterviewSession && !isResumable) || vm.isRecording
         let active = streaming || recording
         let interview = vm.sessionMode == .interview
-        let idleIcon = interview ? "play.fill" : "mic"
-        let idleSize: CGFloat = interview ? 10 : 12
+        let idleIcon = interview || isResumable ? "play.fill" : "mic"
+        let idleSize: CGFloat = interview || isResumable ? 10 : 12
 
         return Button { primaryAction() } label: {
             ZStack {
@@ -590,13 +596,16 @@ struct InputBarView: View {
         .buttonStyle(.plain)
         .help(streaming
               ? "Stop generating"
-              : (recording
-                 ? "Stop \(interview ? "interview" : "recording")"
-                 : (interview ? "Start interview" : "Start recording")))
+              : isResumable
+                ? "Resume"
+                : (recording
+                   ? "Stop \(interview ? "interview" : "recording")"
+                   : (interview ? "Start interview" : "Start recording")))
     }
 
     private func primaryAction() {
         if vm.isSendingToAI { vm.cancelStreaming(); return }
+        if isResumable { vm.resumeInterviewSession(); return }
         if vm.sessionMode == .interview {
             if vm.isInterviewSession { vm.stopInterviewSession() }
             else                     { vm.startInterviewSession() }

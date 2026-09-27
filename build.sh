@@ -22,9 +22,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$CHANNEL" in
-    dev)  BUNDLE_ID="tech.thecloser.mac.dev";  APP_NAME="thecloser Dev";  EXEC_NAME="thecloser-dev" ;;
-    beta) BUNDLE_ID="tech.thecloser.mac.beta"; APP_NAME="thecloser Beta"; EXEC_NAME="thecloser-beta" ;;
-    prod) BUNDLE_ID="tech.thecloser.mac";      APP_NAME="thecloser";      EXEC_NAME="thecloser" ;;
+    dev)  BUNDLE_ID="tech.thecloser.mac.dev";  APP_NAME="TheCloser Dev";  EXEC_NAME="thecloser-dev" ;;
+    beta) BUNDLE_ID="tech.thecloser.mac.beta"; APP_NAME="TheCloser Beta"; EXEC_NAME="thecloser-beta" ;;
+    prod) BUNDLE_ID="tech.thecloser.mac";      APP_NAME="TheCloser";      EXEC_NAME="thecloser" ;;
     *)
         echo "Unknown channel: $CHANNEL (expected dev, beta or prod)" >&2
         exit 1 ;;

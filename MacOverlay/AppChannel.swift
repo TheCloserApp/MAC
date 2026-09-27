@@ -30,7 +30,7 @@ enum AppChannel: String, CaseIterable {
         }
     }
 
-    /// Suffix appended to user-visible names ("thecloser Beta").
+    /// Suffix appended to user-visible names ("TheCloser Beta").
     var nameSuffix: String {
         switch self {
         case .dev:        return " Dev"

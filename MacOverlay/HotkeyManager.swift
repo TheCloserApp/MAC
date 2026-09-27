@@ -2,25 +2,20 @@ import Carbon.HIToolbox
 import AppKit
 
 enum HotkeyAction: Int {
-    case moveLeft       = 1
+    case moveLeft       = 1    // Cmd+Shift+arrows, only while the overlay is showing
     case moveRight      = 2
     case moveUp         = 3
     case moveDown       = 4
-    case resizeLeft     = 5
+    case resizeLeft     = 5    // Ctrl+Shift+arrows
     case resizeRight    = 6
     case resizeUp       = 7
     case resizeDown     = 8
-    case screenshot     = 9
     case clipboard      = 10
-    case toggle         = 11
-    case record         = 12   // Ctrl+Opt+T — toggle record
-    case pushToTalk     = 13   // Ctrl+Opt+Y — push-to-talk record
+    case toggle         = 11   // Ctrl+Opt+Space — show / hide the overlay
     case sendSelection  = 14   // Ctrl+Opt+A — copy selection + send to AI
     case resumeGenerate = 15   // Ctrl+Opt+R — clipboard as JD → generate resume
     case resumeScore    = 16   // Ctrl+Opt+M — clipboard as JD → score current resume
     case quickAsk       = 17   // Ctrl+Opt+Q — push-to-talk quick ask
-    case screenshotSend = 18   // Ctrl+Shift+S — screenshot straight to AI
-    case closeToMenuBar = 19   // Ctrl+Opt+X — close to the menu bar (keeps watching for calls)
     case answerNow      = 20   // Cmd+Return — send the live transcript now (live sessions only)
     case screenshotSendLive = 21   // Cmd+Shift+Return — screenshot straight to AI (live sessions only)
 }
@@ -32,6 +27,7 @@ class HotkeyManager {
     var onAction: ((HotkeyAction, Bool) -> Void)?
 
     private var refs: [EventHotKeyRef?] = []
+    private var moveRefs: [EventHotKeyRef?] = []
     private var liveSessionRefs: [EventHotKeyRef?] = []
     private var handlerRef: EventHandlerRef?
 
@@ -39,12 +35,11 @@ class HotkeyManager {
 
     private let ctrlOpt:   UInt32 = UInt32(controlKey | optionKey)
     private let ctrlShift: UInt32 = UInt32(controlKey | shiftKey)
-    private let ctrl:      UInt32 = UInt32(controlKey)
     private let cmd:       UInt32 = UInt32(cmdKey)
     private let cmdShift:  UInt32 = UInt32(cmdKey | shiftKey)
 
     func register() {
-        // Listen for both pressed AND released so push-to-talk works
+        // Listen for both pressed AND released (the handler reports which)
         var specs = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
@@ -78,20 +73,10 @@ class HotkeyManager {
         )
 
         // Ctrl+Opt shortcuts
-        add(kVK_LeftArrow,   ctrlOpt,   .moveLeft)
-        add(kVK_RightArrow,  ctrlOpt,   .moveRight)
-        add(kVK_UpArrow,     ctrlOpt,   .moveUp)
-        add(kVK_DownArrow,   ctrlOpt,   .moveDown)
-        add(kVK_ANSI_S,      ctrlOpt,   .screenshot)
         if FeatureFlags.clipboardShortcutsEnabled {
             add(kVK_ANSI_C,  ctrlOpt,   .clipboard)
         }
         add(kVK_Space,       ctrlOpt,   .toggle)
-        add(kVK_ANSI_T,      ctrlOpt,   .record)
-
-        // Same letter as the attach-only capture (⌃⌥S), different modifier:
-        // Shift means "and send it" rather than staging it in the bar.
-        add(kVK_ANSI_S,      ctrlShift, .screenshotSend)
 
         // Ctrl+Shift resize
         add(kVK_LeftArrow,   ctrlShift, .resizeLeft)
@@ -99,7 +84,6 @@ class HotkeyManager {
         add(kVK_UpArrow,     ctrlShift, .resizeUp)
         add(kVK_DownArrow,   ctrlShift, .resizeDown)
 
-        add(kVK_ANSI_Y,      ctrlOpt,   .pushToTalk)
         if FeatureFlags.clipboardShortcutsEnabled {
             add(kVK_ANSI_A,  ctrlOpt,   .sendSelection)
         }
@@ -112,10 +96,25 @@ class HotkeyManager {
         if FeatureFlags.quickAskEnabled {
             add(kVK_ANSI_Q,  ctrlOpt,   .quickAsk)
         }
+    }
 
-        // Close to the menu bar. The app keeps running so it still notices
-        // calls; Quit is in the menu-bar menu.
-        add(kVK_ANSI_X,      ctrlOpt,   .closeToMenuBar)
+    /// ⌘⇧ + arrows move the overlay, but only while it's on screen. It's
+    /// also macOS's "select to the start / end of the line" in every text
+    /// field, and a global hotkey takes it from every app, so it's given
+    /// back whenever the overlay is hidden.
+    func setMoveHotkeys(_ active: Bool) {
+        if active {
+            guard moveRefs.isEmpty else { return }
+            moveRefs = [
+                registerHotKey(kVK_LeftArrow,  cmdShift, .moveLeft),
+                registerHotKey(kVK_RightArrow, cmdShift, .moveRight),
+                registerHotKey(kVK_UpArrow,    cmdShift, .moveUp),
+                registerHotKey(kVK_DownArrow,  cmdShift, .moveDown),
+            ]
+        } else {
+            moveRefs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
+            moveRefs = []
+        }
     }
 
     /// ⌘⏎ and ⌘⇧⏎ exist only while a live session is recording. A global
@@ -148,6 +147,7 @@ class HotkeyManager {
     func unregister() {
         refs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
         refs = []
+        setMoveHotkeys(false)
         setLiveSessionHotkeys(false)
         if let h = handlerRef { RemoveEventHandler(h); handlerRef = nil }
     }

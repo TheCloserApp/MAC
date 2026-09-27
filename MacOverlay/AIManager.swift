@@ -84,6 +84,11 @@ class AIManager {
         // prefix before sending the real model id.
         if isOpenRouterModel(model) {
             let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+            if await ProAccount.shared.isActive {
+                return try await throughPro { pro in
+                    try await self.sendOpenAI(text, apiKey: pro.pass, model: real, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: ProAccount.chatURL, tokenField: "max_tokens", jsonMode: jsonMode, headers: ["X-Device": pro.device])
+                }
+            }
             return try await sendOpenAI(text, apiKey: openRouterAPIKey, model: real, screenshot: screenshot, systemPrompt: systemPrompt, history: history, maxTokens: maxTokens, timeoutInterval: timeoutInterval, baseURL: AIManager.openRouterEndpoint, tokenField: "max_tokens", jsonMode: jsonMode)
         }
         // NVIDIA next — its `vendor/model` ids (e.g. deepseek-ai/…) would also
@@ -142,13 +147,14 @@ class AIManager {
         return result
     }
 
-    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens", jsonMode: Bool = false) async throws -> String {
+    private func sendOpenAI(_ text: String, apiKey: String, model: String, screenshot: NSImage?, systemPrompt: String, history: [(user: String, assistant: String)], maxTokens: Int, timeoutInterval: TimeInterval, baseURL: String = AIManager.openAIEndpoint, tokenField: String = "max_completion_tokens", jsonMode: Bool = false, headers: [String: String] = [:]) async throws -> String {
         guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = timeoutInterval
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
+        for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
 
         // Build messages: system + history turns + current message
         var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
@@ -158,8 +164,8 @@ class AIManager {
         }
 
         var parts: [[String: Any]] = []
-        if let img = screenshot, let b64 = pngBase64(from: img) {
-            parts.append(["type": "image_url", "image_url": ["url": "data:image/png;base64,\(b64)"]])
+        if let img = screenshot, let imageURL = imageDataURL(from: img, for: baseURL) {
+            parts.append(["type": "image_url", "image_url": ["url": imageURL]])
         }
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
@@ -766,7 +772,19 @@ class AIManager {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    if isOpenRouterModel(model) {
+                    if isOpenRouterModel(model), await ProAccount.shared.isActive {
+                        let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
+                        try await throughPro { pro in
+                            try await self.streamOpenAI(text, apiKey: pro.pass, model: real,
+                                                        screenshot: screenshot, systemPrompt: systemPrompt,
+                                                        history: history,
+                                                        baseURL: ProAccount.chatURL,
+                                                        tokenField: "max_tokens",
+                                                        headers: ["X-Device": pro.device]) { event in
+                                continuation.yield(event)
+                            }
+                        }
+                    } else if isOpenRouterModel(model) {
                         let real = String(model.dropFirst(AIManager.openRouterPrefix.count))
                         try await streamOpenAI(text, apiKey: openRouterAPIKey, model: real,
                                                screenshot: screenshot, systemPrompt: systemPrompt,
@@ -955,6 +973,7 @@ class AIManager {
                               history: [(user: String, assistant: String)],
                               baseURL: String = AIManager.openAIEndpoint,
                               tokenField: String = "max_completion_tokens",
+                              headers: [String: String] = [:],
                               onEvent: (AIStreamEvent) -> Void) async throws {
         guard let url = URL(string: baseURL) else { throw AIError.invalidURL }
         var req = URLRequest(url: url)
@@ -964,6 +983,7 @@ class AIManager {
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.setValue("text/event-stream", forHTTPHeaderField: "accept")
+        for (name, value) in headers { req.setValue(value, forHTTPHeaderField: name) }
 
         var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
         for turn in history {
@@ -971,8 +991,8 @@ class AIManager {
             messages.append(["role": "assistant", "content": turn.assistant])
         }
         var parts: [[String: Any]] = []
-        if let img = screenshot, let b64 = pngBase64(from: img) {
-            parts.append(["type": "image_url", "image_url": ["url": "data:image/png;base64,\(b64)"]])
+        if let img = screenshot, let imageURL = imageDataURL(from: img, for: baseURL) {
+            parts.append(["type": "image_url", "image_url": ["url": imageURL]])
         }
         parts.append(["type": "text", "text": text.isEmpty ? "What's on my screen?" : text])
         messages.append(["role": "user", "content": parts])
@@ -1021,7 +1041,69 @@ class AIManager {
         }
     }
 
+    // MARK: - TheCloser Pro
+
+    /// Runs an OpenRouter request through TheCloser Pro. A refused pass
+    /// (it ran out while the Mac slept, or the plan changed) is renewed and
+    /// the request tried once more. A used-up allowance or a model outside
+    /// the plan becomes a message the user can act on.
+    private func throughPro<T>(_ request: (ProAccount.Credentials) async throws -> T) async throws -> T {
+        guard let credentials = await ProAccount.shared.credentials() else { throw AIError.proEnded }
+        do {
+            return try await finishedThroughPro(request(credentials))
+        } catch AIError.apiError(let status, _) where status == 401 {
+            switch await ProAccount.shared.renew() {
+            case .active:        break
+            case .notSubscribed: throw AIError.proEnded
+            case .settingUp, .failed:
+                throw AIError.pro("Couldn't reach TheCloser to renew your Pro access. Check your connection and try again.")
+            }
+            guard let fresh = await ProAccount.shared.credentials() else { throw AIError.proEnded }
+            do {
+                return try await finishedThroughPro(request(fresh))
+            } catch AIError.apiError(let status, let body) where status == 402 || status == 403 {
+                throw await ProAccount.shared.explainRefusal(status: status, body: body)
+            }
+        } catch AIError.apiError(let status, let body) where status == 402 || status == 403 {
+            throw await ProAccount.shared.explainRefusal(status: status, body: body)
+        }
+    }
+
+    private func finishedThroughPro<T>(_ result: T) async -> T {
+        await ProAccount.shared.noteRequestFinished()
+        return result
+    }
+
     // MARK: - Helpers
+
+    /// A screenshot as a data URL. Pro requests go through our server,
+    /// which takes at most 4 MB, and a full Retina PNG can be bigger, so
+    /// those get a JPEG no larger than 1600 pixels a side.
+    private func imageDataURL(from image: NSImage, for baseURL: String) -> String? {
+        if baseURL == ProAccount.chatURL {
+            return AIManager.jpegBase64(from: image).map { "data:image/jpeg;base64,\($0)" }
+        }
+        return pngBase64(from: image).map { "data:image/png;base64,\($0)" }
+    }
+
+    static func jpegBase64(from image: NSImage, maxPixels: CGFloat = 1600) -> String? {
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let scale = min(1, maxPixels / CGFloat(max(source.width, source.height)))
+        let width = max(1, Int((CGFloat(source.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(source.height) * scale).rounded()))
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        context.interpolationQuality = .high
+        context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let scaled = context.makeImage(),
+              let jpeg = NSBitmapImageRep(cgImage: scaled)
+                .representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        else { return nil }
+        return jpeg.base64EncodedString()
+    }
 
     private func pngBase64(from image: NSImage) -> String? {
         guard
@@ -1035,12 +1117,18 @@ class AIManager {
 
 enum AIError: LocalizedError {
     case invalidURL, invalidResponse, apiError(Int, String), parseError
+    /// The TheCloser Pro subscription ended (cancelled, or a payment failed).
+    case proEnded
+    /// A TheCloser Pro refusal, already worded for the user.
+    case pro(String)
     var errorDescription: String? {
         switch self {
         case .invalidURL:             return "Invalid API URL"
         case .invalidResponse:        return "Invalid server response"
         case .apiError(let c, let m): return "API error \(c): \(m)"
         case .parseError:             return "Failed to parse API response"
+        case .proEnded:               return "Your TheCloser Pro subscription has ended. Subscribe again, or add your own keys, in Settings → AI."
+        case .pro(let message):       return message
         }
     }
 }

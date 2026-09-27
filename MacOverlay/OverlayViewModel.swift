@@ -75,8 +75,10 @@ final class OverlayViewModel {
             if isRecording { detectedCallApp = nil }
         }
     }
-    var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
     var isInterviewSession = false
+    /// Size of the text you read (answers, your questions, the live
+    /// transcript), from 0.8 to 1.6. Settings → General → Text size.
+    var textScale: Double { didSet { UserDefaults.standard.set(textScale, forKey: "textScale") } }
     /// Interview is active but recording is paused. The transcriber is
     /// stopped so audio stops flowing, but the session, transcript, and
     /// context all stay intact so resuming picks up cleanly.
@@ -588,18 +590,6 @@ final class OverlayViewModel {
     var backgroundOpacity: Double {
         didSet { UserDefaults.standard.set(backgroundOpacity, forKey: "backgroundOpacity") }
     }
-    /// When true, show live token counts in the top strip and per-session.
-    var showTokenCounts: Bool {
-        didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
-    }
-
-    /// Gate auto-send on "does this need an answer?". On (default) drops
-    /// acknowledgements and fragments so they can't pull a random answer
-    /// over what the user is reading. Off = send every meaningful segment
-    /// (the old behaviour).
-    var interviewResponseGate: Bool {
-        didSet { UserDefaults.standard.set(interviewResponseGate, forKey: "interviewResponseGate") }
-    }
 
     /// Screen-share visibility. `true` (default) excludes every window the
     /// app shows from screen capture — invisible to Zoom / Meet / QuickTime
@@ -955,12 +945,18 @@ final class OverlayViewModel {
     /// whether the user has configured an ElevenLabs key.
     enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
+        // Pro transcribes on this Mac with Apple's recognizer: no key.
+        if ProAccount.shared.isActive { return .apple }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
         case .auto:       return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
         }
     }
+
+    /// Whether a Pro plan was active last time it changed, to tell the user
+    /// when it ends.
+    @ObservationIgnored private var wasOnPro = false
 
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
@@ -1005,7 +1001,6 @@ final class OverlayViewModel {
     init() {
         // NOTE: didSet observers do NOT fire during init for properties set on `self`,
         // so initial values are loaded without triggering UserDefaults writes or broadcasts.
-        vadEnabled         = UserDefaults.standard.bool(forKey: "vadEnabled")
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
         moonshotAPIKey     = UserDefaults.standard.string(forKey: "moonshotAPIKey") ?? ""
@@ -1043,9 +1038,8 @@ final class OverlayViewModel {
             ? storedModel : OverlayViewModel.defaultModel
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
         backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 0.6
-        showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
+        textScale          = min(max(UserDefaults.standard.object(forKey: "textScale") as? Double ?? 1.0, 0.8), 1.6)
         screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
-        interviewResponseGate = UserDefaults.standard.object(forKey: "interviewResponseGate") as? Bool ?? true
         quickAskCustomPrompt = UserDefaults.standard.string(forKey: "quickAskCustomPrompt") ?? ""
         if let data = UserDefaults.standard.data(forKey: "quickAskFiles"),
            let files = try? JSONDecoder().decode([QuickAskFile].self, from: data) {
@@ -1096,6 +1090,12 @@ final class OverlayViewModel {
         sessionStore.migrateWorkspacelessSessions(to: workspaceStore.activeWorkspaceID)
 
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
+
+        // TheCloser Pro: keep the model choice inside the plan, and pick up
+        // the subscription (renewing its pass) in the background.
+        ProAccount.shared.onChange = { [weak self] in self?.proPlanChanged() }
+        proPlanChanged()
+        ProAccount.shared.start()
 
         // Apple delivers one growing string per recognition task, so the
         // raw update can replace the live transcript wholesale. New text =
@@ -1229,12 +1229,6 @@ final class OverlayViewModel {
                     // (longer when the text trails off mid-thought) and
                     // is cancelled by any new speech.
                     self.scheduleAutoSend()
-                } else if self.vadEnabled {
-                    // Skip noise / filler-only segments so VAD auto-send
-                    // doesn't ship junk to the AI; keep listening.
-                    guard TranscriptFilter.isMeaningful(self.transcription) else { return }
-                    self.toggleRecording()
-                    self.sendToAI()
                 }
             }
         }
@@ -1350,22 +1344,6 @@ final class OverlayViewModel {
     func toggleRecording() {
         if isRecording {
             endCapture()
-        } else {
-            transcription = ""
-            aiResponse    = ""
-            Task { @MainActor [weak self] in
-                _ = await self?.beginCapture()
-            }
-        }
-    }
-
-    // MARK: - Hotkey record toggle (Ctrl+Opt+M)
-
-    func hotkeyToggleRecord() {
-        if isInterviewSession { stopInterviewSession(); return }
-        if isRecording {
-            endCapture()
-            if !transcription.isEmpty { sendToAI() }
         } else {
             transcription = ""
             aiResponse    = ""
@@ -1658,7 +1636,7 @@ final class OverlayViewModel {
         "Look at my screen and answer what's there. If it's a question, problem, or error, give the answer or fix directly and concisely. Otherwise describe what matters."
 
     /// Capture-and-send: attach `image` and dispatch it to the AI in one
-    /// step (the ⌃⇧S hotkey). Any draft the user had already typed is kept
+    /// step (the ⌘⇧⏎ hotkey). Any draft the user had already typed is kept
     /// as the question; otherwise the default screenshot prompt is used so
     /// the turn reads sensibly in the transcript instead of being blank.
     func sendScreenshotToAI(_ image: NSImage) {
@@ -1760,27 +1738,26 @@ final class OverlayViewModel {
             // sense", and mid-thought asides used to sail through
             // isMeaningful and pull a random answer over whatever the user
             // was reading. Local triage decides the obvious cases for free;
-            // only the ambiguous band asks a small model.
-            if self.interviewResponseGate {
-                let candidate = self.transcription
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                switch TranscriptFilter.warrantsResponse(candidate) {
-                case .no:
-                    // Not cleared: the text stays in the strip, so if the
-                    // speaker continues ("Okay… so tell me about X") the
-                    // next commit re-schedules with the full segment.
-                    return
-                case .yes:
-                    break
-                case .unsure:
-                    guard await self.classifyNeedsResponse(candidate) else { return }
-                    // New speech during the round-trip cancels this task;
-                    // and if the transcript grew anyway, let the fresher
-                    // commit make the call instead of sending stale text.
-                    guard !Task.isCancelled else { return }
-                    guard TranscriptFilter.normalized(self.transcription)
-                            == TranscriptFilter.normalized(candidate) else { return }
-                }
+            // only the ambiguous band asks a small model. Always on in auto
+            // mode.
+            let candidate = self.transcription
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            switch TranscriptFilter.warrantsResponse(candidate) {
+            case .no:
+                // Not cleared: the text stays in the strip, so if the
+                // speaker continues ("Okay… so tell me about X") the
+                // next commit re-schedules with the full segment.
+                return
+            case .yes:
+                break
+            case .unsure:
+                guard await self.classifyNeedsResponse(candidate) else { return }
+                // New speech during the round-trip cancels this task;
+                // and if the transcript grew anyway, let the fresher
+                // commit make the call instead of sending stale text.
+                guard !Task.isCancelled else { return }
+                guard TranscriptFilter.normalized(self.transcription)
+                        == TranscriptFilter.normalized(candidate) else { return }
             }
 
             // Detach before sending — sendToAI cancels pendingAutoSendTask
@@ -1818,7 +1795,7 @@ final class OverlayViewModel {
     /// noise the user ignores, but a missed question leaves them stranded
     /// mid-interview. When in doubt, answer.
     private func classifyNeedsResponse(_ text: String) async -> Bool {
-        guard !openRouterAPIKey.isEmpty else { return true }
+        guard hasOpenRouterAccess else { return true }
         do {
             let raw = try await AIManager.shared.sendMessage(
                 text,
@@ -2165,23 +2142,6 @@ final class OverlayViewModel {
         primarySurface = .interview
     }
 
-    /// Mark the active session as a paused live session. The bar will
-    /// render the live controls (text input, model picker, pause/play,
-    /// stop) but no transcriber starts until the user explicitly hits
-    /// play — same shape as pausing a running interview, just without
-    /// the prior recording.
-    func enterPausedLiveState() {
-        isInterviewSession  = true
-        isInterviewPaused   = true
-        isInterviewTextOnly = false
-        // Re-entering live mode after a stop / from history — restart
-        // the elapsed counter so the timer begins at 00:00 when the
-        // user hits play, but stays at 00:00 while paused.
-        interviewElapsedSeconds = 0
-        interviewRunningSince   = nil
-        endCapture(status: "Paused")
-    }
-
     /// Switch the mode tab on the Interview surface. Just swaps which
     /// setup form is showing — switching tabs never silently jumps into
     /// an old session; resuming is always an explicit action (session
@@ -2317,7 +2277,13 @@ final class OverlayViewModel {
     /// and error message stays in sync with `AIManager`'s routing.
     /// API key + provider label for an arbitrary model id.
     func key(for model: String) -> (key: String, provider: String) {
-        if AIManager.shared.isOpenRouterModel(model) { return (openRouterAPIKey, "OpenRouter") }
+        if AIManager.shared.isOpenRouterModel(model) {
+            // Pro needs no key: AIManager sends these models through the
+            // subscription. Callers only check a key is there, so the plan
+            // name stands in for it.
+            if let plan = ProAccount.shared.plan { return ("TheCloser \(plan.name)", "TheCloser Pro") }
+            return (openRouterAPIKey, "OpenRouter")
+        }
         if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaAPIKey, "NVIDIA") }
         if AIManager.shared.isMoonshotModel(model) { return (moonshotAPIKey, "Moonshot") }
         if AIManager.shared.isGrokModel(model)     { return (grokAPIKey, "Grok") }
@@ -2338,12 +2304,33 @@ final class OverlayViewModel {
         keyForSelectedModel.key.isEmpty
     }
 
+    /// OpenRouter models can run: on Pro, or with the user's own key.
+    var hasOpenRouterAccess: Bool { ProAccount.shared.isActive || !openRouterAPIKey.isEmpty }
+
     /// Keys a bring-your-own-key user still has to add before starting an
-    /// interview: OpenRouter runs the models, ElevenLabs transcribes.
+    /// interview: OpenRouter runs the models, ElevenLabs transcribes. Pro
+    /// needs neither.
     var missingRequiredKeys: [String] {
+        guard !ProAccount.shared.isActive else { return [] }
         var missing: [String] = []
         if openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("OpenRouter") }
         if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("ElevenLabs") }
         return missing
+    }
+
+    /// A Pro plan started, changed or ended. Pro keeps the model choice
+    /// inside the plan and uses the default memory settings, which it
+    /// doesn't let the user change.
+    private func proPlanChanged() {
+        let visibility = ModelVisibility.shared
+        if !visibility.isAllowed(selectedModel) {
+            selectedModel = visibility.isAllowed(Self.defaultModel)
+                ? Self.defaultModel
+                : Self.availableModels.first { visibility.isAllowed($0.id) }?.id ?? Self.defaultModel
+        }
+        let onPro = ProAccount.shared.isActive
+        if onPro { sessionStore.useDefaultMemorySettings() }
+        if wasOnPro && !onPro { statusMessage = "Error: \(AIError.proEnded.localizedDescription)" }
+        wasOnPro = onPro
     }
 }
