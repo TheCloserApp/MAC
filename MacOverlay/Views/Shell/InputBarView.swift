@@ -307,6 +307,7 @@ struct InputBarView: View {
             WaveformLogo()
                 .frame(width: 26, height: 26)
                 .frame(width: 44, height: 44)
+                .overlay(alignment: .bottom) { ChannelBadge() }
                 // No scaleEffect on hover — center-anchored scaling makes
                 // the brand visibly grow in both directions, which reads as
                 // the icon "shifting right then snapping back" once the
@@ -397,7 +398,7 @@ struct InputBarView: View {
             surfaceButton(.browser, icon: "globe", label: "Browser")
         }
         surfaceButton(.settings, icon: "person.crop.circle", label: "Profile",
-                      attention: vm.needsKeyForCurrentModel)
+                      attention: !vm.missingRequiredKeys.isEmpty)
     }
 
     private func surfaceButton(_ surface: OverlayViewModel.PrimarySurface,
@@ -541,7 +542,7 @@ struct InputBarView: View {
     private func modelMenuItems() -> [PopUpItem] {
         var items: [PopUpItem] = []
         let visibility = ModelVisibility.shared
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
+        let providers = OverlayViewModel.modelProviders
         for provider in providers {
             let models = OverlayViewModel.availableModels
                 .filter { $0.provider == provider && visibility.isVisible($0.id) }
@@ -565,13 +566,19 @@ struct InputBarView: View {
         OverlayViewModel.availableModels.first { $0.id == vm.selectedModel }?.name ?? "Model"
     }
 
+    /// A paused live session (Pause in the ⋯ menu). Text-only chats also
+    /// count as paused, but have no microphone to resume.
+    private var isResumable: Bool {
+        vm.isInterviewSession && vm.isInterviewPaused && !vm.isInterviewTextOnly
+    }
+
     private var micButton: some View {
         let streaming = vm.isSendingToAI
-        let recording = vm.isInterviewSession || vm.isRecording
+        let recording = (vm.isInterviewSession && !isResumable) || vm.isRecording
         let active = streaming || recording
         let interview = vm.sessionMode == .interview
-        let idleIcon = interview ? "play.fill" : "mic"
-        let idleSize: CGFloat = interview ? 10 : 12
+        let idleIcon = interview || isResumable ? "play.fill" : "mic"
+        let idleSize: CGFloat = interview || isResumable ? 10 : 12
 
         return Button { primaryAction() } label: {
             ZStack {
@@ -589,13 +596,16 @@ struct InputBarView: View {
         .buttonStyle(.plain)
         .help(streaming
               ? "Stop generating"
-              : (recording
-                 ? "Stop \(interview ? "interview" : "recording")"
-                 : (interview ? "Start interview" : "Start recording")))
+              : isResumable
+                ? "Resume"
+                : (recording
+                   ? "Stop \(interview ? "interview" : "recording")"
+                   : (interview ? "Start interview" : "Start recording")))
     }
 
     private func primaryAction() {
         if vm.isSendingToAI { vm.cancelStreaming(); return }
+        if isResumable { vm.resumeInterviewSession(); return }
         if vm.sessionMode == .interview {
             if vm.isInterviewSession { vm.stopInterviewSession() }
             else                     { vm.startInterviewSession() }
@@ -756,6 +766,27 @@ struct InputBarView: View {
     private func send() {
         if !vm.manualInput.isEmpty { vm.showManualInput = true }
         vm.sendToAI()
+    }
+}
+
+/// "DEV" / "BETA" tag under the brand logo. The app has no Dock icon, so
+/// this is the only way to tell side-by-side builds apart at a glance.
+/// Production renders nothing.
+private struct ChannelBadge: View {
+    var body: some View {
+        if let label = AppChannel.current.badge {
+            Text(label)
+                .font(.system(size: 7, weight: .heavy, design: .rounded))
+                .tracking(0.4)
+                .foregroundColor(.white)
+                .padding(.horizontal, 3)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(
+                    AppChannel.current == .dev ? Design.Accent.amber : Design.Accent.purple
+                ))
+                .offset(y: -3)
+                .allowsHitTesting(false)
+        }
     }
 }
 

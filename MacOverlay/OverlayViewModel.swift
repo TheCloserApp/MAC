@@ -18,39 +18,33 @@ final class OverlayViewModel {
     /// Routing: ids prefixed `gpt-` / `o1` / `o3` / `o4` go through the
     /// OpenAI path; ids prefixed `kimi` / `moonshot-` go through the Moonshot
     /// (Kimi) path; everything else goes to Anthropic. See `AIManager`.
+    /// Every model goes through OpenRouter, so one OpenRouter key covers
+    /// the whole list. Ids are "openrouter/<openrouter-model-id>"; the third
+    /// field only groups the picker. Only models that accept images are
+    /// listed, so screenshot sends (⌘⇧⏎) work with any of them.
     static let availableModels: [(id: String, name: String, provider: String)] = [
-        // Anthropic
-        ("claude-fable-5",            "Fable 5",         "Anthropic"),
-        ("claude-opus-4-8",           "Opus 4.8",        "Anthropic"),
-        ("claude-opus-4-7",           "Opus 4.7",        "Anthropic"),
-        ("claude-opus-4-6",           "Opus 4.6",        "Anthropic"),
-        ("claude-sonnet-4-6",         "Sonnet 4.6",      "Anthropic"),
-        ("claude-haiku-4-5-20251001", "Haiku 4.5",       "Anthropic"),
-        // OpenAI
-        ("gpt-5.5",                   "GPT-5.5",         "OpenAI"),
-        ("gpt-5.5-mini",              "GPT-5.5 mini",    "OpenAI"),
-        ("gpt-5.5-pro",               "GPT-5.5 pro",     "OpenAI"),
-        ("gpt-5.4",                   "GPT-5.4",         "OpenAI"),
-        ("gpt-4.1",                   "GPT-4.1",         "OpenAI"),
-        ("gpt-4.1-mini",              "GPT-4.1 mini",    "OpenAI"),
-        // Kimi (Moonshot) — OpenAI-compatible, https://api.moonshot.ai/v1
-        ("kimi-k2.7-code",            "Kimi 2.7 Code",   "Kimi"),
-        ("kimi-k2.6",                 "Kimi 2.6",        "Kimi"),
-        ("kimi-k2.5",                 "Kimi 2.5",        "Kimi"),
-        // Grok (xAI) — OpenAI-compatible, https://api.x.ai/v1
-        ("grok-4.3",                  "Grok 4.3",        "Grok"),
-        // DeepSeek — OpenAI-compatible, https://api.deepseek.com
-        ("deepseek-v4-pro",           "DeepSeek V4 Pro", "DeepSeek"),
-        ("deepseek-v4-flash",         "DeepSeek V4 Flash","DeepSeek"),
-        // NVIDIA NIM — OpenAI-compatible, https://integrate.api.nvidia.com/v1
-        ("deepseek-ai/deepseek-v4-pro",   "DeepSeek V4 Pro (NVIDIA)",   "NVIDIA"),
-        ("deepseek-ai/deepseek-v4-flash", "DeepSeek V4 Flash (NVIDIA)", "NVIDIA"),
-        // OpenRouter — one key, any model (https://openrouter.ai). Ids are
-        // "openrouter/<openrouter-model-id>"; add any model the same way.
-        ("openrouter/deepseek/deepseek-chat",        "DeepSeek (OpenRouter)",       "OpenRouter"),
-        ("openrouter/anthropic/claude-sonnet-4.5",   "Claude Sonnet 4.5 (OpenRouter)", "OpenRouter"),
-        ("openrouter/openai/gpt-4.1",                "GPT-4.1 (OpenRouter)",        "OpenRouter"),
+        ("openrouter/anthropic/claude-sonnet-5",   "Claude Sonnet 5",       "Anthropic"),
+        ("openrouter/anthropic/claude-opus-5.5",   "Claude Opus 5.5",       "Anthropic"),
+        ("openrouter/anthropic/claude-fable-5.1",  "Claude Fable 5.1",      "Anthropic"),
+        ("openrouter/anthropic/claude-haiku-4.5",  "Claude Haiku 4.5",      "Anthropic"),
+        ("openrouter/openai/gpt-5.5",              "GPT-5.5",               "OpenAI"),
+        ("openrouter/openai/gpt-5.4-mini",         "GPT-5.4 mini",          "OpenAI"),
+        ("openrouter/google/gemini-3.8-flash",     "Gemini 3.8 Flash",      "Google"),
+        ("openrouter/google/gemini-3.5-flash-lite","Gemini 3.5 Flash Lite", "Google"),
+        ("openrouter/x-ai/grok-4.7",               "Grok 4.7",              "xAI"),
+        ("openrouter/moonshotai/kimi-k2.6",        "Kimi K2.6",             "Kimi"),
     ]
+
+    static let defaultModel = "openrouter/anthropic/claude-sonnet-5"
+
+    /// Small fast model for background jobs (the response gate, session
+    /// titles). Reached through OpenRouter like everything else.
+    static let utilityModel = "openrouter/anthropic/claude-haiku-4.5"
+
+    /// Picker groups, in catalogue order.
+    static let modelProviders: [String] = availableModels.reduce(into: []) { groups, model in
+        if !groups.contains(model.provider) { groups.append(model.provider) }
+    }
 
     // MARK: - Session
     var sessionMode: SessionMode = .general {
@@ -69,18 +63,22 @@ final class OverlayViewModel {
             guard oldValue != audioSource else { return }
             NSLog("[OverlayViewModel] audioSource changed: %@ -> %@",
                   oldValue.label, audioSource.label)
-            applyBrowserAudioRouting()
             // Mid-session switch: restart the engine on the new source so
             // the picker takes effect immediately instead of on next start.
             if isRecording { restartCaptureForNewSource() }
         }
     }
-    /// Holds an error message when BlackHole routing failed (e.g. driver not
-    /// installed). The browser panel watches this to show a non-modal banner.
-    var browserAudioRouterError: String? = nil
-    var isRecording  = false { didSet { scheduleBroadcast() } }
-    var vadEnabled: Bool { didSet { UserDefaults.standard.set(vadEnabled, forKey: "vadEnabled") } }
+    var isRecording  = false {
+        didSet {
+            scheduleBroadcast()
+            if isRecording != oldValue { onRecordingChange?(isRecording) }
+            if isRecording { detectedCallApp = nil }
+        }
+    }
     var isInterviewSession = false
+    /// Size of the text you read (answers, your questions, the live
+    /// transcript), from 0.8 to 1.6. Settings → General → Text size.
+    var textScale: Double { didSet { UserDefaults.standard.set(textScale, forKey: "textScale") } }
     /// Interview is active but recording is paused. The transcriber is
     /// stopped so audio stops flowing, but the session, transcript, and
     /// context all stay intact so resuming picks up cleanly.
@@ -287,6 +285,11 @@ final class OverlayViewModel {
     enum InterviewSurfaceMode: String, Equatable, CaseIterable {
         case interview, regularCall
 
+        /// Modes offered in this build. Production hides Regular call.
+        static var available: [InterviewSurfaceMode] {
+            allCases.filter { $0 != .regularCall || FeatureFlags.regularCallEnabled }
+        }
+
         var displayName: String {
             switch self {
             case .interview:   return "Interview"
@@ -349,14 +352,6 @@ final class OverlayViewModel {
     var browserTabs: [BrowserTab] = [] { didSet { scheduleBroadcast() } }
     var activeTabID: UUID? = nil { didSet { scheduleBroadcast() } }
     var splitCount: Int = 1
-    /// Mirrors `BrowserAudioRouter.shared.isRouting` so SwiftUI views can
-    /// reflect the routing state without observing CoreAudio directly.
-    var browserSystemAudioRouting: Bool = false
-    /// Whether the macOS default *output* device is configured so that
-    /// audio actually reaches BlackHole. The browser banner uses this to
-    /// warn the user when System mode is on but their output device won't
-    /// produce any signal for the website to read.
-    var browserSystemOutputState: BrowserAudioRouter.SystemOutputState = .notRouted
 
     /// True while the browser lives in its own window instead of inside the
     /// overlay shell. Deliberately session-only state: a detached window
@@ -370,7 +365,6 @@ final class OverlayViewModel {
         let tab = BrowserTab(url: url)
         browserTabs.append(tab)
         activeTabID = tab.id
-        applyBrowserAudioRouting()
     }
 
     func closeTab(id: UUID) {
@@ -380,7 +374,6 @@ final class OverlayViewModel {
             splitCount = 1
         }
         WebViewRegistry.shared.evict(tabID: id)
-        applyBrowserAudioRouting()
     }
 
     func toggleBrowser() {
@@ -399,7 +392,6 @@ final class OverlayViewModel {
         } else {
             addTab()
         }
-        applyBrowserAudioRouting()
     }
 
     /// Move the browser out of the overlay shell into its own window, so the
@@ -422,69 +414,6 @@ final class OverlayViewModel {
         BrowserWindow.shared.dismiss()
         primarySurface = .browser
         if shellStage == .pill { shellStage = .expanded }
-    }
-
-    /// Called by the browser's audio-source picker. Mirrors `audioSource` for
-    /// transcription, and additionally — when the user picks `.systemAudio`
-    /// — redirects the macOS default *input* device to BlackHole so any
-    /// website inside the embedded browser receives system audio through its
-    /// `getUserMedia` mic stream. Reverts the device when switching back.
-    /// Returns nil on success, or an error description for the UI to show.
-    @discardableResult
-    func setBrowserAudioSource(_ src: AudioSource) -> String? {
-        // Setting audioSource triggers applyBrowserAudioRouting via didSet,
-        // which fills in browserAudioRouterError. Mirror it back so existing
-        // call sites that ignore the property still get a return value.
-        audioSource = src
-        return browserAudioRouterError
-    }
-
-    /// Reconciles the BlackHole router state with the current
-    /// `(audioSource, hasBrowser)` pair. Called from `audioSource.didSet`,
-    /// `toggleBrowser`, `closeTab`, and `addTab` so any change to either
-    /// input recomputes the right routing decision.
-    private func applyBrowserAudioRouting() {
-        let shouldRoute     = hasBrowser && audioSource == .systemAudio
-        let wasRouting      = browserSystemAudioRouting
-        NSLog("[OverlayViewModel] applyBrowserAudioRouting: hasBrowser=%@ audioSource=%@ -> shouldRoute=%@",
-              hasBrowser ? "true" : "false",
-              audioSource.label,
-              shouldRoute ? "true" : "false")
-
-        if shouldRoute {
-            do {
-                try BrowserAudioRouter.shared.enable()
-                browserSystemAudioRouting = true
-                browserAudioRouterError   = nil
-            } catch {
-                browserSystemAudioRouting = false
-                browserAudioRouterError   = error.localizedDescription
-                NSLog("[OverlayViewModel] BlackHole enable failed: %@",
-                      error.localizedDescription)
-            }
-        } else {
-            BrowserAudioRouter.shared.disable()
-            browserSystemAudioRouting = false
-            browserAudioRouterError   = nil
-        }
-
-        // Refresh the cached output state on any routing change. The
-        // CoreAudio listener handles user-driven changes (Output picker,
-        // Audio MIDI Setup) but firing here covers the case where the user
-        // just toggled the source and we want the banner up immediately.
-        browserSystemOutputState = BrowserAudioRouter.shared.currentSystemOutputState()
-
-        // Webpages cache `MediaStream` against the device that was current at
-        // capture time, so the only way to make a running tab pick up the
-        // new default input is a hard reload. We only reload when routing
-        // *changed* — switching off `.systemAudio` back to mic, or vice
-        // versa — so we don't churn pages on no-op reconciles.
-        if wasRouting != browserSystemAudioRouting && hasBrowser {
-            NSLog("[OverlayViewModel] routing changed (%@ -> %@); reloading browser tabs",
-                  wasRouting ? "on" : "off",
-                  browserSystemAudioRouting ? "on" : "off")
-            WebViewRegistry.shared.reloadAll()
-        }
     }
 
     /// Navigate the currently active tab to a URL, opening the browser if needed.
@@ -526,8 +455,12 @@ final class OverlayViewModel {
     }
     /// xAI / Grok API key. Grok models route through xAI's OpenAI-compatible
     /// endpoint (https://api.x.ai/v1) with this key — see AIManager.
+    /// xAI key: Grok chat models, and Grok transcription.
     var grokAPIKey: String {
-        didSet { UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey") }
+        didSet {
+            UserDefaults.standard.set(grokAPIKey, forKey: "grokAPIKey")
+            transcriptionManager.grokAPIKey = grokAPIKey
+        }
     }
     /// DeepSeek API key. DeepSeek models route through its OpenAI-compatible
     /// endpoint (https://api.deepseek.com) with this key — see AIManager.
@@ -551,19 +484,26 @@ final class OverlayViewModel {
         }
     }
 
-    /// User-selected transcription backend. `.auto` picks ElevenLabs when a key
-    /// is configured and falls back to Apple otherwise; `.apple` and
-    /// `.elevenLabs` force the choice regardless of key state.
+    /// User-selected transcription backend. `.auto` picks ElevenLabs when a
+    /// key is configured, then Grok, then Apple. The others force their
+    /// engine, falling back to Apple while its key is missing.
     enum TranscriptionPreference: String, CaseIterable, Identifiable {
-        case auto, apple, elevenLabs
+        case auto, apple, elevenLabs, grok
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .auto:       return "Automatic"
             case .apple:      return "Apple (on-device, free)"
             case .elevenLabs: return "ElevenLabs (cloud)"
+            case .grok:       return "Grok Transcribe 2 (cloud)"
             }
         }
+    }
+    /// Apple locale identifier of the transcription language. The engines
+    /// read `TranscriptionLanguage.current` (same defaults key) when they
+    /// start, so a change applies from the next recording.
+    var transcriptionLanguageID: String {
+        didSet { UserDefaults.standard.set(transcriptionLanguageID, forKey: TranscriptionLanguage.defaultsKey) }
     }
     var transcriptionPreference: TranscriptionPreference {
         didSet {
@@ -655,18 +595,6 @@ final class OverlayViewModel {
     var backgroundOpacity: Double {
         didSet { UserDefaults.standard.set(backgroundOpacity, forKey: "backgroundOpacity") }
     }
-    /// When true, show live token counts in the top strip and per-session.
-    var showTokenCounts: Bool {
-        didSet { UserDefaults.standard.set(showTokenCounts, forKey: "showTokenCounts") }
-    }
-
-    /// Gate auto-send on "does this need an answer?". On (default) drops
-    /// acknowledgements and fragments so they can't pull a random answer
-    /// over what the user is reading. Off = send every meaningful segment
-    /// (the old behaviour).
-    var interviewResponseGate: Bool {
-        didSet { UserDefaults.standard.set(interviewResponseGate, forKey: "interviewResponseGate") }
-    }
 
     /// Screen-share visibility. `true` (default) excludes every window the
     /// app shows from screen capture — invisible to Zoom / Meet / QuickTime
@@ -731,6 +659,9 @@ final class OverlayViewModel {
     /// AppDelegate hooks this to flip every window's `sharingType` when the
     /// user toggles screen-share visibility.
     @ObservationIgnored var onScreenShareVisibilityChange: ((Bool) -> Void)?
+    /// Fires when live capture starts or stops. The app delegate uses it to
+    /// switch the live-session hotkeys (⌘⏎, ⌘⇧⏎) on and off.
+    @ObservationIgnored var onRecordingChange: ((Bool) -> Void)?
 
     // MARK: - Onboarding
     var hasCompletedOnboarding: Bool {
@@ -926,6 +857,71 @@ final class OverlayViewModel {
     }
     @ObservationIgnored var onPillPopupChange: ((Bool) -> Void)?
 
+    // MARK: - Call detection
+
+    /// Name of the call app that just started using the microphone
+    /// ("Zoom"), while the "start your interview?" prompt is showing.
+    var detectedCallApp: String? {
+        didSet { if detectedCallApp != oldValue { onDetectedCallAppChange?(detectedCallApp) } }
+    }
+    /// The app delegate shows and hides the top-right prompt window from this.
+    @ObservationIgnored var onDetectedCallAppChange: ((String?) -> Void)?
+
+    /// Set when the user dismisses the prompt, so the same call doesn't ask
+    /// again. Cleared when the call ends.
+    @ObservationIgnored private var callPromptDismissed = false
+
+    /// Preferences toggle for the call prompt. On by default.
+    var suggestSessionOnCall: Bool {
+        didSet {
+            UserDefaults.standard.set(suggestSessionOnCall, forKey: "suggestSessionOnCall")
+            if !suggestSessionOnCall { detectedCallApp = nil }
+        }
+    }
+
+    /// Fed by `CallDetector`: the call app now using the mic, or nil when
+    /// no call app is.
+    func callAppDidChange(_ app: String?) {
+        guard let app else {
+            detectedCallApp = nil
+            callPromptDismissed = false
+            return
+        }
+        guard suggestSessionOnCall, !isRecording, !callPromptDismissed else {
+            NSLog("[CallPrompt] %@ call not prompted: enabled=%@ recording=%@ dismissed=%@",
+                  app, "\(suggestSessionOnCall)", "\(isRecording)", "\(callPromptDismissed)")
+            return
+        }
+        detectedCallApp = app
+    }
+
+    func dismissCallPrompt() {
+        detectedCallApp = nil
+        callPromptDismissed = true
+    }
+
+    /// "Start" on the call prompt: the same as Start interview on the setup
+    /// screen, with whatever résumé and prompt the setup already has.
+    /// Without both keys it stops at the setup screen, which says what's
+    /// missing.
+    func startInterviewFromCallPrompt() {
+        dismissCallPrompt()
+        shellStage = .expanded
+        openInterviewSurface()
+        guard missingRequiredKeys.isEmpty else { return }
+        beginInterviewFromSetup()
+    }
+
+    /// How see-through the open screen is. The Background setting is for
+    /// answers shown over a call; setup, Settings, History, Prompts and the
+    /// browser are read up close, and text from the window behind showing
+    /// through them looks broken, so they're solid.
+    var surfaceOpacity: Double {
+        let live = primarySurface == .chat
+            || (primarySurface == .interview && interviewSurfaceShowsChat)
+        return live ? backgroundOpacity : 1
+    }
+
     /// Backward-compat read-only shim. New code should test
     /// `shellStage == .expanded` directly.
     var isShellExpanded: Bool { shellStage == .expanded }
@@ -962,20 +958,35 @@ final class OverlayViewModel {
 
     /// Which transcription engine is being used right now. Switches live with
     /// whether the user has configured an ElevenLabs key.
-    enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", apple = "Apple" }
+    enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", grok = "Grok", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
+        // Pro transcribes on this Mac with Apple's recognizer: no key.
+        if ProAccount.shared.isActive { return .apple }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
-        case .auto:       return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
+        case .grok:       return grokAPIKey.isEmpty ? .apple : .grok
+        case .auto:
+            if !elevenLabsAPIKey.isEmpty { return .elevenLabs }
+            return grokAPIKey.isEmpty ? .apple : .grok
         }
     }
+
+    /// Whether a Pro plan was active last time it changed, to tell the user
+    /// when it ends.
+    @ObservationIgnored private var wasOnPro = false
 
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
         switch transcriptionBackend {
-        case .elevenLabs: try await transcriptionManager.start(source: source)
-        case .apple:      try await appleTranscriber.start(source: source)
+        case .elevenLabs:
+            transcriptionManager.provider = .elevenLabs
+            try await transcriptionManager.start(source: source)
+        case .grok:
+            transcriptionManager.provider = .grok
+            try await transcriptionManager.start(source: source)
+        case .apple:
+            try await appleTranscriber.start(source: source)
         }
     }
 
@@ -1014,7 +1025,6 @@ final class OverlayViewModel {
     init() {
         // NOTE: didSet observers do NOT fire during init for properties set on `self`,
         // so initial values are loaded without triggering UserDefaults writes or broadcasts.
-        vadEnabled         = UserDefaults.standard.bool(forKey: "vadEnabled")
         apiKey             = UserDefaults.standard.string(forKey: "anthropicAPIKey") ?? ""
         openAIApiKey       = UserDefaults.standard.string(forKey: "openAIApiKey") ?? ""
         moonshotAPIKey     = UserDefaults.standard.string(forKey: "moonshotAPIKey") ?? ""
@@ -1026,6 +1036,8 @@ final class OverlayViewModel {
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
+        transcriptionLanguageID = TranscriptionLanguage.current.id
+        suggestSessionOnCall = UserDefaults.standard.object(forKey: "suggestSessionOnCall") as? Bool ?? true
         // Default résumé generation to DeepSeek V4 Pro (direct api.deepseek.com)
         // — the chunked plan-then-apply path with reasoning disabled tailors
         // every section cheaply, with no NVIDIA rate limits.
@@ -1045,14 +1057,13 @@ final class OverlayViewModel {
         // (e.g. an OpenAI model we no longer list, or Sonnet 4.5), fall back
         // to the default so the user isn't stuck on a model that 404s. Done
         // via a local so the closure doesn't capture `self` during init.
-        let storedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? "claude-sonnet-4-6"
+        let storedModel = UserDefaults.standard.string(forKey: "selectedModel") ?? OverlayViewModel.defaultModel
         selectedModel = OverlayViewModel.availableModels.contains(where: { $0.id == storedModel })
-            ? storedModel : "claude-sonnet-4-6"
+            ? storedModel : OverlayViewModel.defaultModel
         opacity            = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 1.0
-        backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 1.0
-        showTokenCounts    = UserDefaults.standard.bool(forKey: "showTokenCounts")
+        backgroundOpacity  = UserDefaults.standard.object(forKey: "backgroundOpacity") as? Double ?? 0.6
+        textScale          = min(max(UserDefaults.standard.object(forKey: "textScale") as? Double ?? 1.0, 0.8), 1.6)
         screenShareInvisible = UserDefaults.standard.object(forKey: "screenShareInvisible") as? Bool ?? true
-        interviewResponseGate = UserDefaults.standard.object(forKey: "interviewResponseGate") as? Bool ?? true
         quickAskCustomPrompt = UserDefaults.standard.string(forKey: "quickAskCustomPrompt") ?? ""
         if let data = UserDefaults.standard.data(forKey: "quickAskFiles"),
            let files = try? JSONDecoder().decode([QuickAskFile].self, from: data) {
@@ -1103,6 +1114,13 @@ final class OverlayViewModel {
         sessionStore.migrateWorkspacelessSessions(to: workspaceStore.activeWorkspaceID)
 
         transcriptionManager.elevenLabsAPIKey = elevenLabsAPIKey
+        transcriptionManager.grokAPIKey       = grokAPIKey
+
+        // TheCloser Pro: keep the model choice inside the plan, and pick up
+        // the subscription (renewing its pass) in the background.
+        ProAccount.shared.onChange = { [weak self] in self?.proPlanChanged() }
+        proPlanChanged()
+        ProAccount.shared.start()
 
         // Apple delivers one growing string per recognition task, so the
         // raw update can replace the live transcript wholesale. New text =
@@ -1236,27 +1254,12 @@ final class OverlayViewModel {
                     // (longer when the text trails off mid-thought) and
                     // is cancelled by any new speech.
                     self.scheduleAutoSend()
-                } else if self.vadEnabled {
-                    // Skip noise / filler-only segments so VAD auto-send
-                    // doesn't ship junk to the AI; keep listening.
-                    guard TranscriptFilter.isMeaningful(self.transcription) else { return }
-                    self.toggleRecording()
-                    self.sendToAI()
                 }
             }
         }
         transcriptionManager.onSilence = silenceHandler
         appleTranscriber.onSilence    = silenceHandler
 
-        // Track the system output device so the browser banner can warn
-        // the user when System mode is on but BlackHole isn't actually
-        // receiving any audio (e.g. output is set to plain speakers).
-        browserSystemOutputState = BrowserAudioRouter.shared.currentSystemOutputState()
-        BrowserAudioRouter.shared.onSystemOutputStateChange = { [weak self] state in
-            Task { @MainActor [weak self] in
-                self?.browserSystemOutputState = state
-            }
-        }
     }
 
 
@@ -1366,22 +1369,6 @@ final class OverlayViewModel {
     func toggleRecording() {
         if isRecording {
             endCapture()
-        } else {
-            transcription = ""
-            aiResponse    = ""
-            Task { @MainActor [weak self] in
-                _ = await self?.beginCapture()
-            }
-        }
-    }
-
-    // MARK: - Hotkey record toggle (Ctrl+Opt+M)
-
-    func hotkeyToggleRecord() {
-        if isInterviewSession { stopInterviewSession(); return }
-        if isRecording {
-            endCapture()
-            if !transcription.isEmpty { sendToAI() }
         } else {
             transcription = ""
             aiResponse    = ""
@@ -1674,7 +1661,7 @@ final class OverlayViewModel {
         "Look at my screen and answer what's there. If it's a question, problem, or error, give the answer or fix directly and concisely. Otherwise describe what matters."
 
     /// Capture-and-send: attach `image` and dispatch it to the AI in one
-    /// step (the ⌃⇧S hotkey). Any draft the user had already typed is kept
+    /// step (the ⌘⇧⏎ hotkey). Any draft the user had already typed is kept
     /// as the question; otherwise the default screenshot prompt is used so
     /// the turn reads sensibly in the transcript instead of being blank.
     func sendScreenshotToAI(_ image: NSImage) {
@@ -1776,27 +1763,26 @@ final class OverlayViewModel {
             // sense", and mid-thought asides used to sail through
             // isMeaningful and pull a random answer over whatever the user
             // was reading. Local triage decides the obvious cases for free;
-            // only the ambiguous band asks a small model.
-            if self.interviewResponseGate {
-                let candidate = self.transcription
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                switch TranscriptFilter.warrantsResponse(candidate) {
-                case .no:
-                    // Not cleared: the text stays in the strip, so if the
-                    // speaker continues ("Okay… so tell me about X") the
-                    // next commit re-schedules with the full segment.
-                    return
-                case .yes:
-                    break
-                case .unsure:
-                    guard await self.classifyNeedsResponse(candidate) else { return }
-                    // New speech during the round-trip cancels this task;
-                    // and if the transcript grew anyway, let the fresher
-                    // commit make the call instead of sending stale text.
-                    guard !Task.isCancelled else { return }
-                    guard TranscriptFilter.normalized(self.transcription)
-                            == TranscriptFilter.normalized(candidate) else { return }
-                }
+            // only the ambiguous band asks a small model. Always on in auto
+            // mode.
+            let candidate = self.transcription
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            switch TranscriptFilter.warrantsResponse(candidate) {
+            case .no:
+                // Not cleared: the text stays in the strip, so if the
+                // speaker continues ("Okay… so tell me about X") the
+                // next commit re-schedules with the full segment.
+                return
+            case .yes:
+                break
+            case .unsure:
+                guard await self.classifyNeedsResponse(candidate) else { return }
+                // New speech during the round-trip cancels this task;
+                // and if the transcript grew anyway, let the fresher
+                // commit make the call instead of sending stale text.
+                guard !Task.isCancelled else { return }
+                guard TranscriptFilter.normalized(self.transcription)
+                        == TranscriptFilter.normalized(candidate) else { return }
             }
 
             // Detach before sending — sendToAI cancels pendingAutoSendTask
@@ -1834,13 +1820,14 @@ final class OverlayViewModel {
     /// noise the user ignores, but a missed question leaves them stranded
     /// mid-interview. When in doubt, answer.
     private func classifyNeedsResponse(_ text: String) async -> Bool {
-        guard !apiKey.isEmpty else { return true }
+        guard hasOpenRouterAccess else { return true }
         do {
             let raw = try await AIManager.shared.sendMessage(
                 text,
-                apiKey:       apiKey,
-                openAIApiKey: openAIApiKey,
-                model:        "claude-haiku-4-5-20251001",
+                apiKey:           apiKey,
+                openAIApiKey:     openAIApiKey,
+                openRouterAPIKey: openRouterAPIKey,
+                model:            Self.utilityModel,
                 screenshot:   nil,
                 systemPrompt: Self.responseGatePrompt,
                 history:      [],
@@ -2180,23 +2167,6 @@ final class OverlayViewModel {
         primarySurface = .interview
     }
 
-    /// Mark the active session as a paused live session. The bar will
-    /// render the live controls (text input, model picker, pause/play,
-    /// stop) but no transcriber starts until the user explicitly hits
-    /// play — same shape as pausing a running interview, just without
-    /// the prior recording.
-    func enterPausedLiveState() {
-        isInterviewSession  = true
-        isInterviewPaused   = true
-        isInterviewTextOnly = false
-        // Re-entering live mode after a stop / from history — restart
-        // the elapsed counter so the timer begins at 00:00 when the
-        // user hits play, but stays at 00:00 while paused.
-        interviewElapsedSeconds = 0
-        interviewRunningSince   = nil
-        endCapture(status: "Paused")
-    }
-
     /// Switch the mode tab on the Interview surface. Just swaps which
     /// setup form is showing — switching tabs never silently jumps into
     /// an old session; resuming is always an explicit action (session
@@ -2332,7 +2302,13 @@ final class OverlayViewModel {
     /// and error message stays in sync with `AIManager`'s routing.
     /// API key + provider label for an arbitrary model id.
     func key(for model: String) -> (key: String, provider: String) {
-        if AIManager.shared.isOpenRouterModel(model) { return (openRouterAPIKey, "OpenRouter") }
+        if AIManager.shared.isOpenRouterModel(model) {
+            // Pro needs no key: AIManager sends these models through the
+            // subscription. Callers only check a key is there, so the plan
+            // name stands in for it.
+            if let plan = ProAccount.shared.plan { return ("TheCloser \(plan.name)", "TheCloser Pro") }
+            return (openRouterAPIKey, "OpenRouter")
+        }
         if AIManager.shared.isNVIDIAModel(model)   { return (nvidiaAPIKey, "NVIDIA") }
         if AIManager.shared.isMoonshotModel(model) { return (moonshotAPIKey, "Moonshot") }
         if AIManager.shared.isGrokModel(model)     { return (grokAPIKey, "Grok") }
@@ -2351,5 +2327,39 @@ final class OverlayViewModel {
 
     var needsKeyForCurrentModel: Bool {
         keyForSelectedModel.key.isEmpty
+    }
+
+    /// OpenRouter models can run: on Pro, or with the user's own key.
+    var hasOpenRouterAccess: Bool { ProAccount.shared.isActive || !openRouterAPIKey.isEmpty }
+
+    /// Keys a bring-your-own-key user still has to add before starting an
+    /// interview: OpenRouter runs the models, and ElevenLabs transcribes,
+    /// or xAI when Grok is the chosen engine. Pro needs none.
+    var missingRequiredKeys: [String] {
+        guard !ProAccount.shared.isActive else { return [] }
+        var missing: [String] = []
+        if openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("OpenRouter") }
+        if transcriptionPreference == .grok {
+            if grokAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("xAI") }
+        } else if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            missing.append("ElevenLabs")
+        }
+        return missing
+    }
+
+    /// A Pro plan started, changed or ended. Pro keeps the model choice
+    /// inside the plan and uses the default memory settings, which it
+    /// doesn't let the user change.
+    private func proPlanChanged() {
+        let visibility = ModelVisibility.shared
+        if !visibility.isAllowed(selectedModel) {
+            selectedModel = visibility.isAllowed(Self.defaultModel)
+                ? Self.defaultModel
+                : Self.availableModels.first { visibility.isAllowed($0.id) }?.id ?? Self.defaultModel
+        }
+        let onPro = ProAccount.shared.isActive
+        if onPro { sessionStore.useDefaultMemorySettings() }
+        if wasOnPro && !onPro { statusMessage = "Error: \(AIError.proEnded.localizedDescription)" }
+        wasOnPro = onPro
     }
 }

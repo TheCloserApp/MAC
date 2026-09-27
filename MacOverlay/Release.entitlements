@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements for Developer ID builds, which are signed with the
+      Hardened Runtime so Apple will notarize them (see build.sh).
+
+      The Hardened Runtime blocks the microphone unless the app declares
+      audio-input. Screen and system-audio capture need no entitlement:
+      macOS asks for Screen Recording permission instead. Calendar access
+      would need com.apple.security.personal-information.calendars; that
+      feature is off (FeatureFlags.calendarEnabled), so it isn't claimed.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

@@ -182,11 +182,29 @@ struct TopStripView: View {
                 Divider()
             }
 
+            // Same switch as on the setup screen; it applies straight
+            // away, mid-interview included.
+            Menu {
+                ForEach([true, false], id: \.self) { on in
+                    Button {
+                        vm.interviewAutoGenerate = on
+                    } label: {
+                        HStack {
+                            Text(on ? "On" : "Off")
+                            if vm.interviewAutoGenerate == on { Image(systemName: "checkmark") }
+                        }
+                    }
+                }
+            } label: {
+                Label("Auto-generate responses: \(vm.interviewAutoGenerate ? "On" : "Off")",
+                      systemImage: "wand.and.sparkles")
+            }
+
             // Model picker — moved out of the bar; switching applies
             // from the next answer.
             Menu {
                 let visibility = ModelVisibility.shared
-                ForEach(["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"], id: \.self) { provider in
+                ForEach(OverlayViewModel.modelProviders, id: \.self) { provider in
                     let models = OverlayViewModel.availableModels
                         .filter { $0.provider == provider && visibility.isVisible($0.id) }
                     if !models.isEmpty {
@@ -307,8 +325,30 @@ struct TopStripView: View {
                       systemImage: "rectangle.on.rectangle")
             }
 
+            // Answer text size — the same setting as the slider in
+            // Settings → General.
+            Menu {
+                ForEach([0.9, 1.0, 1.15, 1.3, 1.5], id: \.self) { level in
+                    Button {
+                        vm.textScale = level
+                    } label: {
+                        HStack {
+                            Text("\(Int((level * 100).rounded()))%")
+                            if abs(vm.textScale - level) < 0.01 {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Text size: \(Int((vm.textScale * 100).rounded()))%",
+                      systemImage: "textformat.size")
+            }
+
             // Which speech engine is doing the transcribing — switchable
-            // here so the strip doesn't need a badge for it.
+            // here so the strip doesn't need a badge for it. Pro always
+            // transcribes on this Mac, so it has nothing to pick.
+            if !ProAccount.shared.isActive {
             Menu {
                 ForEach(OverlayViewModel.TranscriptionPreference.allCases) { pref in
                     Button {
@@ -325,6 +365,7 @@ struct TopStripView: View {
             } label: {
                 Label("Transcription: \(vm.transcriptionBackend.rawValue)",
                       systemImage: "waveform.badge.mic")
+            }
             }
 
             if vm.isInterviewSession && !vm.isInterviewTextOnly {
@@ -349,12 +390,6 @@ struct TopStripView: View {
                 }
             }
 
-            if vm.showTokenCounts {
-                Divider()
-                let s = vm.sessionStore.activeSession
-                Text("\(s.totalInputTokens) in · \(s.totalOutputTokens) out · \(s.totalTokens) total")
-            }
-
             Divider()
 
             Button(role: .destructive) {
@@ -365,8 +400,8 @@ struct TopStripView: View {
 
             Divider()
 
-            // App-level controls — there's no menu-bar icon (it would be
-            // visible to others during screen shares), so these live here.
+            // App-level controls. The menu-bar icon hides during calls (the
+            // menu bar is in every screen share), so these live here too.
             Button {
                 (NSApp.delegate as? AppDelegate)?.resetPosition()
             } label: {
@@ -374,9 +409,15 @@ struct TopStripView: View {
             }
 
             Button {
+                (NSApp.delegate as? AppDelegate)?.closeToMenuBar()
+            } label: {
+                Label("Close to menu bar", systemImage: "menubar.arrow.up.rectangle")
+            }
+
+            Button {
                 NSApp.terminate(nil)
             } label: {
-                Label("Quit thecloser", systemImage: "power")
+                Label("Quit TheCloser", systemImage: "power")
             }
         } label: {
             Image(systemName: "ellipsis")

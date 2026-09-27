@@ -47,33 +47,36 @@ enum Design {
     // instead of a repo-wide search-and-replace.
     enum Surface {
         /// Base fill under shell capsules, cards, panels, and onboarding.
-        /// One flat, uniform shade everywhere — neutral charcoal (#212121),
-        /// matching the ChatGPT desktop dark palette. No gradient.
-        static let shellFill = Color(red: 0x21/255, green: 0x21/255, blue: 0x21/255)
-        static let raisedFill = Color(red: 0x2f/255, green: 0x2f/255, blue: 0x2f/255)
-        static let controlFill = Color(red: 0x2a/255, green: 0x2a/255, blue: 0x2a/255)
-        static let controlHoverFill = Color(red: 0x33/255, green: 0x33/255, blue: 0x33/255)
-        static let inputFill = Color(red: 0x30/255, green: 0x30/255, blue: 0x30/255)
-        static let userBubbleFill = Color(red: 0x30/255, green: 0x30/255, blue: 0x30/255)
-        static let previewFill = Color(red: 0x27/255, green: 0x27/255, blue: 0x27/255)
-        static let codeFill = Color(red: 0x17/255, green: 0x17/255, blue: 0x17/255)
+        /// Near-black and neutral like thecloser.tech (#000 page, #0a0a0a
+        /// panels, #1f1f1f / #333 borders), so the app and the site read as
+        /// one product. One flat shade everywhere, no gradient.
+        static let shellFill = Color(red: 0x11/255, green: 0x11/255, blue: 0x11/255)
+        static let raisedFill = Color(red: 0x1a/255, green: 0x1a/255, blue: 0x1a/255)
+        static let controlFill = Color(red: 0x1f/255, green: 0x1f/255, blue: 0x1f/255)
+        static let controlHoverFill = Color(red: 0x29/255, green: 0x29/255, blue: 0x29/255)
+        static let inputFill = Color(red: 0x0a/255, green: 0x0a/255, blue: 0x0a/255)
+        static let userBubbleFill = Color(red: 0x22/255, green: 0x22/255, blue: 0x22/255)
+        static let previewFill = Color(red: 0x16/255, green: 0x16/255, blue: 0x16/255)
+        static let codeFill = Color(red: 0x0a/255, green: 0x0a/255, blue: 0x0a/255)
         static let separator = Color.white.opacity(0.08)
         static let hairline = Color.white.opacity(0.10)
-        static let strongHairline = Color.white.opacity(0.14)
+        static let strongHairline = Color.white.opacity(0.18)
     }
 
-    // MARK: - ChatGPT desktop text colors
+    // MARK: - Text colors (the website's #ededed / #a1a1a1 / #666 scale)
     enum Ink {
-        static let primary = Color(red: 0xec/255, green: 0xec/255, blue: 0xec/255)
-        static let secondary = Color(red: 0xc5/255, green: 0xc5/255, blue: 0xc5/255)
-        static let tertiary = Color(red: 0x8e/255, green: 0x8e/255, blue: 0x8e/255)
-        static let muted = Color(red: 0x6f/255, green: 0x6f/255, blue: 0x6f/255)
-        static let inverse = Color(red: 0x21/255, green: 0x21/255, blue: 0x21/255)
+        static let primary = Color(red: 0xed/255, green: 0xed/255, blue: 0xed/255)
+        static let secondary = Color(red: 0xa1/255, green: 0xa1/255, blue: 0xa1/255)
+        static let tertiary = Color(red: 0x80/255, green: 0x80/255, blue: 0x80/255)
+        static let muted = Color(red: 0x66/255, green: 0x66/255, blue: 0x66/255)
+        static let inverse = Color(red: 0x0a/255, green: 0x0a/255, blue: 0x0a/255)
     }
 
-    // MARK: - macOS system accents (used by sidebar / top strip / chat rail)
+    // MARK: - Accents
     enum Accent {
-        static let chatGPT = Color(red: 16/255, green: 163/255, blue: 127/255)
+        /// The one brand accent: links, switches, selection. The website's
+        /// blue, in its dark-mode shade so it stays readable on black.
+        static let brand  = Color(red: 0x3b/255, green: 0x8e/255, blue: 0xff/255)
         static let blue   = Color(red: 10/255,  green: 132/255, blue: 255/255)
         static let green  = Color(red: 52/255,  green: 199/255, blue: 89/255)
         static let red    = Color(red: 255/255, green: 69/255,  blue: 58/255)
@@ -129,6 +132,65 @@ enum Design {
         case .call:      return .orange
         }
     }
+}
+
+// MARK: - Buttons
+
+/// The website's two buttons. `.primary` (white) is the one main action on
+/// a screen; `.secondary` (dark, outlined) is for everything else.
+struct PrimaryButtonStyle: ButtonStyle {
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        StyledButton(configuration: configuration, compact: compact, primary: true)
+    }
+}
+
+struct SecondaryButtonStyle: ButtonStyle {
+    var compact = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        StyledButton(configuration: configuration, compact: compact, primary: false)
+    }
+}
+
+private struct StyledButton: View {
+    let configuration: ButtonStyleConfiguration
+    let compact: Bool
+    let primary: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovering = false
+
+    var body: some View {
+        configuration.label
+            .font(.system(size: compact ? 11.5 : 12.5, weight: primary ? .semibold : .medium))
+            .lineLimit(1)
+            .foregroundColor(primary ? Design.Ink.inverse : Design.Ink.primary)
+            .padding(.horizontal, compact ? 12 : 16)
+            .padding(.vertical, compact ? 5 : 7)
+            .background(Capsule().fill(fill))
+            .overlay(Capsule().strokeBorder(primary ? Color.clear : Design.Surface.strongHairline, lineWidth: 0.75))
+            .contentShape(Capsule())
+            .opacity(isEnabled ? 1 : 0.4)
+            .onHover { hovering = $0 }
+            .animation(Design.Motion.fast, value: hovering)
+    }
+
+    private var fill: Color {
+        let pressedOrHover = configuration.isPressed || (hovering && isEnabled)
+        if primary { return pressedOrHover ? Color(white: 0.8) : Design.Ink.primary }
+        return pressedOrHover ? Design.Surface.controlHoverFill : Design.Surface.controlFill
+    }
+}
+
+extension ButtonStyle where Self == PrimaryButtonStyle {
+    static var primary: PrimaryButtonStyle { PrimaryButtonStyle() }
+    static var primaryCompact: PrimaryButtonStyle { PrimaryButtonStyle(compact: true) }
+}
+
+extension ButtonStyle where Self == SecondaryButtonStyle {
+    static var secondary: SecondaryButtonStyle { SecondaryButtonStyle() }
+    static var secondaryCompact: SecondaryButtonStyle { SecondaryButtonStyle(compact: true) }
 }
 
 extension View {

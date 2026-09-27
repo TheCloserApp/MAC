@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 // MARK: - Tiny test runner
@@ -236,6 +237,96 @@ func testAudioSourceLabels() throws {
 }
 
 @MainActor
+func testAppChannelResolution() throws {
+    try assertEq(AppChannel(infoValue: "dev"), .dev)
+    try assertEq(AppChannel(infoValue: "beta"), .beta)
+    try assertEq(AppChannel(infoValue: "prod"), .production)
+    // Missing or unknown values must never unlock preview features.
+    try assertEq(AppChannel(infoValue: nil), .production)
+    try assertEq(AppChannel(infoValue: "staging"), .production)
+    try assertEq(AppChannel(infoValue: 1), .production)
+    try assertFalse(AppChannel.production.showsPreviewFeatures)
+    try assertTrue(AppChannel.beta.showsPreviewFeatures)
+    try assertTrue(AppChannel.dev.showsPreviewFeatures)
+}
+
+@MainActor
+func testTranscriptionLanguageDefaultsToEnglish() throws {
+    func defaultID(_ locale: String) -> String {
+        TranscriptionLanguage.defaultLanguage(for: Locale(identifier: locale)).id
+    }
+    // English Macs keep their accent model when we list it.
+    try assertEq(defaultID("en_US"), "en-US")
+    try assertEq(defaultID("en_IN"), "en-IN")
+    try assertEq(defaultID("en_GB"), "en-GB")
+    try assertEq(defaultID("en_NZ"), "en-US", "unlisted English variant falls back to US")
+    // Non-English Macs still transcribe English unless the user picks otherwise.
+    try assertEq(defaultID("fr_FR"), "en-US")
+    try assertEq(defaultID("hi_IN"), "en-US")
+
+    let ids = TranscriptionLanguage.all.map(\.id)
+    try assertEq(Set(ids).count, ids.count, "language ids must be unique")
+    try assertTrue(TranscriptionLanguage.all.filter { $0.id.hasPrefix("en-") }.allSatisfy { $0.elevenLabsCode == "en" })
+}
+
+@MainActor
+func testTranscriptionLanguageReadsSavedChoice() throws {
+    let key = TranscriptionLanguage.defaultsKey
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    UserDefaults.standard.set("hi-IN", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id, "hi-IN")
+    try assertEq(TranscriptionLanguage.current.elevenLabsCode, "hi")
+    UserDefaults.standard.set("xx-YY", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id,
+                 TranscriptionLanguage.defaultLanguage(for: .current).id,
+                 "an unknown saved value falls back to the default")
+}
+
+@MainActor
+func testCallDetectorRecognisesCallApps() throws {
+    try assertEq(CallDetector.callAppName(bundleID: "us.zoom.xos"), "Zoom")
+    try assertEq(CallDetector.callAppName(bundleID: "com.microsoft.teams2"), "Microsoft Teams")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.FaceTime"), "FaceTime")
+    // Browser helper processes are what actually hold the mic for Meet.
+    try assertEq(CallDetector.callAppName(bundleID: "com.google.Chrome.helper"), "Chrome")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.WebKit.GPU"), "Safari")
+    // Mic users that are not calls must never trigger the prompt.
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.CoreSpeech"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac.dev"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: nil), nil)
+}
+
+@MainActor
+func testCallStateWaitsBeforeEndingACall() throws {
+    var state = CallState(endGracePeriod: 90)
+    let start = Date(timeIntervalSince1970: 0)
+    try assertTrue(state.update(micApp: "Zoom", now: start), "call starts")
+    try assertEq(state.current, "Zoom")
+    try assertFalse(state.update(micApp: "Zoom", now: start + 2), "same call, no event")
+    // Muted for a minute: the mic goes free, but the call isn't over.
+    try assertFalse(state.update(micApp: nil, now: start + 60))
+    try assertEq(state.current, "Zoom")
+    // Unmuting inside the grace period must not count as a new call.
+    try assertFalse(state.update(micApp: "Zoom", now: start + 70))
+    // Free for longer than the grace period: now it's over.
+    try assertFalse(state.update(micApp: nil, now: start + 100))
+    try assertTrue(state.update(micApp: nil, now: start + 161), "call ends after 90s free")
+    try assertTrue(state.current == nil)
+    try assertFalse(state.update(micApp: nil, now: start + 200), "no repeat end event")
+    try assertTrue(state.update(micApp: "Chrome", now: start + 300), "next call starts")
+}
+
+@MainActor
+func testAppChannelKeepsDataApart() throws {
+    // Production keeps the original folder so existing users' data carries over.
+    try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
+    try assertEq(AppChannel.production.badge, nil)
+    let folders = Set(AppChannel.allCases.map(\.dataDirectoryName))
+    try assertEq(folders.count, AppChannel.allCases.count, "each channel needs its own data folder")
+}
+
+@MainActor
 func testTurnIDsAreUnique() throws {
     let turns = (0..<50).map { _ in ChatTurn(role: .user, content: "x") }
     let ids = Set(turns.map(\.id))
@@ -373,6 +464,108 @@ func testChatTurnHiddenContextCodable() throws {
     try assertEq(migrated.replayText, "old")
 }
 
+// MARK: - TheCloser Pro
+
+/// Must match the server's expectations (api/_lib/config.js DEVICE_PATTERN)
+/// and the formula used to find this Mac's subscription.
+func testProFingerprint() throws {
+    try assertEq(ProAccount.fingerprint(platformUUID: "00000000-0000-0000-0000-000000000000") ?? "",
+                 "0c0863a1d1e077935f3dd62e8c1f9677fd514a41ef792698d8bcf315045dc23c")
+    try assertTrue(ProAccount.fingerprint(platformUUID: "") == nil, "no UUID, no fingerprint")
+    let device = ProAccount.device ?? ""
+    try assertTrue(device.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil, "this Mac: \(device)")
+}
+
+func testProUsageFromServer() throws {
+    let json = #"{"plan":"pro","allowanceUSD":8,"usedUSD":5.5,"remainingUSD":2.5,"usedFraction":0.6875,"periodEnd":1792000000,"renews":true}"#
+    let usage = try JSONDecoder().decode(ProAccount.Usage.self, from: Data(json.utf8))
+    try assertEq(usage.percentUsed, 69)
+    try assertFalse(usage.isRunningLow)
+    try assertFalse(usage.isUsedUp)
+    try assertTrue(usage.periodEndText?.hasPrefix("Resets ") == true, usage.periodEndText ?? "nil")
+
+    let cancelled = #"{"plan":"pro","allowanceUSD":8,"usedUSD":8,"remainingUSD":0,"usedFraction":1,"periodEnd":1792000000,"renews":false}"#
+    let ending = try JSONDecoder().decode(ProAccount.Usage.self, from: Data(cancelled.utf8))
+    try assertTrue(ending.isRunningLow && ending.isUsedUp)
+    try assertTrue(ending.periodEndText?.hasPrefix("Ends ") == true, "a cancelled plan ends instead of resetting")
+}
+
+@MainActor
+func testProLimitsModelPickers() throws {
+    let visibility = ModelVisibility.shared
+    let previous = visibility.allowed
+    defer { visibility.allowed = previous }
+    visibility.allowed = ["openrouter/anthropic/claude-sonnet-5"]
+    try assertTrue(visibility.isVisible("openrouter/anthropic/claude-sonnet-5"))
+    try assertFalse(visibility.isVisible("openrouter/anthropic/claude-opus-5.5"), "outside the plan")
+    visibility.allowed = nil
+    try assertTrue(visibility.isAllowed("openrouter/anthropic/claude-opus-5.5"), "no plan, no limit")
+}
+
+/// Pro screenshots go through our server, which takes at most 4 MB.
+func testProScreenshotsAreShrunk() throws {
+    let size = NSSize(width: 3456, height: 2234)
+    let image = NSImage(size: size, flipped: false) { rect in
+        NSGradient(colors: [.systemBlue, .systemOrange])?.draw(in: rect, angle: 30)
+        return true
+    }
+    let encoded = try AIManager.jpegBase64(from: image).unwrap("encodes")
+    let bitmap = try NSBitmapImageRep(data: Data(base64Encoded: encoded) ?? Data()).unwrap("decodes")
+    try assertEq(bitmap.pixelsWide, 1600)
+    try assertEq(bitmap.pixelsHigh, 1034)
+    try assertTrue(encoded.utf8.count < 4_000_000)
+}
+
+// MARK: - Grok transcription
+
+func testGrokStreamURL() throws {
+    let url = try GrokTranscription.streamURL(language: "en").unwrap("builds")
+    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+    try assertEq(url.host ?? "", "api.x.ai")
+    try assertEq(query["model"] ?? "", "grok-voice-transcribe-2.0")
+    try assertEq(query["sample_rate"] ?? "", "16000")
+    try assertEq(query["encoding"] ?? "", "pcm")
+    try assertEq(query["interim_results"] ?? "", "true")
+    try assertEq(query["language"] ?? "", "en")
+    let chinese = try GrokTranscription.streamURL(language: "zh").unwrap("builds")
+    try assertFalse(chinese.absoluteString.contains("language="), "no formatting language xAI doesn't list")
+}
+
+func testGrokStitchesAnUtterance() throws {
+    func event(_ json: String) throws -> GrokTranscription.Event {
+        try GrokTranscription.Event.parse(json).unwrap(json)
+    }
+    var utterance = GrokTranscription.Utterance()
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.created"}"#)) == nil)
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about","is_final":false,"speech_final":false}"#))
+                   == .partial("Tell me about"))
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about a time","is_final":true,"speech_final":false}"#))
+                   == .partial("Tell me about a time"))
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"you failed","is_final":false,"speech_final":false}"#))
+                   == .partial("Tell me about a time you failed"), "interim text follows the locked chunk")
+    // Documented: the final event is the whole stitched utterance.
+    try assertTrue(utterance.handle(try event(#"{"type":"transcript.partial","text":"Tell me about a time you failed.","is_final":true,"speech_final":true}"#))
+                   == .commit("Tell me about a time you failed."))
+    try assertEq(utterance.locked, [], "the next utterance starts clean")
+}
+
+func testGrokKeepsLockedChunksIfTheFinalOmitsThem() throws {
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Walk me through", "your last project"], final: "and what you'd change."),
+                 "Walk me through your last project and what you'd change.")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Why this role?"], final: "why this role? And why now?"),
+                 "why this role? And why now?", "an already stitched final is used as is")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: [], final: "Hi."), "Hi.")
+    try assertEq(GrokTranscription.Utterance.stitch(locked: ["Okay."], final: ""), "Okay.")
+}
+
+extension Optional {
+    func unwrap(_ note: String, file: String = #file, line: Int = #line) throws -> Wrapped {
+        guard let self else { throw TestFailure(message: "unexpected nil: \(note)", file: file, line: line) }
+        return self
+    }
+}
+
 // MARK: - Entry point
 
 @main
@@ -394,6 +587,12 @@ struct TestsMain {
         TestRunner.run("SessionMode has non-empty fields", testSessionModeSystemPromptNotEmpty)
         TestRunner.run("SessionMode has quick actions", testSessionModeQuickActionsExist)
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
+        TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
+        TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
+        TestRunner.run("CallDetector recognises call apps", testCallDetectorRecognisesCallApps)
+        TestRunner.run("CallState waits before ending a call", testCallStateWaitsBeforeEndingACall)
+        TestRunner.run("TranscriptionLanguage defaults to English", testTranscriptionLanguageDefaultsToEnglish)
+        TestRunner.run("TranscriptionLanguage reads saved choice", testTranscriptionLanguageReadsSavedChoice)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)
@@ -402,6 +601,13 @@ struct TestsMain {
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
+        TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
+        TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
+        TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
+        TestRunner.run("Pro screenshots are shrunk to fit the server", testProScreenshotsAreShrunk)
+        TestRunner.run("Grok stream URL", testGrokStreamURL)
+        TestRunner.run("Grok stitches an utterance from its chunks", testGrokStitchesAnUtterance)
+        TestRunner.run("Grok keeps locked chunks the final leaves out", testGrokKeepsLockedChunksIfTheFinalOmitsThem)
 
         print("\n──────────────────────────────")
         print("  Passed: \(TestRunner.passed)")

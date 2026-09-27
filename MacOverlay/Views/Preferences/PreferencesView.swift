@@ -8,8 +8,6 @@ struct PreferencesView: View {
     @State private var tab: Tab = .general
     @State private var showNewWorkspaceSheet = false
     @State private var isSidebarCollapsed = true
-    @State private var launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
-    @State private var launchShortcutError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case general    = "General"
@@ -40,12 +38,15 @@ struct PreferencesView: View {
         /// Whether this tab should be visible in the rail. Gated tabs are
         /// kept in the enum (and their `case` arms below still resolve) so
         /// flipping the corresponding FeatureFlag is a one-line change.
-        var isVisible: Bool {
+        @MainActor var isVisible: Bool {
             switch self {
             case .panel, .profile:
                 return false
+            // Pro manages memory itself.
+            case .memory:     return !ProAccount.shared.isActive
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
+            case .quickAsk:   return FeatureFlags.quickAskEnabled
             default:          return true
             }
         }
@@ -246,8 +247,7 @@ struct PreferencesView: View {
             HStack {
                 Spacer()
                 Button("Reset to defaults") { bar.resetToDefaults() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.secondaryCompact)
             }
         }
     }
@@ -259,24 +259,21 @@ struct PreferencesView: View {
             sliderRow("Opacity", value: $vm.opacity, range: 0.2...1.0)
             sliderRow("Background", value: $vm.backgroundOpacity, range: 0.0...1.0,
                       display: { $0 == 0 ? "Off" : "\(Int($0 * 100))%" })
+            sliderRow("Text size", value: $vm.textScale, range: 0.8...1.6)
         }
 
         section(title: "Recording") {
-            Toggle(isOn: $vm.vadEnabled) {
-                labelTwoLine(title: "Auto-send on silence",
-                             subtitle: "Sends after ~2s of silence while recording.")
+            Toggle(isOn: $vm.suggestSessionOnCall) {
+                labelTwoLine(title: "Offer to start when a call begins",
+                             subtitle: "When Zoom, Meet or Teams starts using your mic.")
             }
             .toggleStyle(.switch)
 
-            Toggle(isOn: $vm.interviewResponseGate) {
-                labelTwoLine(title: "Only answer real questions",
-                             subtitle: "Skips \"okay\", \"got it\" and half-sentences so they can't pull a random answer over what you're reading. Clear questions still send instantly; only genuinely ambiguous lines are double-checked with a fast model.")
-            }
-            .toggleStyle(.switch)
-
+            // Pro always transcribes on this Mac, so there's nothing to pick.
+            if !ProAccount.shared.isActive {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 labelTwoLine(title: "Transcription engine",
-                             subtitle: "Apple runs locally and is free. ElevenLabs is cloud-based and needs a key.")
+                             subtitle: "Apple runs on this Mac. ElevenLabs and Grok need a key.")
                     .layoutPriority(1)
                 Spacer(minLength: 8)
                 Picker("", selection: $vm.transcriptionPreference) {
@@ -286,21 +283,22 @@ struct PreferencesView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 180)
+                .frame(width: 160)
+            }
             }
         }
 
         section(title: "Privacy") {
             Toggle(isOn: $vm.screenShareInvisible) {
                 labelTwoLine(title: "Hide from screen sharing",
-                             subtitle: "On: the overlay is excluded from screen shares and recordings (Zoom, Meet, QuickTime). Off: it shows up in shared screens.")
+                             subtitle: "Keeps the overlay out of screen shares and recordings.")
             }
             .toggleStyle(.switch)
         }
 
         section(title: "Onboarding") {
             Button("Replay welcome tour") { vm.showOnboarding = true }
-                .buttonStyle(.bordered)
+                .buttonStyle(.secondaryCompact)
         }
     }
 
@@ -435,22 +433,85 @@ struct PreferencesView: View {
     private var aiTab: some View {
         @Bindable var vm = vm
         let store = vm.promptStore
+        let pro = ProAccount.shared
 
-        section(title: "Model picker",
-                subtitle: "Choose which models appear in the bar's model picker. The full list is always usable from here — toggling just controls what shows up in the chip menu.") {
-            modelCatalog
+        if let plan = pro.plan {
+            section(title: "TheCloser \(plan.name)",
+                    subtitle: "Models and transcription included. Tied to this Mac.") {
+                if let usage = pro.usage {
+                    ProUsageMeter(usage: usage)
+                } else {
+                    Text("Checking this month's usage…")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                HStack {
+                    Text("Change plan, card, or cancel.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Manage subscription") { Task { await pro.openManageSubscription() } }
+                        .buttonStyle(.secondaryCompact)
+                }
+                if plan == .pro {
+                    Divider().opacity(0.4)
+                    HStack {
+                        if pro.isWaitingForUpgrade {
+                            ProgressView().controlSize(.small)
+                            Text("Confirm in your browser. This updates once it's done.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Cancel") { pro.stopWaitingForUpgrade() }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Pro Max: the most powerful models and 2.5× the usage.")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("Upgrade to Pro Max") { Task { await pro.upgradeToProMax() } }
+                                .buttonStyle(.primaryCompact)
+                        }
+                    }
+                }
+                if let problem = pro.problem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
+            }
+            .task { await pro.refreshUsage() }
+        } else if FeatureFlags.proSubscriptionsEnabled {
+            section(title: "TheCloser Pro",
+                    subtitle: "No keys: we run the models and transcription.") {
+                ProPlanPicker()
+            }
         }
 
+        section(title: "Model picker",
+                subtitle: "Choose which models show in the model menu.") {
+            modelCatalog
+            HStack(spacing: 4) {
+                Text("Missing a model?")
+                    .foregroundColor(.secondary)
+                Link("Request it", destination: modelRequestURL)
+            }
+            .font(.system(size: 11))
+        }
+
+        if !pro.isActive {
+        let usesGrok = vm.transcriptionPreference == .grok
         section(title: "API keys",
-                subtitle: "Stored locally. Never uploaded.") {
-            KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
-            KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
-            KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
-            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
-            KeyFieldView(label: "DeepSeek",   placeholder: "sk-…",        text: $vm.deepSeekAPIKey)
-            KeyFieldView(label: "NVIDIA",     placeholder: "nvapi-…",     text: $vm.nvidiaAPIKey)
+                subtitle: "OpenRouter runs the models; \(usesGrok ? "xAI" : "ElevenLabs") transcribes. Stored only on this Mac.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
-            KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+            if usesGrok {
+                KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",   text: $vm.grokAPIKey)
+            } else {
+                KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",    text: $vm.elevenLabsAPIKey)
+            }
+        }
         }
 
         if FeatureFlags.resumesEnabled {
@@ -517,70 +578,17 @@ struct PreferencesView: View {
             )
         }
         } // if FeatureFlags.resumesEnabled
+    }
 
-        section(title: "Usage") {
-            Toggle(isOn: $vm.showTokenCounts) {
-                labelTwoLine(title: "Show live token count",
-                             subtitle: "Displays running token usage in the top strip. Updates as the AI streams.")
-            }
-            .toggleStyle(.switch)
-
-            if vm.showTokenCounts {
-                let s = vm.sessionStore.activeSession
-                HStack(spacing: 14) {
-                    tokenStat(label: "In",    value: s.totalInputTokens,  color: .blue)
-                    tokenStat(label: "Out",   value: s.totalOutputTokens, color: .green)
-                    tokenStat(label: "Total", value: s.totalTokens,       color: .accentColor)
-                    Spacer()
-                }
-                .padding(.top, 4)
-            }
-        }
-
-        section(title: "Active prompt",
-                subtitle: "Overrides the mode's default system prompt.") {
-            HStack {
-                Menu {
-                    Button {
-                        store.activePresetID = nil
-                    } label: {
-                        HStack {
-                            Text("Use \(vm.sessionMode.displayName) default")
-                            if store.activePresetID == nil { Image(systemName: "checkmark") }
-                        }
-                    }
-                    Divider()
-                    ForEach(store.presets) { p in
-                        Button {
-                            store.activePresetID = p.id
-                        } label: {
-                            HStack {
-                                Text(p.name)
-                                if store.activePresetID == p.id { Image(systemName: "checkmark") }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack {
-                        Text(store.activePreset?.name ?? "\(vm.sessionMode.displayName) default")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
-                .menuStyle(.borderlessButton)
-
-                Button("Manage…") {
-                    vm.primarySurface = .prompts
-                }
-                .buttonStyle(.bordered)
-            }
-        }
+    /// The website's model request form. Says which plan is asking, and
+    /// nothing about who.
+    private var modelRequestURL: URL {
+        var components = URLComponents(string: "https://www.thecloser.tech/request-model")!
+        components.queryItems = [
+            URLQueryItem(name: "source", value: "app"),
+            URLQueryItem(name: "plan", value: ProAccount.shared.plan?.rawValue ?? "own_keys"),
+        ]
+        return components.url!
     }
 
     /// Per-provider grid of model toggles, used by the AI tab. Reads
@@ -590,13 +598,14 @@ struct PreferencesView: View {
     @ViewBuilder
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
-        let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
+        // On Pro, only the plan's models.
+        let allIDs = OverlayViewModel.availableModels.map(\.id).filter(visibility.isAllowed)
+        let providers = OverlayViewModel.modelProviders
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in
                 let models = OverlayViewModel.availableModels
-                    .filter { $0.provider == provider }
+                    .filter { $0.provider == provider && visibility.isAllowed($0.id) }
                 if !models.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(provider)
@@ -618,8 +627,7 @@ struct PreferencesView: View {
             HStack {
                 Spacer()
                 Button("Show all") { visibility.showAll() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.secondaryCompact)
                     .disabled(visibility.hidden.isEmpty)
             }
         }
@@ -809,67 +817,24 @@ struct PreferencesView: View {
         section(title: "Global shortcuts") {
             VStack(spacing: 2) {
                 shortcut("⌃⌥Space", "Show / hide overlay")
-                shortcut("⌃⌥T",      "Toggle recording + send")
-                shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
-                shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
-                shortcut("⌃⌥A",      "Send selected text to AI")
-                shortcut("⌃⌥C",      "Explain clipboard")
-                shortcut("⌃⌥R",      "Tailor resume from clipboard JD")
-                shortcut("⌃⌥ ↑↓←→",  "Move overlay")
+                shortcut("⌘⏎",       "Get the answer now (during an interview)")
+                shortcut("⌘⇧⏎",      "Screenshot → send to AI (during an interview)")
+                if FeatureFlags.clipboardShortcutsEnabled {
+                    shortcut("⌃⌥A",  "Send selected text to AI")
+                    shortcut("⌃⌥C",  "Explain clipboard")
+                }
+                if FeatureFlags.resumesEnabled {
+                    shortcut("⌃⌥R",  "Tailor resume from clipboard JD")
+                }
+                if FeatureFlags.quickAskEnabled {
+                    shortcut("Hold Fn", "Quick Ask by voice")
+                }
+                if FeatureFlags.dictationEnabled {
+                    shortcut("Hold ⌥", "Dictate into the active app")
+                }
+                shortcut("⌘⇧ ↑↓←→",  "Move overlay (while it's showing)")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
-                shortcut("⌃⌥X",      "Quit thecloser completely")
                 shortcut("⌘N",        "New session")
-                shortcut("⌘,",        "Preferences")
-            }
-        }
-
-        section(title: "Relaunch with \(LaunchShortcutInstaller.displayShortcut)",
-                subtitle: """
-                          \(LaunchShortcutInstaller.displayShortcut) quits thecloser for real — the process ends and \
-                          disappears from Activity Monitor. Nothing that's gone can listen for its own hotkey, so \
-                          installing this hands the same combo to macOS while the app is closed: press it again and \
-                          the app comes back.
-                          """) {
-            HStack(spacing: 8) {
-                Image(systemName: launchShortcutInstalled ? "checkmark.circle.fill" : "circle.dashed")
-                    .font(.system(size: 12))
-                    .foregroundColor(launchShortcutInstalled ? .green : .secondary)
-                Text(launchShortcutInstalled
-                     ? "Installed as a “\(LaunchShortcutInstaller.serviceName)” Quick Action"
-                     : "Not installed — \(LaunchShortcutInstaller.displayShortcut) only quits, it can't reopen")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Button(launchShortcutInstalled ? "Remove" : "Install") {
-                    launchShortcutError = nil
-                    do {
-                        if launchShortcutInstalled { try LaunchShortcutInstaller.uninstall() }
-                        else                       { try LaunchShortcutInstaller.install() }
-                    } catch {
-                        launchShortcutError = error.localizedDescription
-                    }
-                    launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
-                }
-            }
-
-            if let launchShortcutError {
-                Text(launchShortcutError)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if launchShortcutInstalled {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("If the shortcut doesn't reopen the app, open System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ Services and make sure “\(LaunchShortcutInstaller.serviceName)” is checked. macOS sometimes needs that list opened once before a new shortcut starts firing.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary.opacity(0.8))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Open Keyboard Shortcuts…") { LaunchShortcutInstaller.openKeyboardSettings() }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
-                }
             }
         }
     }
@@ -935,23 +900,6 @@ struct PreferencesView: View {
                 .foregroundColor(.secondary)
                 .frame(width: 40, alignment: .trailing)
         }
-    }
-
-    private func tokenStat(label: String, value: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(.secondary)
-                .textCase(.uppercase)
-                .kerning(0.5)
-            Text("\(value)")
-                .font(.system(size: 16, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundColor(color)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private func labelTwoLine(title: String, subtitle: String) -> some View {

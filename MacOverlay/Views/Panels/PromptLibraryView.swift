@@ -19,10 +19,16 @@ struct PromptLibraryView: View {
 
     private var store: PromptStore { vm.promptStore }
 
+    /// Résumé generation and scoring prompts belong to the résumé feature;
+    /// while it's off, only conversation prompts are listed.
+    private var visiblePresets: [PromptPreset] {
+        FeatureFlags.resumesEnabled ? store.presets : store.presets.filter { $0.kind == .conversation }
+    }
+
     private var filteredPresets: [PromptPreset] {
         switch filter {
-        case .all: return store.presets
-        case .kind(let k): return store.presets.filter { $0.kind == k }
+        case .all: return visiblePresets
+        case .kind(let k): return visiblePresets.filter { $0.kind == k }
         }
     }
 
@@ -30,7 +36,7 @@ struct PromptLibraryView: View {
         @Bindable var vm = vm
         VStack(alignment: .leading, spacing: 0) {
             panelHeader
-            filterBar
+            if FeatureFlags.resumesEnabled { filterBar }
 
             Rectangle()
                 .fill(Color.white.opacity(0.06))
@@ -59,34 +65,35 @@ struct PromptLibraryView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(-0.2)
                 .foregroundColor(.primary)
-            Text("\(store.presets.count)")
+            Text("\(visiblePresets.count)")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 1)
                 .background(Capsule().fill(Color.white.opacity(0.06)))
             Spacer()
-            Menu {
+            if FeatureFlags.resumesEnabled {
+                Menu {
+                    Button { beginEdit(.new(kind: .conversation)) } label: {
+                        Label("New conversation prompt", systemImage: "bubble.left.and.bubble.right")
+                    }
+                    Button { beginEdit(.new(kind: .resumeGeneration)) } label: {
+                        Label("New resume generation prompt", systemImage: "doc.text")
+                    }
+                    Button { beginEdit(.new(kind: .resumeScoring)) } label: {
+                        Label("New resume scoring prompt", systemImage: "chart.bar")
+                    }
+                } label: {
+                    Label("New", systemImage: "plus")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            } else {
                 Button { beginEdit(.new(kind: .conversation)) } label: {
-                    Label("New conversation prompt", systemImage: "bubble.left.and.bubble.right")
+                    Label("New prompt", systemImage: "plus")
                 }
-                Button { beginEdit(.new(kind: .resumeGeneration)) } label: {
-                    Label("New resume generation prompt", systemImage: "doc.text")
-                }
-                Button { beginEdit(.new(kind: .resumeScoring)) } label: {
-                    Label("New resume scoring prompt", systemImage: "chart.bar")
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "plus").font(.system(size: 10, weight: .bold))
-                    Text("New").font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(Capsule().fill(Design.Accent.blue))
+                .buttonStyle(.primaryCompact)
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
         }
         .padding(.horizontal, 14)
         .padding(.top, 12)
@@ -147,9 +154,7 @@ struct PromptLibraryView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 20)
             Button("Create your first prompt") { beginEdit(.new(kind: createKind)) }
-                .font(.caption)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.primaryCompact)
                 .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
@@ -326,13 +331,7 @@ struct PromptLibraryView: View {
                 Spacer()
 
                 Button("Save") { saveEdit() }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.plain)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 5)
-                    .background(draftName.isEmpty ? Color.secondary : Color.accentColor)
-                    .clipShape(Capsule())
+                    .buttonStyle(.primaryCompact)
                     .disabled(draftName.isEmpty)
                     .keyboardShortcut(.defaultAction)
             }

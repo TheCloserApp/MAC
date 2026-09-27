@@ -36,7 +36,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
     private var audioEngine  = AVAudioEngine()
     private var request:       SFSpeechAudioBufferRecognitionRequest?
     private var task:          SFSpeechRecognitionTask?
-    private var recognizer:    SFSpeechRecognizer? = SFSpeechRecognizer(locale: Locale.current)
+    private var recognizer:    SFSpeechRecognizer? = SFSpeechRecognizer(locale: TranscriptionLanguage.current.locale)
     private var engineObserver: NSObjectProtocol?
     private let deviceMonitor = MicInput.DeviceMonitor()
 
@@ -125,9 +125,12 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
             throw TranscriptionError.permissionDenied(
                 "Speech recognition permission denied. Enable in System Settings → Privacy & Security → Speech Recognition.")
         }
+        // Re-created each start so a language change in Preferences applies
+        // to the next session without relaunching.
+        let language = TranscriptionLanguage.current
+        recognizer = SFSpeechRecognizer(locale: language.locale)
         guard let recognizer else {
-            NSLog("[AppleTranscriber] SFSpeechRecognizer is nil for locale %@",
-                  Locale.current.identifier)
+            NSLog("[AppleTranscriber] SFSpeechRecognizer is nil for locale %@", language.id)
             throw TranscriptionError.unavailable
         }
         guard recognizer.isAvailable else {
@@ -517,7 +520,7 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         } catch {
             throw TranscriptionError.permissionDenied(
                 "System audio error: \((error as NSError).localizedDescription). " +
-                "Open System Settings → Privacy & Security → Screen Recording → enable thecloser," +
+                "Open System Settings → Privacy & Security → Screen Recording → enable TheCloser," +
                 "then QUIT and relaunch the app."
             )
         }

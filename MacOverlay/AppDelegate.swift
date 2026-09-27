@@ -43,6 +43,24 @@ class UnconstrainedPanel: NSPanel {
     }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// Told whenever the panel is shown or hidden, whichever call did it.
+    var onVisibilityChange: ((Bool) -> Void)?
+
+    override func orderFrontRegardless() {
+        super.orderFrontRegardless()
+        onVisibilityChange?(isVisible)
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        super.order(place, relativeTo: otherWin)
+        onVisibilityChange?(isVisible)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        super.orderOut(sender)
+        onVisibilityChange?(isVisible)
+    }
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -57,10 +75,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dictationManager: DictationManager?
     private var sigtermSource: DispatchSourceSignal?
     private var lastFrontAppPID: pid_t = 0
+    private let callDetector = CallDetector()
+    private var callPrompt: CallPromptPanel?
+    private var menuBar: MenuBarController?
+    private var isOnCall = false
     private let moveStep:   CGFloat = 20
     private let resizeStep: CGFloat = 20
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.global(qos: .utility).async { LegacyLaunchShortcutCleanup.removeIfInstalled() }
         vm = OverlayViewModel()
         NSApp.setActivationPolicy(.accessory)
         // Seed the screen-share gate BEFORE any window is created so the
@@ -87,6 +110,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         vm.onScreenShareVisibilityChange = { [weak self] invisible in
             self?.applyScreenShareVisibility(invisible)
         }
+
+        vm.onRecordingChange = { [weak self] recording in
+            HotkeyManager.shared.setLiveSessionHotkeys(recording)
+            self?.updateMenuBarVisibility()
+        }
+
+        // Calls. The detector always runs: besides the "start your
+        // interview?" prompt, it's what hides the menu-bar icon during calls,
+        // and that has to happen even with the prompt switched off.
+        callPrompt = CallPromptPanel()
+        callDetector.onChange = { [weak self] app in
+            guard let self else { return }
+            self.isOnCall = app != nil
+            self.vm.callAppDidChange(app)
+            self.updateMenuBarVisibility()
+        }
+        vm.onDetectedCallAppChange = { [weak self] app in
+            guard let self else { return }
+            if let app {
+                self.callPrompt?.show(appName: app, vm: self.vm,
+                                     onStart: { [weak self] in self?.startInterviewFromCallPrompt() },
+                                     onDismiss: { [weak self] in self?.vm.dismissCallPrompt() })
+            } else {
+                self.callPrompt?.hide()
+            }
+        }
+        callDetector.start()
+
+        // Dev and Beta only: `open -a "TheCloser Dev" --args -simulateCall Zoom`
+        // fakes a call, to check the prompt and the menu-bar icon without
+        // joining one.
+        if AppChannel.current != .production,
+           let app = UserDefaults.standard.string(forKey: "simulateCall") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.callDetector.onChange?(app)
+            }
+        }
+
+        menuBar = MenuBarController(
+            onOpen: { [weak self] in self?.showOverlay() },
+            isCallPromptOn: { [weak self] in self?.vm.suggestSessionOnCall ?? false },
+            setCallPrompt: { [weak self] on in self?.vm.suggestSessionOnCall = on })
+        // Set explicitly: macOS remembers a status item's visibility across
+        // launches, so a quit mid-call would otherwise start it hidden.
+        updateMenuBarVisibility()
 
         // Animate the NSPanel between pill and expanded sizes whenever
         // the VM transitions stage. The bottom edge stays pinned so the
@@ -230,13 +298,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let sf = screen.visibleFrame
         let frame = NSRect(x: sf.midX - w / 2, y: sf.maxY - h - 20, width: w, height: h)
 
-        overlayPanel = UnconstrainedPanel(
+        let panel = UnconstrainedPanel(
             contentRect: frame,
             // No .fullSizeContentView — that lets us resize height freely
             styleMask:   [.nonactivatingPanel, .resizable],
             backing:     .buffered,
             defer:       false
         )
+        // ⌘⇧ + arrows move the overlay only while it's showing.
+        panel.onVisibilityChange = { HotkeyManager.shared.setMoveHotkeys($0) }
+        // Dragging the panel's edges goes through `windowWillResize`.
+        panel.delegate = self
+        overlayPanel = panel
         overlayPanel.level                      = .statusBar + 1
         overlayPanel.collectionBehavior         = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         overlayPanel.isOpaque                   = false
@@ -273,7 +346,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Carbon RegisterEventHotKey: global, no Accessibility needed, never auto-disabled
         HotkeyManager.shared.onAction = { [weak self] action, isPressed in
             guard let self else { return }
-            // Most actions only fire on press; pushToTalk uses both press and release
+            // Every action fires on press
             switch action {
             case .moveLeft:    if isPressed { self.movePanel(dx: -self.moveStep, dy: 0) }
             case .moveRight:   if isPressed { self.movePanel(dx:  self.moveStep, dy: 0) }
@@ -283,17 +356,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             case .resizeRight: if isPressed { self.resizePanel(dw:  self.resizeStep, dh: 0) }
             case .resizeUp:    if isPressed { self.resizePanel(dw: 0, dh:  self.resizeStep) }
             case .resizeDown:  if isPressed { self.resizePanel(dw: 0, dh: -self.resizeStep) }
-            case .screenshot:     if isPressed { self.captureAndAttachScreenshot() }
-            case .screenshotSend: if isPressed { self.captureAndSendScreenshot() }
+            case .screenshotSendLive:
+                                  if isPressed { self.captureAndSendScreenshot() }
+            case .answerNow:      if isPressed { self.answerNow() }
             case .clipboard:   if isPressed { self.explainClipboard() }
             case .toggle:      if isPressed { self.toggleOverlay() }
-            case .record:      if isPressed { self.hotkeyRecord() }
-            case .pushToTalk:  if isPressed { self.hotkeyRecord() }
             case .sendSelection:  if isPressed { self.sendSelection() }
             case .resumeGenerate: if isPressed { self.resumeFromClipboard() }
             case .resumeScore:    if isPressed { self.scoreResumeFromClipboard() }
             case .quickAsk:       break   // handled via Fn flagsChanged monitor
-            case .quitApp:        if isPressed { self.quitApp() }
             }
         }
         HotkeyManager.shared.register()
@@ -311,19 +382,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Local monitor as fallback when overlay panel is key
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Handle ⌘, for preferences and ⌘N for new session while the
-            // overlay is key. Return nil to consume the event so it doesn't
-            // propagate to text fields.
+            // Handle ⌘N for new session while the overlay is key. Return
+            // nil to consume the event so it doesn't propagate to text
+            // fields.
             if let self,
                event.modifierFlags.contains(.command),
                let chars = event.charactersIgnoringModifiers {
-                if chars == "," {
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        PreferencesWindowController.shared.show(vm: self.vm)
-                    }
-                    return nil
-                }
                 if chars == "n" {
                     Task { @MainActor [weak self] in
                         self?.vm.startNewSession()
@@ -365,9 +429,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func hotkeyRecord() {
-        DispatchQueue.main.async {
-            Task { @MainActor in self.vm.hotkeyToggleRecord() }
+    /// ⌘⏎ during a live session: answer what's been heard so far without
+    /// waiting for the speaker to pause. Same as the bar's send button.
+    func answerNow() {
+        DispatchQueue.main.async { [self] in
+            if !overlayPanel.isVisible { overlayPanel.orderFrontRegardless() }
+            Task { @MainActor in self.vm.sendTranscriptManually() }
         }
     }
 
@@ -389,8 +456,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let mods    = event.modifierFlags.intersection([.option, .control, .shift, .command, .function])
-        let fnDown  = mods.contains(.function)
-        let optDown = mods.contains(.option) && !mods.contains(.control)
+        let fnDown  = FeatureFlags.quickAskEnabled && mods.contains(.function)
+        let optDown = FeatureFlags.dictationEnabled
+                      && mods.contains(.option) && !mods.contains(.control)
                                               && !mods.contains(.shift)
                                               && !mods.contains(.command)
 
@@ -457,15 +525,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleKey(_ event: NSEvent) {
         let flags = event.modifierFlags.intersection([.control, .option, .shift, .command])
         let code  = event.keyCode
-        if flags == [.control, .option] {
+        if flags == [.command, .shift] {
             switch code {
             case 123: movePanel(dx: -moveStep, dy: 0)
             case 124: movePanel(dx:  moveStep, dy: 0)
             case 125: movePanel(dx: 0, dy: -moveStep)
             case 126: movePanel(dx: 0, dy:  moveStep)
-            case 1:   captureAndAttachScreenshot()     // S
-            case 8:   explainClipboard()               // C
-            case 17:  hotkeyRecord()  // T
+            default: break
+            }
+        } else if flags == [.control, .option] {
+            switch code {
+            case 8 where FeatureFlags.clipboardShortcutsEnabled:
+                explainClipboard()                     // C
             case 49:  toggleOverlay()                  // Space
             default: break
             }
@@ -490,8 +561,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func resizePanel(dw: CGFloat, dh: CGFloat) {
         DispatchQueue.main.async { [self] in
             let f  = overlayPanel.frame
-            let nw = max(overlayPanel.minSize.width,  f.width  + dw)
-            let nh = max(overlayPanel.minSize.height, f.height + dh)
+            let minimum = minimumPanelSize(for: vm.shellStage)
+            let nw = max(minimum.width,  f.width  + dw)
+            let nh = max(minimum.height, f.height + dh)
             // Anchor top edge: when height grows, origin moves down; when shrinks, moves up
             let newOriginY = f.origin.y + (f.height - nh)
             overlayPanel.setFrame(
@@ -576,8 +648,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Flag only on transition — re-setting it per mouse event would
         // invalidate observers 60+ times a second for no layout change.
         if !vm.isUserResizingPanel { vm.isUserResizingPanel = true }
-        let newW = max(panel.minSize.width,  base.width  + dx)
-        let newH = max(panel.minSize.height, base.height + dy)
+        let minimum = minimumPanelSize(for: vm.shellStage)
+        let newW = max(minimum.width,  base.width  + dx)
+        let newH = max(minimum.height, base.height + dy)
         // Top edge pinned: maxY constant, origin.y follows the height.
         let frame = NSRect(x: base.origin.x,
                            y: base.maxY - newH,
@@ -806,7 +879,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// for every visible bar element).
     static let pillMinSize             = NSSize(width: 240, height: 60)
     static let expandedCompactMinSize  = NSSize(width: 360, height: 80)
-    static let expandedMinSize         = NSSize(width: 360, height: 420)
+    /// With a surface open the width can't go below the width the layouts
+    /// are designed for: narrower, Settings clips its rail and pushes
+    /// switches out of their cards, and the setup screen's buttons wrap
+    /// one letter per line.
+    static let expandedMinSize         = NSSize(width: 440, height: 420)
+
+    /// The smallest the panel may be right now. Every way of resizing
+    /// uses it: stage changes, the corner grip, ⌃⇧ + arrows, and dragging
+    /// the panel's edges (`windowWillResize`). It's worked out from the
+    /// current screen each time rather than read from `minSize`, which is
+    /// only updated on stage and surface changes.
+    @MainActor
+    func minimumPanelSize(for stage: OverlayViewModel.ShellStage) -> NSSize {
+        switch stage {
+        case .pill:
+            return Self.pillMinSize
+        case .expanded:
+            guard vm.primarySurface != nil else { return Self.expandedCompactMinSize }
+            // An answer hugs its text, so it can be short, but it's never
+            // narrower than the other screens: going back to setup from an
+            // answer doesn't resize the panel.
+            return vm.usesResponseHuggingPanel
+                ? NSSize(width: Self.expandedMinSize.width, height: Self.expandedCompactMinSize.height)
+                : Self.expandedMinSize
+        }
+    }
 
     /// Resize the panel for the given shell stage. Within `.expanded`
     /// the height also adapts to whether a `primarySurface` is open:
@@ -843,7 +941,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             preservedWidth = lastFullSize.width
         }
 
-        let target: NSSize
+        var target: NSSize
         switch stage {
         case .pill:
             target = vm.hasPillPopup ? Self.pillWithPopupSize : Self.collapsedSize
@@ -872,17 +970,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        let minForStage: NSSize
-        switch stage {
-        case .pill:     minForStage = Self.pillMinSize
-        case .expanded:
-            if responseHugging {
-                minForStage = Self.expandedCompactMinSize
-            } else {
-                minForStage = surfaceOpen ? Self.expandedMinSize : Self.expandedCompactMinSize
-            }
-        }
+        let minForStage = minimumPanelSize(for: stage)
         panel.minSize = minForStage
+        // A width the user dragged to under an older, smaller minimum (or
+        // kept from the compact bar) must not survive into this stage.
+        target.width  = max(target.width,  minForStage.width)
+        target.height = max(target.height, minForStage.height)
 
         // Response-sized panels are fixed-height and top-anchored: the
         // answer card's top edge stays visually locked, and streamed text
@@ -955,12 +1048,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlayPanel.setFrameOrigin(NSPoint(x: sf.midX - pf.width / 2, y: sf.maxY - pf.height - 20))
     }
 
-    @objc func quitApp() { NSApp.terminate(nil) }
+    /// "Close" in the ⋯ menu: hide everything but keep running in
+    /// the menu bar, so calls are still noticed. Quitting for real lives in
+    /// the menu-bar menu.
+    @objc func closeToMenuBar() {
+        overlayPanel.orderOut(nil)
+        MainActor.assumeIsolated { BrowserWindow.shared.setVisible(false) }
+    }
 
-    /// Quit cleanly on SIGTERM instead of dying where we stand. The launch
-    /// Quick Action uses `pkill` as its "app is already running" branch, and
-    /// the default SIGTERM disposition would skip applicationWillTerminate —
-    /// losing whatever the session store hasn't flushed yet.
+    func showOverlay() {
+        overlayPanel.orderFrontRegardless()
+        MainActor.assumeIsolated { BrowserWindow.shared.setVisible(true) }
+    }
+
+    /// Opening the app while it's already running (Finder, Spotlight, the
+    /// Dock's Applications folder) brings the overlay back. The app has no
+    /// Dock icon or windows macOS knows to show, so without this a closed or
+    /// hidden overlay made the app look like it wouldn't open.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showOverlay()
+        return false
+    }
+
+    private func startInterviewFromCallPrompt() {
+        showOverlay()
+        MainActor.assumeIsolated { vm.startInterviewFromCallPrompt() }
+    }
+
+    /// The menu-bar icon shows only while idle: the menu bar is part of
+    /// every screen share, so it hides during calls and interviews.
+    private func updateMenuBarVisibility() {
+        MainActor.assumeIsolated { menuBar?.setHidden(isOnCall || vm.isRecording) }
+    }
+
+    /// Quit cleanly on SIGTERM instead of dying where we stand. The default
+    /// SIGTERM disposition would skip applicationWillTerminate — losing
+    /// whatever the session store hasn't flushed yet.
     private func installTerminationSignalHandler() {
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
@@ -1052,5 +1175,19 @@ extension NSWindow {
     @objc func _sp_makeKeyAndOrderFront(_ sender: Any?) {
         sharingType = NSWindow.desiredSharingType
         _sp_makeKeyAndOrderFront(sender)  // calls original after swap
+    }
+}
+
+// MARK: - Resizing by the panel's edges
+
+extension AppDelegate: NSWindowDelegate {
+    /// Dragging an edge of the panel. AppKit doesn't reliably hold a
+    /// borderless panel to `minSize` here, which let it be dragged narrow
+    /// enough to break every layout, so the minimum is applied directly.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard sender === overlayPanel else { return frameSize }
+        let minimum = MainActor.assumeIsolated { minimumPanelSize(for: vm.shellStage) }
+        return NSSize(width: max(frameSize.width, minimum.width),
+                      height: max(frameSize.height, minimum.height))
     }
 }

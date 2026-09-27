@@ -42,9 +42,17 @@ struct InterviewSurfaceView: View {
 private struct InterviewModeBar: View {
     @Environment(OverlayViewModel.self) private var vm
 
+    private let modes = OverlayViewModel.InterviewSurfaceMode.available
+
     var body: some View {
+        if modes.count > 1 {
+            bar
+        }
+    }
+
+    private var bar: some View {
         HStack(spacing: 6) {
-            ForEach(OverlayViewModel.InterviewSurfaceMode.allCases, id: \.self) { mode in
+            ForEach(modes, id: \.self) { mode in
                 Button {
                     vm.switchInterviewSurfaceMode(mode)
                 } label: {
@@ -91,6 +99,7 @@ private struct InterviewSetupForm: View {
                 InterviewModeBar()
                 header
                 sessionPicker
+                languagePicker
                 resumePicker
                 contextEditor
                 promptPicker
@@ -121,7 +130,7 @@ private struct InterviewSetupForm: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Auto-generate responses")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("Off → hit the Send button to ask. On → AI streams as you go.")
+                        Text("Answers each real question as it's asked.")
                             .font(.system(size: 10))
                             .foregroundColor(Design.Ink.secondary)
                     }
@@ -136,13 +145,13 @@ private struct InterviewSetupForm: View {
     // MARK: Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Set up your interview")
-                .font(.system(size: 18, weight: .semibold))
-            Text("Pick a session, attach an optional resume + context, choose a system prompt, then hit Start.")
-                .font(.system(size: 12))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        Text("Set up your interview")
+            .font(.system(size: 18, weight: .semibold))
+    }
+
+    private var languagePicker: some View {
+        sectionCard(title: "Language", systemImage: "character.bubble") {
+            TranscriptionLanguagePicker()
         }
     }
 
@@ -197,7 +206,8 @@ private struct InterviewSetupForm: View {
                         lineWidth: 0.5
                     ))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
             }
@@ -420,7 +430,8 @@ private struct InterviewSetupForm: View {
                     .background(Capsule().fill(Design.Surface.controlFill))
                     .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
 
@@ -454,9 +465,10 @@ private struct InterviewSetupForm: View {
 
     private var startRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if vm.needsKeyForCurrentModel {
+            if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
+            ProUsageNotice()
             HStack {
                 Spacer()
                 Button {
@@ -475,8 +487,12 @@ private struct InterviewSetupForm: View {
                     .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
                 }
                 .buttonStyle(.plain)
+                .disabled(!vm.missingRequiredKeys.isEmpty)
+                .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
                 .keyboardShortcut(.return, modifiers: .command)
                 .help("Start interview (⌘↩)")
+                // Fresh usage for the Pro notice above.
+                .task { await ProAccount.shared.refreshUsage() }
             }
         }
     }
@@ -611,6 +627,7 @@ private struct RegularCallSetupForm: View {
                 contextEditor
                 promptPicker
                 modeToggleRow
+                if vm.regularCallAsCall { languagePicker }
                 startRow
             }
             .padding(.horizontal, 22)
@@ -623,13 +640,13 @@ private struct RegularCallSetupForm: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Set up a call")
-                .font(.system(size: 18, weight: .semibold))
-            Text("Lighter than an interview — just a system prompt and some context. Pick Call for live mic, or Chat for text-only.")
-                .font(.system(size: 12))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        Text("Set up a call")
+            .font(.system(size: 18, weight: .semibold))
+    }
+
+    private var languagePicker: some View {
+        sectionCard(title: "Language", systemImage: "character.bubble") {
+            TranscriptionLanguagePicker()
         }
     }
 
@@ -734,7 +751,8 @@ private struct RegularCallSetupForm: View {
                     .background(Capsule().fill(Design.Surface.controlFill))
                     .overlay(Capsule().strokeBorder(Design.Surface.hairline, lineWidth: 0.5))
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
 
@@ -785,9 +803,10 @@ private struct RegularCallSetupForm: View {
 
     private var startRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if vm.needsKeyForCurrentModel {
+            if !vm.missingRequiredKeys.isEmpty {
                 MissingKeyWarning()
             }
+            ProUsageNotice()
             startButtonRow
         }
     }
@@ -811,8 +830,12 @@ private struct RegularCallSetupForm: View {
                 .overlay(Capsule().strokeBorder(Design.Surface.strongHairline, lineWidth: 0.5))
             }
             .buttonStyle(.plain)
+            .disabled(!vm.missingRequiredKeys.isEmpty)
+            .opacity(vm.missingRequiredKeys.isEmpty ? 1 : 0.45)
             .keyboardShortcut(.return, modifiers: .command)
             .help("Start (⌘↩)")
+            // Fresh usage for the Pro notice above.
+            .task { await ProAccount.shared.refreshUsage() }
         }
     }
 
@@ -942,7 +965,7 @@ private struct MissingKeyWarning: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11))
                     .foregroundColor(Design.Accent.amber)
-                Text("No API key for the selected model — answers won't generate. Click to add one.")
+                Text("Add your \(vm.missingRequiredKeys.joined(separator: " and ")) key\(vm.missingRequiredKeys.count > 1 ? "s" : "") to start. Click to open API keys.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Design.Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)

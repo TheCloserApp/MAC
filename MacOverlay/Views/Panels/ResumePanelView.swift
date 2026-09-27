@@ -34,8 +34,8 @@ struct ResumePanelView: View {
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Design.Accent.chatGPT, style: StrokeStyle(lineWidth: 2, dash: [5]))
-                    .background(Design.Accent.chatGPT.opacity(0.08))
+                    .stroke(Design.Accent.brand, style: StrokeStyle(lineWidth: 2, dash: [5]))
+                    .background(Design.Accent.brand.opacity(0.08))
                     .overlay {
                         VStack(spacing: 6) {
                             Image(systemName: "doc.badge.arrow.up")
@@ -43,7 +43,7 @@ struct ResumePanelView: View {
                             Text("Drop PDF / DOCX / RTF / TXT to import")
                                 .font(.system(size: 11, weight: .semibold))
                         }
-                        .foregroundColor(Design.Accent.chatGPT)
+                        .foregroundColor(Design.Accent.brand)
                     }
                     .allowsHitTesting(false)
                     .padding(4)
@@ -141,7 +141,7 @@ struct ResumePanelView: View {
                 Button("Save") { finishRename(p) }
                     .font(.caption2.weight(.semibold))
                     .buttonStyle(.plain)
-                    .foregroundColor(Design.Accent.chatGPT)
+                    .foregroundColor(Design.Accent.brand)
             } else {
                 Button {
                     vm.resumeStore.activePresetID = p.id
@@ -149,7 +149,7 @@ struct ResumePanelView: View {
                     HStack {
                         Image(systemName: isActive ? "largecircle.fill.circle" : "circle")
                             .font(.system(size: 11))
-                            .foregroundColor(isActive ? Design.Accent.chatGPT : Design.Ink.secondary)
+                            .foregroundColor(isActive ? Design.Accent.brand : Design.Ink.secondary)
                         Text(p.name)
                             .font(.system(size: 11, weight: isActive ? .semibold : .regular))
                             .foregroundColor(Design.Ink.primary)
@@ -182,7 +182,7 @@ struct ResumePanelView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(isActive ? Design.Accent.chatGPT.opacity(0.08) : Color.clear)
+        .background(isActive ? Design.Accent.brand.opacity(0.08) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
@@ -495,7 +495,7 @@ struct ResumePanelView: View {
                         Image(systemName: "plus").font(.system(size: 9, weight: .semibold))
                         Text("Add").font(.system(size: 10, weight: .medium))
                     }
-                    .foregroundColor(Design.Accent.chatGPT)
+                    .foregroundColor(Design.Accent.brand)
                 }
                 .buttonStyle(.plain)
             }
