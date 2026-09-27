@@ -52,13 +52,13 @@ class ReminderManager {
         let lower = title.lowercased()
         if lower.contains("interview") {
             let role = profile.currentRole.isEmpty ? "the role" : profile.currentRole
-            return "\(title) starts in \(timeStr). You're interviewing for \(role) — take a breath, you've got this. Open thecloser to get real-time coaching."
+            return "\(title) starts in \(timeStr). You're interviewing for \(role) — take a breath, you've got this. Open TheCloser to get real-time coaching."
         } else if lower.contains("standup") || lower.contains("stand-up") || lower.contains("sync") {
-            return "\(title) in \(timeStr). Open thecloser to capture action items and decisions in real time."
+            return "\(title) in \(timeStr). Open TheCloser to capture action items and decisions in real time."
         } else if lower.contains("call") || lower.contains("meeting") || lower.contains("review") {
-            return "\(title) in \(timeStr). Switch thecloser to Meeting mode to get summaries and action items."
+            return "\(title) in \(timeStr). Switch TheCloser to Meeting mode to get summaries and action items."
         } else {
-            return "\(title) starts in \(timeStr). thecloser is ready to assist."
+            return "\(title) starts in \(timeStr). TheCloser is ready to assist."
         }
     }
 }

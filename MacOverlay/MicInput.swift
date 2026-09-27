@@ -78,9 +78,9 @@ enum MicInput {
         }
         if s.isRunningSomewhere {
             return "“\(s.name)” is currently in use by another app — a call in WhatsApp, FaceTime, Zoom, etc. " +
-                   "End the call, or switch thecloser to System audio, or pick a different input in System Settings → Sound → Input."
+                   "End the call, or switch TheCloser to System audio, or pick a different input in System Settings → Sound → Input."
         }
-        return "Current input: “\(s.name)”. Check System Settings → Sound → Input and that thecloser has Microphone permission."
+        return "Current input: “\(s.name)”. Check System Settings → Sound → Input and that TheCloser has Microphone permission."
     }
 
     // MARK: - Engine start (retrying, with a voice-processing fallback)

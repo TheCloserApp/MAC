@@ -99,6 +99,7 @@ private struct InterviewSetupForm: View {
                 InterviewModeBar()
                 header
                 sessionPicker
+                languagePicker
                 resumePicker
                 contextEditor
                 promptPicker
@@ -129,7 +130,7 @@ private struct InterviewSetupForm: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Auto-generate responses")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("Off → hit the Send button to ask. On → AI streams as you go.")
+                        Text("Answers each real question as it's asked.")
                             .font(.system(size: 10))
                             .foregroundColor(Design.Ink.secondary)
                     }
@@ -144,13 +145,13 @@ private struct InterviewSetupForm: View {
     // MARK: Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Set up your interview")
-                .font(.system(size: 18, weight: .semibold))
-            Text("Pick a session, attach an optional resume + context, choose a system prompt, then hit Start.")
-                .font(.system(size: 12))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        Text("Set up your interview")
+            .font(.system(size: 18, weight: .semibold))
+    }
+
+    private var languagePicker: some View {
+        sectionCard(title: "Language", systemImage: "character.bubble") {
+            TranscriptionLanguagePicker()
         }
     }
 
@@ -624,6 +625,7 @@ private struct RegularCallSetupForm: View {
                 contextEditor
                 promptPicker
                 modeToggleRow
+                if vm.regularCallAsCall { languagePicker }
                 startRow
             }
             .padding(.horizontal, 22)
@@ -636,13 +638,13 @@ private struct RegularCallSetupForm: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Set up a call")
-                .font(.system(size: 18, weight: .semibold))
-            Text("Lighter than an interview — just a system prompt and some context. Pick Call for live mic, or Chat for text-only.")
-                .font(.system(size: 12))
-                .foregroundColor(Design.Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        Text("Set up a call")
+            .font(.system(size: 18, weight: .semibold))
+    }
+
+    private var languagePicker: some View {
+        sectionCard(title: "Language", systemImage: "character.bubble") {
+            TranscriptionLanguagePicker()
         }
     }
 

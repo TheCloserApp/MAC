@@ -74,6 +74,9 @@ final class ProAccount {
     private(set) var usage: Usage?
     /// True from opening Stripe Checkout until the payment shows up here.
     private(set) var isWaitingForCheckout = false
+    /// True from opening the Pro Max confirmation until the new plan shows
+    /// up here.
+    private(set) var isWaitingForUpgrade = false
     /// Last thing that went wrong, worded for the user. Cleared on success.
     var problem: String?
 
@@ -87,6 +90,7 @@ final class ProAccount {
     @ObservationIgnored private var renewing: Task<RenewResult, Never>?
     @ObservationIgnored private var renewalTimer: Task<Void, Never>?
     @ObservationIgnored private var checkoutPolling: Task<Void, Never>?
+    @ObservationIgnored private var upgradePolling: Task<Void, Never>?
     @ObservationIgnored private var usageRefresh: Task<Void, Never>?
 
     private enum Key {
@@ -322,7 +326,7 @@ final class ProAccount {
         if let periodEnd = usage.periodEnd, usage.renews {
             message += " It resets on \(Date(timeIntervalSince1970: periodEnd).formatted(.dateTime.month(.wide).day()))."
         }
-        if plan == .pro { message += " Pro Max has 2.5× more: Settings → AI → Manage subscription." }
+        if plan == .pro { message += " Pro Max has 2.5× more: Settings → AI → Upgrade to Pro Max." }
         return message
     }
 
@@ -339,6 +343,45 @@ final class ProAccount {
     }
 
     // MARK: - Usage and billing
+
+    /// Pro → Pro Max: opens Stripe's page confirming the switch and its
+    /// prorated charge, then waits (up to 15 minutes) for the new plan.
+    func upgradeToProMax() async {
+        problem = nil
+        if expiresAt.timeIntervalSinceNow < 60 { await renew() }
+        guard plan == .pro, let pass else { return }
+        do {
+            let (status, data) = try await call("POST", "upgrade", pass: pass)
+            guard status == 200 else {
+                problem = "The upgrade page couldn't be opened. Try again in a moment."
+                return
+            }
+            NSWorkspace.shared.open(try JSONDecoder().decode(LinkResponse.self, from: data).url)
+            waitForUpgrade()
+        } catch {
+            problem = "Couldn't reach TheCloser. Check your connection and try again."
+        }
+    }
+
+    func stopWaitingForUpgrade() {
+        upgradePolling?.cancel()
+        upgradePolling = nil
+        isWaitingForUpgrade = false
+    }
+
+    private func waitForUpgrade() {
+        upgradePolling?.cancel()
+        isWaitingForUpgrade = true
+        upgradePolling = Task { [weak self] in
+            for _ in 0..<180 {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !Task.isCancelled else { return }
+                if await self.renew() == .active, self.plan == .proMax { break }
+            }
+            self?.isWaitingForUpgrade = false
+            self?.upgradePolling = nil
+        }
+    }
 
     func refreshUsage() async {
         guard isActive, let pass else { return }
