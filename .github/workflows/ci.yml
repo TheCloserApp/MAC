@@ -1,0 +1,45 @@
+name: CI
+
+# The testing environment: every pull request gets unit tests plus Dev and
+# Production builds attached as downloadable artifacts.
+on:
+  pull_request:
+  push:
+    branches: [main, beta]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain
+        run: swiftc --version
+
+      - name: Unit tests
+        run: ./test.sh
+
+      - name: Build Dev app
+        run: ./build.sh --channel dev
+
+      - name: Build Production app
+        run: ./build.sh --channel prod
+
+      - name: Zip builds
+        run: |
+          cd build
+          ditto -c -k --keepParent "thecloser Dev.app" thecloser-dev.zip
+          ditto -c -k --keepParent "thecloser.app" thecloser-prod.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: thecloser-builds-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build/thecloser-dev.zip
+            build/thecloser-prod.zip
+          retention-days: 14

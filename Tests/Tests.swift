@@ -236,6 +236,96 @@ func testAudioSourceLabels() throws {
 }
 
 @MainActor
+func testAppChannelResolution() throws {
+    try assertEq(AppChannel(infoValue: "dev"), .dev)
+    try assertEq(AppChannel(infoValue: "beta"), .beta)
+    try assertEq(AppChannel(infoValue: "prod"), .production)
+    // Missing or unknown values must never unlock preview features.
+    try assertEq(AppChannel(infoValue: nil), .production)
+    try assertEq(AppChannel(infoValue: "staging"), .production)
+    try assertEq(AppChannel(infoValue: 1), .production)
+    try assertFalse(AppChannel.production.showsPreviewFeatures)
+    try assertTrue(AppChannel.beta.showsPreviewFeatures)
+    try assertTrue(AppChannel.dev.showsPreviewFeatures)
+}
+
+@MainActor
+func testTranscriptionLanguageDefaultsToEnglish() throws {
+    func defaultID(_ locale: String) -> String {
+        TranscriptionLanguage.defaultLanguage(for: Locale(identifier: locale)).id
+    }
+    // English Macs keep their accent model when we list it.
+    try assertEq(defaultID("en_US"), "en-US")
+    try assertEq(defaultID("en_IN"), "en-IN")
+    try assertEq(defaultID("en_GB"), "en-GB")
+    try assertEq(defaultID("en_NZ"), "en-US", "unlisted English variant falls back to US")
+    // Non-English Macs still transcribe English unless the user picks otherwise.
+    try assertEq(defaultID("fr_FR"), "en-US")
+    try assertEq(defaultID("hi_IN"), "en-US")
+
+    let ids = TranscriptionLanguage.all.map(\.id)
+    try assertEq(Set(ids).count, ids.count, "language ids must be unique")
+    try assertTrue(TranscriptionLanguage.all.filter { $0.id.hasPrefix("en-") }.allSatisfy { $0.elevenLabsCode == "en" })
+}
+
+@MainActor
+func testTranscriptionLanguageReadsSavedChoice() throws {
+    let key = TranscriptionLanguage.defaultsKey
+    defer { UserDefaults.standard.removeObject(forKey: key) }
+    UserDefaults.standard.set("hi-IN", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id, "hi-IN")
+    try assertEq(TranscriptionLanguage.current.elevenLabsCode, "hi")
+    UserDefaults.standard.set("xx-YY", forKey: key)
+    try assertEq(TranscriptionLanguage.current.id,
+                 TranscriptionLanguage.defaultLanguage(for: .current).id,
+                 "an unknown saved value falls back to the default")
+}
+
+@MainActor
+func testCallDetectorRecognisesCallApps() throws {
+    try assertEq(CallDetector.callAppName(bundleID: "us.zoom.xos"), "Zoom")
+    try assertEq(CallDetector.callAppName(bundleID: "com.microsoft.teams2"), "Microsoft Teams")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.FaceTime"), "FaceTime")
+    // Browser helper processes are what actually hold the mic for Meet.
+    try assertEq(CallDetector.callAppName(bundleID: "com.google.Chrome.helper"), "Chrome")
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.WebKit.GPU"), "Safari")
+    // Mic users that are not calls must never trigger the prompt.
+    try assertEq(CallDetector.callAppName(bundleID: "com.apple.CoreSpeech"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: "tech.thecloser.mac.dev"), nil)
+    try assertEq(CallDetector.callAppName(bundleID: nil), nil)
+}
+
+@MainActor
+func testCallStateWaitsBeforeEndingACall() throws {
+    var state = CallState(endGracePeriod: 90)
+    let start = Date(timeIntervalSince1970: 0)
+    try assertTrue(state.update(micApp: "Zoom", now: start), "call starts")
+    try assertEq(state.current, "Zoom")
+    try assertFalse(state.update(micApp: "Zoom", now: start + 2), "same call, no event")
+    // Muted for a minute: the mic goes free, but the call isn't over.
+    try assertFalse(state.update(micApp: nil, now: start + 60))
+    try assertEq(state.current, "Zoom")
+    // Unmuting inside the grace period must not count as a new call.
+    try assertFalse(state.update(micApp: "Zoom", now: start + 70))
+    // Free for longer than the grace period: now it's over.
+    try assertFalse(state.update(micApp: nil, now: start + 100))
+    try assertTrue(state.update(micApp: nil, now: start + 161), "call ends after 90s free")
+    try assertTrue(state.current == nil)
+    try assertFalse(state.update(micApp: nil, now: start + 200), "no repeat end event")
+    try assertTrue(state.update(micApp: "Chrome", now: start + 300), "next call starts")
+}
+
+@MainActor
+func testAppChannelKeepsDataApart() throws {
+    // Production keeps the original folder so existing users' data carries over.
+    try assertEq(AppChannel.production.dataDirectoryName, "MacOverlay")
+    try assertEq(AppChannel.production.badge, nil)
+    let folders = Set(AppChannel.allCases.map(\.dataDirectoryName))
+    try assertEq(folders.count, AppChannel.allCases.count, "each channel needs its own data folder")
+}
+
+@MainActor
 func testTurnIDsAreUnique() throws {
     let turns = (0..<50).map { _ in ChatTurn(role: .user, content: "x") }
     let ids = Set(turns.map(\.id))
@@ -394,6 +484,12 @@ struct TestsMain {
         TestRunner.run("SessionMode has non-empty fields", testSessionModeSystemPromptNotEmpty)
         TestRunner.run("SessionMode has quick actions", testSessionModeQuickActionsExist)
         TestRunner.run("AudioSource labels + cases", testAudioSourceLabels)
+        TestRunner.run("AppChannel resolves from Info.plist", testAppChannelResolution)
+        TestRunner.run("AppChannel keeps data apart", testAppChannelKeepsDataApart)
+        TestRunner.run("CallDetector recognises call apps", testCallDetectorRecognisesCallApps)
+        TestRunner.run("CallState waits before ending a call", testCallStateWaitsBeforeEndingACall)
+        TestRunner.run("TranscriptionLanguage defaults to English", testTranscriptionLanguageDefaultsToEnglish)
+        TestRunner.run("TranscriptionLanguage reads saved choice", testTranscriptionLanguageReadsSavedChoice)
         TestRunner.run("ChatTurn IDs unique", testTurnIDsAreUnique)
         TestRunner.run("NoteEntry codable round-trip", testNoteEntryRoundTrip)
         TestRunner.run("TranscriptFilter meaningful speech", testTranscriptFilterMeaningful)

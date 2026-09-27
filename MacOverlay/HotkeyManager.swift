@@ -20,7 +20,9 @@ enum HotkeyAction: Int {
     case resumeScore    = 16   // Ctrl+Opt+M — clipboard as JD → score current resume
     case quickAsk       = 17   // Ctrl+Opt+Q — push-to-talk quick ask
     case screenshotSend = 18   // Ctrl+Shift+S — screenshot straight to AI
-    case quitApp        = 19   // Ctrl+Opt+X — quit the app outright
+    case closeToMenuBar = 19   // Ctrl+Opt+X — close to the menu bar (keeps watching for calls)
+    case answerNow      = 20   // Cmd+Return — send the live transcript now (live sessions only)
+    case screenshotSendLive = 21   // Cmd+Shift+Return — screenshot straight to AI (live sessions only)
 }
 
 class HotkeyManager {
@@ -30,6 +32,7 @@ class HotkeyManager {
     var onAction: ((HotkeyAction, Bool) -> Void)?
 
     private var refs: [EventHotKeyRef?] = []
+    private var liveSessionRefs: [EventHotKeyRef?] = []
     private var handlerRef: EventHandlerRef?
 
     private let signature: OSType = 0x4D4F564C  // 'MOVL'
@@ -37,6 +40,8 @@ class HotkeyManager {
     private let ctrlOpt:   UInt32 = UInt32(controlKey | optionKey)
     private let ctrlShift: UInt32 = UInt32(controlKey | shiftKey)
     private let ctrl:      UInt32 = UInt32(controlKey)
+    private let cmd:       UInt32 = UInt32(cmdKey)
+    private let cmdShift:  UInt32 = UInt32(cmdKey | shiftKey)
 
     func register() {
         // Listen for both pressed AND released so push-to-talk works
@@ -78,7 +83,9 @@ class HotkeyManager {
         add(kVK_UpArrow,     ctrlOpt,   .moveUp)
         add(kVK_DownArrow,   ctrlOpt,   .moveDown)
         add(kVK_ANSI_S,      ctrlOpt,   .screenshot)
-        add(kVK_ANSI_C,      ctrlOpt,   .clipboard)
+        if FeatureFlags.clipboardShortcutsEnabled {
+            add(kVK_ANSI_C,  ctrlOpt,   .clipboard)
+        }
         add(kVK_Space,       ctrlOpt,   .toggle)
         add(kVK_ANSI_T,      ctrlOpt,   .record)
 
@@ -93,31 +100,55 @@ class HotkeyManager {
         add(kVK_DownArrow,   ctrlShift, .resizeDown)
 
         add(kVK_ANSI_Y,      ctrlOpt,   .pushToTalk)
-        add(kVK_ANSI_A,      ctrlOpt,   .sendSelection)
+        if FeatureFlags.clipboardShortcutsEnabled {
+            add(kVK_ANSI_A,  ctrlOpt,   .sendSelection)
+        }
         // Résumé hotkeys (generate / score) only registered when the résumé
         // surface is enabled — see FeatureFlags.resumesEnabled.
         if FeatureFlags.resumesEnabled {
             add(kVK_ANSI_R,  ctrlOpt,   .resumeGenerate)
             add(kVK_ANSI_M,  ctrlOpt,   .resumeScore)
         }
-        add(kVK_ANSI_Q,      ctrlOpt,   .quickAsk)
+        if FeatureFlags.quickAskEnabled {
+            add(kVK_ANSI_Q,  ctrlOpt,   .quickAsk)
+        }
 
-        // Quit outright — leaves nothing running. The reverse direction
-        // (relaunch on the same combo) can't be ours to own once the
-        // process is gone; see LaunchShortcutInstaller.
-        add(kVK_ANSI_X,      ctrlOpt,   .quitApp)
+        // Close to the menu bar. The app keeps running so it still notices
+        // calls; Quit is in the menu-bar menu.
+        add(kVK_ANSI_X,      ctrlOpt,   .closeToMenuBar)
+    }
+
+    /// ⌘⏎ and ⌘⇧⏎ exist only while a live session is recording. A global
+    /// hotkey swallows the combo in every app, and ⌘⏎ is "send" in Slack,
+    /// Gmail and many others, as well as "Start" on our own setup screen.
+    func setLiveSessionHotkeys(_ active: Bool) {
+        if active {
+            guard liveSessionRefs.isEmpty else { return }
+            liveSessionRefs = [
+                registerHotKey(kVK_Return, cmd,      .answerNow),
+                registerHotKey(kVK_Return, cmdShift, .screenshotSendLive),
+            ]
+        } else {
+            liveSessionRefs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
+            liveSessionRefs = []
+        }
     }
 
     private func add(_ keyCode: Int, _ modifiers: UInt32, _ action: HotkeyAction) {
+        refs.append(registerHotKey(keyCode, modifiers, action))
+    }
+
+    private func registerHotKey(_ keyCode: Int, _ modifiers: UInt32, _ action: HotkeyAction) -> EventHotKeyRef? {
         let id = EventHotKeyID(signature: signature, id: UInt32(action.rawValue))
         var ref: EventHotKeyRef?
         RegisterEventHotKey(UInt32(keyCode), modifiers, id, GetEventDispatcherTarget(), 0, &ref)
-        refs.append(ref)
+        return ref
     }
 
     func unregister() {
         refs.forEach { if let r = $0 { UnregisterEventHotKey(r) } }
         refs = []
+        setLiveSessionHotkeys(false)
         if let h = handlerRef { RemoveEventHandler(h); handlerRef = nil }
     }
 }

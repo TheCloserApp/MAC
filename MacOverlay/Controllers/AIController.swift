@@ -308,9 +308,7 @@ final class AIController {
         guard let vm else { return }
         guard !session.titleManuallySet else { return }
         guard !session.turns.isEmpty else { return }
-        let hasKey = AIManager.shared.isOpenAIModel(vm.selectedModel)
-            ? !vm.openAIApiKey.isEmpty : !vm.apiKey.isEmpty
-        guard hasKey else { return }
+        guard !vm.openRouterAPIKey.isEmpty else { return }
 
         let transcript = session.turns.prefix(8).map {
             "\($0.role.rawValue.capitalized): \($0.content)"
@@ -323,16 +321,16 @@ final class AIController {
         \(transcript)
         """
 
-        let apiKeyCopy = vm.apiKey
-        let openAIKeyCopy = vm.openAIApiKey
+        let openRouterKeyCopy = vm.openRouterAPIKey
 
         Task { [weak vm] in
             do {
                 let raw = try await AIManager.shared.sendMessage(
                     prompt,
-                    apiKey: apiKeyCopy,
-                    openAIApiKey: openAIKeyCopy,
-                    model: "claude-haiku-4-5-20251001",
+                    apiKey: "",
+                    openAIApiKey: "",
+                    openRouterAPIKey: openRouterKeyCopy,
+                    model: OverlayViewModel.utilityModel,
                     screenshot: nil,
                     systemPrompt: "You write concise, specific conversation titles."
                 )

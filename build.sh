@@ -1,12 +1,41 @@
 #!/bin/bash
 set -e
 
-echo "🔨 Building thecloser..."
+# Usage: ./build.sh [--channel dev|beta|prod] [--run]
+#
+# Each channel gets its own bundle ID, app name, executable and data folder,
+# so Dev, Beta and Production builds can be installed side by side without
+# sharing settings, sessions or privacy permissions. Dev is the default for
+# local work; releases are built with --channel beta or --channel prod.
+CHANNEL="dev"
+RUN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --channel|-c) CHANNEL="$2"; shift 2 ;;
+        --channel=*)  CHANNEL="${1#*=}"; shift ;;
+        --run|-r)     RUN=1; shift ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: ./build.sh [--channel dev|beta|prod] [--run]" >&2
+            exit 1 ;;
+    esac
+done
+
+case "$CHANNEL" in
+    dev)  BUNDLE_ID="tech.thecloser.mac.dev";  APP_NAME="thecloser Dev";  EXEC_NAME="thecloser-dev" ;;
+    beta) BUNDLE_ID="tech.thecloser.mac.beta"; APP_NAME="thecloser Beta"; EXEC_NAME="thecloser-beta" ;;
+    prod) BUNDLE_ID="tech.thecloser.mac";      APP_NAME="thecloser";      EXEC_NAME="thecloser" ;;
+    *)
+        echo "Unknown channel: $CHANNEL (expected dev, beta or prod)" >&2
+        exit 1 ;;
+esac
+
+echo "🔨 Building $APP_NAME ($CHANNEL)..."
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$PROJECT_DIR/MacOverlay"
 BUILD_DIR="$PROJECT_DIR/build"
-APP_DIR="$BUILD_DIR/thecloser.app"
+APP_DIR="$BUILD_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -21,7 +50,7 @@ while IFS= read -r -d '' f; do SWIFT_SOURCES+=("$f"); done < <(find "$SRC_DIR" -
 
 swiftc \
     -O \
-    -o "$MACOS_DIR/thecloser" \
+    -o "$MACOS_DIR/$EXEC_NAME" \
     -framework Cocoa \
     -framework SwiftUI \
     -framework AVFoundation \
@@ -37,7 +66,15 @@ swiftc \
     -target arm64-apple-macos14.0 \
     "${SWIFT_SOURCES[@]}"
 
-cp "$SRC_DIR/Info.plist" "$CONTENTS_DIR/Info.plist"
+PLIST="$CONTENTS_DIR/Info.plist"
+cp "$SRC_DIR/Info.plist" "$PLIST"
+/usr/libexec/PlistBuddy \
+    -c "Set :CFBundleIdentifier $BUNDLE_ID" \
+    -c "Set :CFBundleName $APP_NAME" \
+    -c "Set :CFBundleDisplayName $APP_NAME" \
+    -c "Set :CFBundleExecutable $EXEC_NAME" \
+    -c "Add :TCChannel string $CHANNEL" \
+    "$PLIST"
 
 # Sign the bundle. We attach the entitlements file so the
 # `com.apple.developer.applesignin` capability is encoded into the bundle
@@ -66,13 +103,13 @@ echo ""
 echo "✅ Build complete!"
 echo "📍 App location: $APP_DIR"
 
-if [[ "$1" == "--run" || "$1" == "-r" ]]; then
+if [[ $RUN -eq 1 ]]; then
     echo "🔄 Relaunching..."
-    pkill thecloser 2>/dev/null; pkill MacOverlay 2>/dev/null; sleep 0.3
+    pkill -x "$EXEC_NAME" 2>/dev/null; sleep 0.3
     open "$APP_DIR"
     echo "✅ Running!"
 else
     echo ""
-    echo "To run:          open $APP_DIR"
-    echo "To rebuild+run:  ./build.sh --run"
+    echo "To run:          open \"$APP_DIR\""
+    echo "To rebuild+run:  ./build.sh --channel $CHANNEL --run"
 fi

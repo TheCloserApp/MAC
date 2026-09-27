@@ -11,127 +11,10 @@ struct BrowserPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             tabBar
-            if let status = routingBannerState() {
-                routingStatusBar(status)
-            }
             Divider()
             splitContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private enum RoutingBanner {
-        case error(String)        // BlackHole missing or CoreAudio refused
-        case active               // BlackHole routing on AND output reaches BlackHole
-        case outputNotRouted      // Routing on but system output never hits BlackHole
-        case outputBlackHoleOnly  // Routing on, output set to BlackHole directly (speakers silent)
-        case mismatch             // System picked but browser closed
-    }
-
-    private func routingBannerState() -> RoutingBanner? {
-        if let err = vm.browserAudioRouterError {
-            return .error(err)
-        }
-        if vm.audioSource == .systemAudio && vm.hasBrowser && vm.browserSystemAudioRouting {
-            switch vm.browserSystemOutputState {
-            case .routedThroughBlackHole: return .active
-            case .blackHoleOnly:          return .outputBlackHoleOnly
-            case .notRouted:              return .outputNotRouted
-            }
-        }
-        return nil
-    }
-
-    @ViewBuilder
-    private func routingStatusBar(_ state: RoutingBanner) -> some View {
-        switch state {
-        case .error(let message):
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.orange)
-                Text(message)
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                Spacer()
-                Button("Install BlackHole") {
-                    BrowserAudioRouter.openInstallPage()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.accentColor)
-                Button {
-                    vm.browserAudioRouterError = nil
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.orange.opacity(0.10))
-
-        case .active:
-            HStack(spacing: 8) {
-                Circle().fill(Color.green).frame(width: 7, height: 7)
-                Text("System audio routing active. Output reaches BlackHole via your Multi-Output Device — websites can read system audio.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(2)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.green.opacity(0.10))
-
-        case .outputNotRouted:
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.orange)
-                Text("System audio won't reach the website: your output isn't going through BlackHole. Create a Multi-Output Device that includes BlackHole and select it as your system output.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(3)
-                Spacer()
-                Button("Open Audio MIDI Setup") {
-                    BrowserAudioRouter.openAudioMIDISetup()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.accentColor)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.orange.opacity(0.10))
-
-        case .outputBlackHoleOnly:
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.slash.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.orange)
-                Text("Output is set to BlackHole directly — websites will receive audio but you won't hear anything. Switch to a Multi-Output Device (speakers + BlackHole) instead.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.primary)
-                    .lineLimit(3)
-                Spacer()
-                Button("Open Audio MIDI Setup") {
-                    BrowserAudioRouter.openAudioMIDISetup()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.accentColor)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.orange.opacity(0.10))
-
-        case .mismatch:
-            EmptyView()
-        }
     }
 
     // MARK: Tab bar
@@ -175,11 +58,6 @@ struct BrowserPanelView: View {
 
                 Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
 
-                audioSourceMenu
-                    .padding(.horizontal, 6)
-
-                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 18)
-
                 detachButton
                     .padding(.horizontal, 6)
             }
@@ -210,64 +88,6 @@ struct BrowserPanelView: View {
         .help(isDetached
               ? "Put the browser back in the overlay"
               : "Open the browser in its own window")
-    }
-
-    private var audioSourceMenu: some View {
-        Menu {
-            ForEach(AudioSource.allCases, id: \.self) { src in
-                Button { pickAudioSource(src) } label: {
-                    HStack {
-                        Text(src.label)
-                        if vm.audioSource == src { Image(systemName: "checkmark") }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: audioSourceIcon)
-                    .font(.system(size: 10, weight: .medium))
-                Text(vm.audioSource.label)
-                    .font(.system(size: 11, weight: .medium))
-                if vm.browserSystemAudioRouting {
-                    Circle().fill(Color.green).frame(width: 5, height: 5)
-                }
-            }
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .frame(height: 22)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(audioSourceTooltip)
-    }
-
-    private var audioSourceTooltip: String {
-        switch vm.audioSource {
-        case .systemAudio:
-            return vm.browserSystemAudioRouting
-                ? "Websites in the browser will receive system audio (via BlackHole) as their microphone."
-                : "System audio routing requires BlackHole. Pick again to install."
-        case .microphone: return "Websites will use your real microphone."
-        case .both:       return "Websites use your mic; transcription captures both mic and system audio."
-        }
-    }
-
-    private func pickAudioSource(_ src: AudioSource) {
-        // Just set the source — the VM's `audioSource.didSet` reconciles
-        // BlackHole routing and writes to `vm.browserAudioRouterError`,
-        // which the inline banner watches.
-        vm.audioSource = src
-    }
-
-    private var audioSourceIcon: String {
-        switch vm.audioSource {
-        case .microphone:  return "mic"
-        case .systemAudio: return "speaker.wave.2"
-        case .both:        return "waveform"
-        }
     }
 
     private func layoutBtn(_ n: Int, _ icon: String) -> some View {

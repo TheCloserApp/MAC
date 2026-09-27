@@ -16,33 +16,45 @@ you can read while you talk.
 
 - 🫥 **Invisible to screen sharing** — the panel and every popover/menu it
   opens are marked `sharingType = .none`, so Zoom / Meet / Teams / QuickTime
-  capture the screen *without* the overlay. No menu-bar icon either.
+  capture the screen *without* the overlay. The menu-bar icon hides during
+  calls and interviews.
 - 🎧 **Live transcription** — captures your mic or system audio and converts
-  speech to text in real time (on-device Apple Speech, or ElevenLabs Scribe).
+  speech to text in real time with ElevenLabs Scribe (Apple Speech is also
+  available). English by default; other languages in Preferences.
 - 🤖 **Streaming AI answers** — pipes the live transcript to the model and
   streams a reply formatted for instant scanning. Interview mode leads with a
   verbatim opening line plus a few tight bullets.
 - 🪟 **Floats everywhere** — stays on top, visible on all Spaces, and over
   other apps' full-screen mode. Draggable; movable & resizable on screen.
-- 🧠 **Multi-provider** — one picker across Anthropic, OpenAI, Kimi (Moonshot),
-  Grok (xAI), DeepSeek, NVIDIA NIM, and OpenRouter. Bring your own keys.
-- ⌨️ **Global hotkeys** — Quick Ask (push-to-talk), dictation into the active
-  app, screenshot-and-explain, explain-clipboard, move/resize the panel.
+- 🧠 **One key, many models** — every model runs through OpenRouter: Claude,
+  GPT, Gemini, Grok and Kimi from one picker. Bring your own OpenRouter and
+  ElevenLabs keys.
+- ⌨️ **Global hotkeys** — ⌘⏎ answer now and ⌘⇧⏎ screenshot to the AI during
+  an interview, plus show/hide and move/resize the panel.
+- 📞 **Call prompt** — when Zoom, Google Meet, Teams, FaceTime or another call
+  app starts using the microphone, a prompt in the top-right corner offers to
+  start your interview. It only asks Core Audio which apps are using the mic
+  (macOS 14.2+); nothing is recorded until you start. Toggle in Preferences →
+  General → Recording or the menu-bar menu.
+- 🔝 **Menu-bar icon while idle** — closing the overlay (`⌃⌥ X`) keeps the app
+  running in the menu bar so it can still notice calls. The icon hides the
+  moment a call starts, because the menu bar is part of every screen share.
+  Quit from its menu, or from ⋯ in the overlay.
 
 ### Session modes
 
 | Mode | Use |
 |------|-----|
 | **Interview** | Live interview copilot — verbatim opening line + scannable bullets, grounded in your résumé/JD context. |
-| **Meeting**   | Summaries, action items, decisions, and suggested questions. |
-| **Call**      | Real-time assist on a regular call. |
-| **General**   | A concise floating assistant for anything else. |
+| **Regular call** | Beta builds only: real-time assist on a regular call. |
 
-Also included: **Quick Ask** (hold Fn/Globe to ask by voice without leaving
-your app), **dictation** (hold Option to dictate straight into the focused
-app), **screenshot → explain**, **clipboard → explain**, **session history**,
-a **prompt library**, and **résumé tailoring** (import a résumé, paste a JD,
-generate a tailored DOCX with before/after scoring).
+Also included: **screenshot → explain**, **session history**, a **prompt
+library**, and a built-in **browser** with tabs (hidden from screen sharing
+like everything else).
+
+Quick Ask, dictation, the clipboard shortcuts and résumé tailoring are still
+in the code but switched off in every build while v1 focuses on the
+interview helper. See `FeatureFlags.swift`.
 
 ---
 
@@ -55,9 +67,10 @@ generate a tailored DOCX with before/after scoring).
 
 ### Build
 ```bash
-./build.sh          # compile + ad-hoc sign into build/thecloser.app
-./build.sh --run    # build, kill any running copy, and relaunch
-open build/thecloser.app
+./build.sh                    # Dev build → "build/thecloser Dev.app"
+./build.sh --run              # build Dev, quit any running Dev copy, relaunch
+./build.sh --channel beta     # Beta build → "build/thecloser Beta.app"
+./build.sh --channel prod     # Production build → build/thecloser.app
 ```
 
 > **Intel Macs:** change `-target arm64-apple-macos14.0` to
@@ -76,18 +89,59 @@ Launch at login: **System Settings → General → Login Items → +**.
 
 ---
 
+## Environments & releases
+
+The app ships in three channels, all from the same code. Each has its own
+bundle ID, app name and data folder, so they can be installed side by side
+without sharing settings, sessions or privacy permissions. Dev and Beta show
+a small **DEV** / **BETA** tag on the brand pill.
+
+| Channel | Build | Bundle ID | Data folder | Features |
+|---|---|---|---|---|
+| Dev | `./build.sh` | `tech.thecloser.mac.dev` | `MacOverlay Dev` | Interview helper + beta features |
+| Beta | `./build.sh --channel beta` | `tech.thecloser.mac.beta` | `MacOverlay Beta` | Interview helper + beta features |
+| Production | `./build.sh --channel prod` | `tech.thecloser.mac` | `MacOverlay` | Interview helper only |
+
+Data folders live in `~/Library/Application Support/`. Only one channel
+should run at a time, because they share the same global hotkeys.
+
+**Beta features** (currently just Regular call) are flags in
+`FeatureFlags.swift` set to `previewFeatures`. To ship one to production, set
+its flag to `true`. Flags set to `false` are off in every build.
+
+**Branches**
+- Feature branch → pull request into `beta`. CI runs the tests and attaches
+  Dev and Production builds to the pull request (the testing environment).
+- `beta` → pull request into `main` when a beta is ready for everyone.
+
+**Releases**
+```bash
+./package.sh --channel beta   # build/TheCloser-Beta.dmg
+gh release create v3.2-beta.1 build/TheCloser-Beta.dmg --prerelease --target beta
+
+./package.sh --channel prod   # build/TheCloser.dmg
+gh release create v3.2 build/TheCloser.dmg --target main
+```
+Production releases must attach a file named exactly `TheCloser.dmg`: the
+website's Download buttons point at `releases/latest/download/TheCloser.dmg`.
+Pre-releases never count as "latest", so beta builds can't reach the website.
+
+---
+
 ## First-run Setup
 
-1. **Add an API key.** Open the panel (hover/click the brand pill) → **Profile
-   / Settings → AI**, and paste a key for any provider you want to use. Keys
-   are stored locally in `UserDefaults`. For ElevenLabs Scribe transcription,
-   add an ElevenLabs key too (otherwise on-device Apple Speech is used).
-2. **Grant permissions when prompted:**
+1. **Choose how to run it.** First launch offers **Bring your own keys**
+   (free) or **We handle everything** (paid plans, coming soon).
+2. **Add your keys.** Bring-your-own-key needs an
+   [OpenRouter key](https://openrouter.ai/keys) for the AI models and an
+   [ElevenLabs key](https://elevenlabs.io/app/settings/api-keys) for
+   transcription; **Start interview** stays disabled until both are set.
+   Change them later under **Profile → Preferences → AI**. Keys are stored
+   locally in `UserDefaults`.
+3. **Grant permissions when prompted:**
    - **Microphone** + **Speech Recognition** — live transcription.
    - **Screen Recording** — screenshots and system-audio capture
      (ScreenCaptureKit). Pre-warmed at launch.
-   - **Accessibility** — only for Option-key dictation (so it can paste into
-     the active app). Requested lazily on first use.
 
 ---
 
@@ -104,32 +158,17 @@ Launch at login: **System Settings → General → Login Items → +**.
 | Shortcut | Action |
 |----------|--------|
 | `⌃⌥ Space` | Show / hide the overlay |
+| `⌘ ⏎` | Get the answer now, without waiting for the speaker to pause (during a live session) |
+| `⌘ ⇧ ⏎` | Capture a screenshot and send it to the AI (during a live session) |
 | `⌃⌥ T` | Start / stop recording |
-| `⌃⌥ Q` *or* hold `Fn`/🌐 | Quick Ask by voice (push-to-talk) |
-| Hold `⌥` (Option) | Dictate into the active app |
 | `⌃⌥ S` | Capture a screenshot and attach it |
-| `⌃⌥ C` | Explain whatever's on the clipboard |
-| `⌃⌥ A` | Send the current selection from the front app to the AI |
-| `⌃⌥ R` / `⌃⌥ M` | Generate / score a résumé from the clipboard |
 | `⌃⌥ arrows` | Move the panel · `⌃⇧ arrows` resize it |
-| `⌃⌥ X` | Quit thecloser completely (and relaunch it — see below) |
+| `⌃⌥ X` | Close to the menu bar (keeps watching for calls) |
 
 Hotkeys use Carbon `RegisterEventHotKey`, so they fire globally with no
-Accessibility permission required.
-
-### Quit and relaunch with one combo
-
-`⌃⌥ Space` only hides the window — the app keeps running. `⌃⌥ X` ends the
-process outright: no window, no menu-bar item, nothing left in Activity
-Monitor.
-
-Nothing that has exited can listen for its own hotkey, so the way back has to
-belong to macOS. **Preferences ▸ Shortcuts ▸ Install** writes a no-input Quick
-Action to `~/Library/Services` and binds `⌃⌥ X` to it, which relaunches the
-app. While thecloser is running, its own Carbon hotkey takes the keystroke
-first, so the same combo quits; once the process is gone, the Quick Action
-picks it up and opens the app again. The Quick Action runs only for the
-instant the key is pressed — it leaves nothing resident.
+Accessibility permission required. `⌘ ⏎` and `⌘ ⇧ ⏎` are registered only
+while recording: a global hotkey takes the combo away from every other app,
+and `⌘ ⏎` means "send" in Slack, Gmail and many others.
 
 ---
 
@@ -184,8 +223,7 @@ MacOverlay/
 | Blocked by Gatekeeper | System Settings → Privacy & Security → **Open Anyway**. |
 | Overlay shows up in screen share | Should never happen — every window is `sharingType = .none`. File it if you see it. |
 | No transcription | Grant Microphone + Speech Recognition; for system audio, grant Screen Recording. |
-| Dictation does nothing | Grant Accessibility (prompted on first Option-dictation). |
-| "Add an API key" | Settings → AI; the selected model's provider needs a key. |
+| "Add your OpenRouter and ElevenLabs keys" | Profile → Preferences → AI. Both are required to start an interview. |
 
 ---
 

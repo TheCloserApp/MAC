@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Speech
 import UniformTypeIdentifiers
 
 /// Tabbed preferences window body. Replaces the cramped gear popover.
@@ -8,8 +9,6 @@ struct PreferencesView: View {
     @State private var tab: Tab = .general
     @State private var showNewWorkspaceSheet = false
     @State private var isSidebarCollapsed = true
-    @State private var launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
-    @State private var launchShortcutError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case general    = "General"
@@ -46,6 +45,7 @@ struct PreferencesView: View {
                 return false
             case .workspaces: return FeatureFlags.workspacesEnabled
             case .peer:       return FeatureFlags.peerControlEnabled
+            case .quickAsk:   return FeatureFlags.quickAskEnabled
             default:          return true
             }
         }
@@ -252,6 +252,18 @@ struct PreferencesView: View {
         }
     }
 
+    /// Languages this Mac's speech recognizer supports, plus the current
+    /// choice so the picker never shows a blank selection.
+    private var transcriptionLanguages: [TranscriptionLanguage] {
+        let supported = Set(SFSpeechRecognizer.supportedLocales().map {
+            $0.identifier.replacingOccurrences(of: "_", with: "-")
+        })
+        guard !supported.isEmpty else { return TranscriptionLanguage.all }
+        return TranscriptionLanguage.all.filter {
+            supported.contains($0.id) || $0.id == vm.transcriptionLanguageID
+        }
+    }
+
     @ViewBuilder
     private var generalTab: some View {
         @Bindable var vm = vm
@@ -262,6 +274,12 @@ struct PreferencesView: View {
         }
 
         section(title: "Recording") {
+            Toggle(isOn: $vm.suggestSessionOnCall) {
+                labelTwoLine(title: "Offer to start when a call begins",
+                             subtitle: "When Zoom, Meet, Teams or another call app starts using your microphone, a prompt asks if you want to start your interview. It only checks which app is using the mic; nothing is recorded until you start.")
+            }
+            .toggleStyle(.switch)
+
             Toggle(isOn: $vm.vadEnabled) {
                 labelTwoLine(title: "Auto-send on silence",
                              subtitle: "Sends after ~2s of silence while recording.")
@@ -286,7 +304,22 @@ struct PreferencesView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(maxWidth: 180)
+                .frame(width: 160)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                labelTwoLine(title: "Transcription language",
+                             subtitle: "The language spoken in your interviews. Applies from the next recording.")
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
+                Picker("", selection: $vm.transcriptionLanguageID) {
+                    ForEach(transcriptionLanguages) { language in
+                        Text(language.name).tag(language.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 160)
             }
         }
 
@@ -442,13 +475,7 @@ struct PreferencesView: View {
         }
 
         section(title: "API keys",
-                subtitle: "Stored locally. Never uploaded.") {
-            KeyFieldView(label: "Anthropic",  placeholder: "sk-ant-api…", text: $vm.apiKey)
-            KeyFieldView(label: "OpenAI",     placeholder: "sk-…",        text: $vm.openAIApiKey)
-            KeyFieldView(label: "Moonshot",   placeholder: "sk-…",        text: $vm.moonshotAPIKey)
-            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
-            KeyFieldView(label: "DeepSeek",   placeholder: "sk-…",        text: $vm.deepSeekAPIKey)
-            KeyFieldView(label: "NVIDIA",     placeholder: "nvapi-…",     text: $vm.nvidiaAPIKey)
+                subtitle: "Both are required. OpenRouter runs every AI model; ElevenLabs transcribes the interview. Stored on this Mac, never uploaded.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
             KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
         }
@@ -591,7 +618,7 @@ struct PreferencesView: View {
     private var modelCatalog: some View {
         let visibility = ModelVisibility.shared
         let allIDs = OverlayViewModel.availableModels.map(\.id)
-        let providers = ["Anthropic", "OpenAI", "Kimi", "Grok", "DeepSeek", "NVIDIA", "OpenRouter"]
+        let providers = OverlayViewModel.modelProviders
 
         VStack(alignment: .leading, spacing: 12) {
             ForEach(providers, id: \.self) { provider in
@@ -809,67 +836,29 @@ struct PreferencesView: View {
         section(title: "Global shortcuts") {
             VStack(spacing: 2) {
                 shortcut("⌃⌥Space", "Show / hide overlay")
+                shortcut("⌘⏎",       "Get the answer now (during an interview)")
+                shortcut("⌘⇧⏎",      "Screenshot → send to AI (during an interview)")
                 shortcut("⌃⌥T",      "Toggle recording + send")
                 shortcut("⌃⌥S",      "Capture screenshot → attach to bar")
                 shortcut("⌃⇧S",      "Capture screenshot → send to AI now")
-                shortcut("⌃⌥A",      "Send selected text to AI")
-                shortcut("⌃⌥C",      "Explain clipboard")
-                shortcut("⌃⌥R",      "Tailor resume from clipboard JD")
+                if FeatureFlags.clipboardShortcutsEnabled {
+                    shortcut("⌃⌥A",  "Send selected text to AI")
+                    shortcut("⌃⌥C",  "Explain clipboard")
+                }
+                if FeatureFlags.resumesEnabled {
+                    shortcut("⌃⌥R",  "Tailor resume from clipboard JD")
+                }
+                if FeatureFlags.quickAskEnabled {
+                    shortcut("Hold Fn", "Quick Ask by voice")
+                }
+                if FeatureFlags.dictationEnabled {
+                    shortcut("Hold ⌥", "Dictate into the active app")
+                }
                 shortcut("⌃⌥ ↑↓←→",  "Move overlay")
                 shortcut("⌃⇧ ↑↓←→",  "Resize overlay")
-                shortcut("⌃⌥X",      "Quit thecloser completely")
+                shortcut("⌃⌥X",      "Close to the menu bar")
                 shortcut("⌘N",        "New session")
                 shortcut("⌘,",        "Preferences")
-            }
-        }
-
-        section(title: "Relaunch with \(LaunchShortcutInstaller.displayShortcut)",
-                subtitle: """
-                          \(LaunchShortcutInstaller.displayShortcut) quits thecloser for real — the process ends and \
-                          disappears from Activity Monitor. Nothing that's gone can listen for its own hotkey, so \
-                          installing this hands the same combo to macOS while the app is closed: press it again and \
-                          the app comes back.
-                          """) {
-            HStack(spacing: 8) {
-                Image(systemName: launchShortcutInstalled ? "checkmark.circle.fill" : "circle.dashed")
-                    .font(.system(size: 12))
-                    .foregroundColor(launchShortcutInstalled ? .green : .secondary)
-                Text(launchShortcutInstalled
-                     ? "Installed as a “\(LaunchShortcutInstaller.serviceName)” Quick Action"
-                     : "Not installed — \(LaunchShortcutInstaller.displayShortcut) only quits, it can't reopen")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Button(launchShortcutInstalled ? "Remove" : "Install") {
-                    launchShortcutError = nil
-                    do {
-                        if launchShortcutInstalled { try LaunchShortcutInstaller.uninstall() }
-                        else                       { try LaunchShortcutInstaller.install() }
-                    } catch {
-                        launchShortcutError = error.localizedDescription
-                    }
-                    launchShortcutInstalled = LaunchShortcutInstaller.isInstalled
-                }
-            }
-
-            if let launchShortcutError {
-                Text(launchShortcutError)
-                    .font(.system(size: 11))
-                    .foregroundColor(.red)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if launchShortcutInstalled {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("If the shortcut doesn't reopen the app, open System Settings ▸ Keyboard ▸ Keyboard Shortcuts ▸ Services and make sure “\(LaunchShortcutInstaller.serviceName)” is checked. macOS sometimes needs that list opened once before a new shortcut starts firing.")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary.opacity(0.8))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button("Open Keyboard Shortcuts…") { LaunchShortcutInstaller.openKeyboardSettings() }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
-                }
             }
         }
     }

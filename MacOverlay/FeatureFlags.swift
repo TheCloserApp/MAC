@@ -2,10 +2,15 @@ import Foundation
 
 /// Build-time feature visibility flags.
 ///
-/// v1 ships with a deliberately narrow surface area: interview chat,
-/// prompts, and account/settings. Everything else stays in the codebase
-/// but is hidden from the UI — flip the relevant flag in a future version
-/// to bring the feature back without re-implementing it.
+/// Production ships only the interview helper: interview setup (résumé,
+/// context, system prompt, model) and the live interview surface.
+/// Everything else stays in the codebase but is hidden from the UI — flip
+/// the relevant flag in a future version to bring the feature back without
+/// re-implementing it.
+///
+/// Flags set to `previewFeatures` are on in Dev and Beta builds and off in
+/// Production. That's how a feature gets tested with beta users before it
+/// graduates: when it's ready, change its flag to `true`.
 ///
 /// Why hide instead of delete:
 /// - Less rework when bringing a feature back in v2/v3.
@@ -18,6 +23,28 @@ import Foundation
 /// - Fewer permission prompts at first launch.
 /// - Faster onboarding — users see only what we want them focused on.
 enum FeatureFlags {
+
+    /// True in Dev and Beta builds, false in Production.
+    static let previewFeatures = AppChannel.current.showsPreviewFeatures
+
+    // MARK: - Beta only, candidates for production
+
+    /// "Regular call" setup next to "Interview" on the Interview surface,
+    /// plus its History tab.
+    static let regularCallEnabled = previewFeatures
+
+    // MARK: - Off in every build while v1 focuses on the interview helper
+
+    /// Quick Ask: hold Fn/🌐 (or ⌃⌥Q) to ask by voice, plus its Preferences
+    /// tab and History tab.
+    static let quickAskEnabled = false
+
+    /// Hold ⌥ to dictate into the frontmost app. Off also means the app
+    /// never asks for Accessibility permission.
+    static let dictationEnabled = false
+
+    /// ⌃⌥C explain clipboard and ⌃⌥A send selection to the AI.
+    static let clipboardShortcutsEnabled = false
 
     // MARK: - Hidden in v1, planned for a later release
 
@@ -33,19 +60,15 @@ enum FeatureFlags {
     /// text_editor loop) still compiles and is exercised by the rest of the
     /// app. Flip back on once the editor/output flow is polished. Re-enabling
     /// this only restores UI entry points — no re-implementation needed.
-    static let resumesEnabled = true
+    /// The interview setup has its own résumé picker, so an interview can
+    /// still use a résumé with this off. Off in every build, scoring
+    /// hotkeys included.
+    static let resumesEnabled = false
 
     /// Embedded WebKit browser tabs inside the overlay — a Browser bar
     /// surface plus the Tools-menu toggle, both feeding the same
-    /// `BrowserPanelView` (tabs, split view, per-tab WKWebView).
-    ///
-    /// Kept behind a flag because its system-audio path is the most
-    /// error-prone surface in the app: routing system audio into a page
-    /// needs the BlackHole driver plus output-device reconfiguration, and
-    /// `BrowserPanelView` surfaces that as a banner when the driver is
-    /// missing or CoreAudio refuses. None of that blocks plain browsing —
-    /// the routing only engages when the audio source is System Audio and
-    /// a tab is open.
+    /// `BrowserPanelView` (tabs, split view, per-tab WKWebView). Plain
+    /// browsing only; like every panel it's hidden from screen sharing.
     static let browserEnabled = true
 
     // MARK: - Hidden in v1, no current plans to bring back
