@@ -44,14 +44,17 @@ struct ProPlanPicker: View {
                         .foregroundColor(Design.Ink.secondary)
                 }
             } else {
-                HStack(spacing: 4) {
-                    Text("Already subscribed on this Mac?")
-                        .foregroundColor(Design.Ink.tertiary)
-                    Button("Restore") { Task { await account.restore() } }
-                        .buttonStyle(.plain)
-                        .foregroundColor(Design.Accent.brand)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 4) {
+                        Text("Already subscribed on this Mac?")
+                            .foregroundColor(Design.Ink.tertiary)
+                        Button("Restore") { Task { await account.restore() } }
+                            .buttonStyle(.plain)
+                            .foregroundColor(Design.Accent.brand)
+                    }
+                    .font(.system(size: 11))
+                    TesterCodeEntry()
                 }
-                .font(.system(size: 11))
             }
 
             if let problem = account.problem {
@@ -61,6 +64,49 @@ struct ProPlanPicker: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+/// "Have a tester code?": a code from the TheCloser team gives Pro, paid
+/// from a budget shared by all testers. One line until it's clicked.
+/// Callers show `ProAccount.problem` for a wrong code.
+struct TesterCodeEntry: View {
+    @State private var expanded = false
+    @State private var code = ""
+
+    var body: some View {
+        let account = ProAccount.shared
+        if expanded {
+            HStack(spacing: 6) {
+                TextField("Tester code", text: $code)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(Design.Ink.primary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Design.Surface.inputFill))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Design.Surface.strongHairline, lineWidth: 0.75))
+                    .frame(maxWidth: 220)
+                    .onSubmit(apply)
+                if account.isRedeeming {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Apply", action: apply)
+                        .buttonStyle(.secondaryCompact)
+                        .disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        } else {
+            Button("Have a tester code?") { expanded = true }
+                .buttonStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundColor(Design.Accent.brand)
+        }
+    }
+
+    private func apply() {
+        let entered = code
+        Task { await ProAccount.shared.redeem(code: entered) }
     }
 }
 
@@ -150,7 +196,9 @@ struct ProUsageMeter: View {
             .frame(height: 5)
 
             HStack {
-                Text("\(usage.percentUsed)% used this month")
+                Text(usage.isTesterBudget
+                     ? "\(usage.percentUsed)% of the test budget used"
+                     : "\(usage.percentUsed)% used this month")
                     .foregroundColor(usage.isRunningLow ? color : Design.Ink.secondary)
                 Spacer()
                 if let periodEnd = usage.periodEndText {
@@ -181,7 +229,9 @@ struct ProUsageNotice: View {
                     .foregroundColor(tint)
                 Text(usage.isUsedUp
                      ? account.usedUpMessage(usage)
-                     : "\(usage.percentUsed)% of this month's \(account.plan?.name ?? "Pro") allowance is used.\(usage.periodEndText.map { " \($0)." } ?? "")")
+                     : usage.isTesterBudget
+                       ? "\(usage.percentUsed)% of the test budget is used."
+                       : "\(usage.percentUsed)% of this month's \(account.plan?.name ?? "Pro") allowance is used.\(usage.periodEndText.map { " \($0)." } ?? "")")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Design.Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)

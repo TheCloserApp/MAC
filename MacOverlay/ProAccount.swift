@@ -47,7 +47,10 @@ final class ProAccount {
         /// or the subscription ends if `renews` is false.
         let periodEnd: Double?
         let renews: Bool
+        /// Tester access: the numbers are the budget shared by all testers.
+        var tester: Bool? = nil
 
+        var isTesterBudget: Bool { tester == true }
         var percentUsed: Int { Int((min(max(usedFraction, 0), 1) * 100).rounded()) }
         var isUsedUp: Bool { remainingUSD <= 0.000_1 }
         var isRunningLow: Bool { usedFraction >= 0.8 }
@@ -77,6 +80,11 @@ final class ProAccount {
     /// True from opening the Pro Max confirmation until the new plan shows
     /// up here.
     private(set) var isWaitingForUpgrade = false
+    /// Pro through the tester code rather than a subscription. Billing
+    /// (Manage subscription, Upgrade) doesn't apply.
+    private(set) var isTester = false
+    /// True while a tester code is being checked.
+    private(set) var isRedeeming = false
     /// Last thing that went wrong, worded for the user. Cleared on success.
     var problem: String?
 
@@ -98,16 +106,19 @@ final class ProAccount {
         static let expiresAt = "pro.expiresAt"
         static let plan = "pro.plan"
         static let models = "pro.models"
+        static let tester = "pro.tester"
         static let checkoutPending = "pro.checkoutPending"
     }
 
+    // Pro works in every build: production has no Subscribe button while
+    // prices are the test ones, but a tester code still works there.
     private init() {
-        guard FeatureFlags.proSubscriptionsEnabled else { return }
         let defaults = UserDefaults.standard
         pass = defaults.string(forKey: Key.pass)
         expiresAt = Date(timeIntervalSince1970: defaults.double(forKey: Key.expiresAt))
         plan = defaults.string(forKey: Key.plan).flatMap(Plan.init(rawValue:))
         models = defaults.stringArray(forKey: Key.models) ?? []
+        isTester = defaults.bool(forKey: Key.tester)
         if pass == nil { plan = nil }
         ModelVisibility.shared.allowed = allowedModelIDs
     }
@@ -115,7 +126,6 @@ final class ProAccount {
     /// At launch: renew a stored pass, or pick up a checkout that finished
     /// after the app quit.
     func start() {
-        guard FeatureFlags.proSubscriptionsEnabled else { return }
         if isActive || UserDefaults.standard.bool(forKey: Key.checkoutPending) {
             Task { await renew() }
         }
@@ -178,6 +188,36 @@ final class ProAccount {
         isWaitingForCheckout = false
     }
 
+    /// "Have a tester code?": Pro paid from the shared test budget, no
+    /// payment. The server checks the code; case and spaces don't matter.
+    func redeem(code: String) async {
+        let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
+        guard let device = Self.device else {
+            problem = "This Mac's hardware ID couldn't be read, so Pro can't be set up on it."
+            return
+        }
+        problem = nil
+        isRedeeming = true
+        defer { isRedeeming = false }
+        do {
+            let (status, data) = try await call("POST", "pass", body: ["device": device, "code": code])
+            switch status {
+            case 200:
+                let response = try JSONDecoder().decode(PassResponse.self, from: data)
+                guard let plan = Plan(rawValue: response.plan) else { return }
+                activate(pass: response.pass, expiresAt: Date(timeIntervalSince1970: response.expiresAt),
+                         plan: plan, models: response.models, tester: response.tester == true)
+            case 403:
+                problem = "That code isn't valid."
+            default:
+                problem = "The code couldn't be checked right now. Try again in a moment."
+            }
+        } catch {
+            problem = "Couldn't reach TheCloser. Check your connection and try again."
+        }
+    }
+
     /// "Already subscribed on this Mac?": looks the subscription up again.
     func restore() async {
         problem = nil
@@ -229,7 +269,7 @@ final class ProAccount {
                 let response = try JSONDecoder().decode(PassResponse.self, from: data)
                 guard let plan = Plan(rawValue: response.plan) else { return .failed }
                 activate(pass: response.pass, expiresAt: Date(timeIntervalSince1970: response.expiresAt),
-                         plan: plan, models: response.models)
+                         plan: plan, models: response.models, tester: response.tester == true)
                 return .active
             case 402:
                 UserDefaults.standard.removeObject(forKey: Key.checkoutPending)
@@ -247,17 +287,19 @@ final class ProAccount {
         }
     }
 
-    private func activate(pass: String, expiresAt: Date, plan: Plan, models: [String]) {
-        let changed = self.plan != plan || self.models != models
+    private func activate(pass: String, expiresAt: Date, plan: Plan, models: [String], tester: Bool) {
+        let changed = self.plan != plan || self.models != models || isTester != tester
         self.pass = pass
         self.expiresAt = expiresAt
         self.plan = plan
         self.models = models
+        isTester = tester
         let defaults = UserDefaults.standard
         defaults.set(pass, forKey: Key.pass)
         defaults.set(expiresAt.timeIntervalSince1970, forKey: Key.expiresAt)
         defaults.set(plan.rawValue, forKey: Key.plan)
         defaults.set(models, forKey: Key.models)
+        defaults.set(tester, forKey: Key.tester)
         defaults.removeObject(forKey: Key.checkoutPending)
         problem = nil
         stopWaitingForCheckout()
@@ -277,8 +319,9 @@ final class ProAccount {
         plan = nil
         models = []
         usage = nil
+        isTester = false
         renewalTimer?.cancel()
-        for key in [Key.pass, Key.expiresAt, Key.plan, Key.models] {
+        for key in [Key.pass, Key.expiresAt, Key.plan, Key.models, Key.tester] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         ModelVisibility.shared.allowed = nil
@@ -322,6 +365,7 @@ final class ProAccount {
     }
 
     func usedUpMessage(_ usage: Usage) -> String {
+        if usage.isTesterBudget { return "The test budget is used up. Thanks for testing!" }
         var message = "You've used all of this month's \(plan?.name ?? "Pro") allowance."
         if let periodEnd = usage.periodEnd, usage.renews {
             message += " It resets on \(Date(timeIntervalSince1970: periodEnd).formatted(.dateTime.month(.wide).day()))."
@@ -421,8 +465,10 @@ final class ProAccount {
     #if PREVIEW
     /// A plan and usage without a server, to render screens off-screen.
     /// Only in builds compiled with `-D PREVIEW`.
-    func preview(plan: Plan?, usage: Usage?, waitingForCheckout: Bool = false, problem: String? = nil) {
+    func preview(plan: Plan?, usage: Usage?, waitingForCheckout: Bool = false, problem: String? = nil,
+                 tester: Bool = false) {
         self.plan = plan
+        isTester = tester
         models = plan == nil ? [] : ["anthropic/claude-sonnet-5", "anthropic/claude-haiku-4.5", "openai/gpt-5.4-mini"]
         self.usage = usage
         isWaitingForCheckout = waitingForCheckout
@@ -439,6 +485,7 @@ final class ProAccount {
         let expiresAt: Double
         let plan: String
         let models: [String]
+        let tester: Bool?
     }
 
     private struct LinkResponse: Decodable {

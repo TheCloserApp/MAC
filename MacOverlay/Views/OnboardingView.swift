@@ -105,7 +105,7 @@ struct OnboardingView: View {
 
             // On the plans step, Subscribe is the main action, so the way
             // out ("Use my own keys") is the quieter button.
-            if step == .plans && !ProAccount.shared.isActive {
+            if step == .plans && FeatureFlags.proSubscriptionsEnabled && !ProAccount.shared.isActive {
                 Button(primaryLabel) { advance() }
                     .buttonStyle(.secondary)
             } else {
@@ -399,8 +399,10 @@ private struct PlansStep: View {
         let account = ProAccount.shared
         VStack(alignment: .leading, spacing: 12) {
             if let plan = account.plan {
-                StepHeader(title: "You're on \(plan.name)",
-                           subtitle: "No keys needed. You're ready for your next interview.")
+                StepHeader(title: account.isTester ? "You have tester access" : "You're on \(plan.name)",
+                           subtitle: account.isTester
+                               ? "No keys needed. The test budget is shared by all testers."
+                               : "No keys needed. You're ready for your next interview.")
                 ProPlanCard(plan: plan, isCurrent: true)
                     .fixedSize(horizontal: false, vertical: true)
             } else if FeatureFlags.proSubscriptionsEnabled {
@@ -420,6 +422,13 @@ private struct PlansStep: View {
                     Text("I'm interested. Tell me when it launches →")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Design.Accent.brand)
+                }
+
+                TesterCodeEntry()
+                if let problem = account.problem {
+                    Text(problem)
+                        .font(.system(size: 11))
+                        .foregroundColor(Design.Accent.amber)
                 }
             }
 

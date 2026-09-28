@@ -436,8 +436,10 @@ struct PreferencesView: View {
         let pro = ProAccount.shared
 
         if let plan = pro.plan {
-            section(title: "TheCloser \(plan.name)",
-                    subtitle: "Models and transcription included. Tied to this Mac.") {
+            section(title: pro.isTester ? "TheCloser Pro · Tester" : "TheCloser \(plan.name)",
+                    subtitle: pro.isTester
+                        ? "Tester access, from a budget shared by all testers. Thanks for helping!"
+                        : "Models and transcription included. Tied to this Mac.") {
                 if let usage = pro.usage {
                     ProUsageMeter(usage: usage)
                 } else {
@@ -445,6 +447,8 @@ struct PreferencesView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
+                // Testers have no subscription to manage or upgrade.
+                if !pro.isTester {
                 HStack {
                     Text("Change plan, card, or cancel.")
                         .font(.system(size: 10))
@@ -453,7 +457,8 @@ struct PreferencesView: View {
                     Button("Manage subscription") { Task { await pro.openManageSubscription() } }
                         .buttonStyle(.secondaryCompact)
                 }
-                if plan == .pro {
+                }
+                if plan == .pro && !pro.isTester {
                     Divider().opacity(0.4)
                     HStack {
                         if pro.isWaitingForUpgrade {
@@ -487,6 +492,17 @@ struct PreferencesView: View {
             section(title: "TheCloser Pro",
                     subtitle: "No keys: we run the models and transcription.") {
                 ProPlanPicker()
+            }
+        } else {
+            // Production: no Subscribe yet, but a tester code works.
+            section(title: "TheCloser Pro",
+                    subtitle: "Coming soon: no keys, with the models and transcription included.") {
+                TesterCodeEntry()
+                if let problem = pro.problem {
+                    Text(problem)
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                }
             }
         }
 
