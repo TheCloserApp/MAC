@@ -1,6 +1,57 @@
 import SwiftUI
 import AppKit
 
+/// How the keywords the model bolds in answers stand out. Picked in
+/// Settings → General or the ⋯ menu.
+enum KeywordStyle: String, CaseIterable, Identifiable {
+    case bold, blue, lightBlue, yellow
+    case blueHighlight, yellowHighlight, greenHighlight, pinkHighlight
+
+    static let defaultsKey = "keywordStyle"
+    static let standard = KeywordStyle.lightBlue
+    /// Shown under the picker in Settings.
+    static let sample = "Use **PostgreSQL** here, since payments need **strong consistency**."
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .bold:            return "Bold only"
+        case .blue:            return "Blue"
+        case .lightBlue:       return "Light blue"
+        case .yellow:          return "Yellow"
+        case .blueHighlight:   return "Blue highlight"
+        case .yellowHighlight: return "Yellow highlight"
+        case .greenHighlight:  return "Green highlight"
+        case .pinkHighlight:   return "Pink highlight"
+        }
+    }
+
+    /// The keyword's text colour. Nil keeps the body colour.
+    var foreground: Color? {
+        switch self {
+        case .blue:            return Design.Accent.brand
+        case .lightBlue:       return Design.Accent.keyword
+        case .yellow:          return Design.Accent.highlighter
+        case .yellowHighlight: return Design.Ink.inverse
+        default:               return nil
+        }
+    }
+
+    /// The colour behind the keyword, like a highlighter pen.
+    var background: Color? {
+        switch self {
+        case .blueHighlight:   return Design.Accent.brand.opacity(0.32)
+        case .yellowHighlight: return Design.Accent.highlighter
+        case .greenHighlight:  return Design.Accent.green.opacity(0.32)
+        case .pinkHighlight:   return Design.Accent.pink.opacity(0.32)
+        default:               return nil
+        }
+    }
+
+    var isHighlight: Bool { background != nil }
+}
+
 /// Lightweight markdown renderer. Parses once per `text` and caches the block
 /// list so re-renders (opacity transitions, parent body invalidations) don't
 /// re-tokenise long responses.
@@ -13,6 +64,7 @@ struct MarkdownResponseView: View {
     /// Code block text size. Scaled with `baseSize` by the text size
     /// setting.
     var codeSize: CGFloat = 11
+    @AppStorage(KeywordStyle.defaultsKey) private var keywordStyle = KeywordStyle.standard
 
     enum Block {
         case code(lang: String, body: String)
@@ -68,7 +120,7 @@ struct MarkdownResponseView: View {
 
     @ViewBuilder
     private func inlineText(_ string: String) -> some View {
-        if let attr = MarkdownParseCache.shared.attributed(for: string) {
+        if let attr = MarkdownParseCache.shared.attributed(for: string, keywords: keywordStyle) {
             Text(attr).textSelection(.enabled)
         } else {
             Text(string).textSelection(.enabled)
@@ -109,12 +161,13 @@ final class MarkdownParseCache {
         }
     }
 
-    func attributed(for string: String) -> AttributedString? {
+    func attributed(for string: String, keywords style: KeywordStyle) -> AttributedString? {
         attrQueue.sync {
-            if let hit = attrCache[string] { return hit }
-            let parsed = try? AttributedString(markdown: string)
-            attrCache[string] = parsed
-            attrOrder.append(string)
+            let key = style.rawValue + "\u{1}" + string
+            if let hit = attrCache[key] { return hit }
+            let parsed = (try? AttributedString(markdown: string)).map { Self.highlightingKeywords($0, style) }
+            attrCache[key] = parsed
+            attrOrder.append(key)
             if attrOrder.count > maxEntries {
                 let drop = maxEntries / 4
                 for k in attrOrder.prefix(drop) { attrCache.removeValue(forKey: k) }
@@ -122,6 +175,21 @@ final class MarkdownParseCache {
             }
             return parsed
         }
+    }
+
+    /// Bold spans are the answer's keywords (the prompt asks the model to
+    /// bold them), so they're styled to catch the eye mid-sentence. Plain
+    /// bold white barely differs from the body text.
+    private static func highlightingKeywords(_ text: AttributedString, _ style: KeywordStyle) -> AttributedString {
+        var text = text
+        let keywords = text.runs[\.inlinePresentationIntent]
+            .filter { $0.0?.contains(.stronglyEmphasized) == true }
+            .map(\.1)
+        for range in keywords {
+            if let color = style.foreground { text[range].foregroundColor = color }
+            if let color = style.background { text[range].backgroundColor = color }
+        }
+        return text
     }
 
     private static func parse(_ text: String) -> [MarkdownResponseView.Block] {

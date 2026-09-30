@@ -77,6 +77,12 @@ enum Design {
         /// The one brand accent: links, switches, selection. The website's
         /// blue, in its dark-mode shade so it stays readable on black.
         static let brand  = Color(red: 0x3b/255, green: 0x8e/255, blue: 0xff/255)
+        /// The keywords the model bolds in answers: a lighter brand blue, so
+        /// they stand out from the body text at a glance. The default
+        /// `KeywordStyle`.
+        static let keyword = Color(red: 0x7a/255, green: 0xb4/255, blue: 0xff/255)
+        /// A soft highlighter yellow for the yellow keyword styles.
+        static let highlighter = Color(red: 0xff/255, green: 0xd4/255, blue: 0x79/255)
         static let blue   = Color(red: 10/255,  green: 132/255, blue: 255/255)
         static let green  = Color(red: 52/255,  green: 199/255, blue: 89/255)
         static let red    = Color(red: 255/255, green: 69/255,  blue: 58/255)
