@@ -45,6 +45,10 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
     var provider: Provider = .elevenLabs
     var elevenLabsAPIKey: String = ""
     var grokAPIKey: String = ""
+    /// Pro's Grok credential: a short-lived token from our server, fetched
+    /// again before every connection because each lasts only minutes. Nil
+    /// when Grok runs on the user's own xAI key.
+    var grokTokenProvider: (@Sendable () async -> String?)?
 
     private(set) var isRunning = false
 
@@ -110,6 +114,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
         reconnectAttempts = 0
         receivedAudio     = false
+        await refreshGrokToken()
         try openWebSocket()
         isRunning = true   // set before audio callbacks fire
 
@@ -188,6 +193,13 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         task.resume()
 
         receiveLoop()
+    }
+
+    /// Pro: swaps in a fresh Grok token before connecting. A failed fetch
+    /// keeps the old one; that connection then fails and is retried.
+    private func refreshGrokToken() async {
+        guard provider == .grok, let fetch = grokTokenProvider else { return }
+        if let token = await fetch() { grokAPIKey = token }
     }
 
     private func grokRequest() throws -> URLRequest {
@@ -293,10 +305,17 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.isRunning, self.webSocketTask == nil else { return }
-            do {
-                try self.openWebSocket()
-            } catch {
-                self.handleSocketFailure(error)
+            guard self.provider == .grok, self.grokTokenProvider != nil else {
+                do { try self.openWebSocket() } catch { self.handleSocketFailure(error) }
+                return
+            }
+            // Pro's Grok token has likely expired by now: fetch a new one first.
+            Task { [weak self] in
+                await self?.refreshGrokToken()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isRunning, self.webSocketTask == nil else { return }
+                    do { try self.openWebSocket() } catch { self.handleSocketFailure(error) }
+                }
             }
         }
     }
