@@ -33,10 +33,10 @@ enum FeatureFlags {
     /// plus its History tab.
     static let regularCallEnabled = previewFeatures
 
-    /// Subscribing to TheCloser Pro from the app. Dev and Beta only while
-    /// the Stripe prices are the $1 test prices; production shows the plans
-    /// as coming soon.
-    static let proSubscriptionsEnabled = previewFeatures
+    /// Subscribing to TheCloser Pro from the app, in every build: the Stripe
+    /// catalog has the launch prices ($19 Pro, $39 Pro Max). Off shows the
+    /// plans as coming soon (the tester code still works).
+    static let proSubscriptionsEnabled = true
 
     // MARK: - Off in every build while v1 focuses on the interview helper
 
