@@ -960,8 +960,9 @@ final class OverlayViewModel {
     /// whether the user has configured an ElevenLabs key.
     enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", grok = "Grok", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
-        // Pro transcribes on this Mac with Apple's recognizer: no key.
-        if ProAccount.shared.isActive { return .apple }
+        // Pro transcribes with Grok on our xAI account (a short-lived token
+        // from the server), or on this Mac when the server has no xAI.
+        if ProAccount.shared.isActive { return proGrokUnavailable ? .apple : .grok }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
@@ -976,8 +977,19 @@ final class OverlayViewModel {
     /// when it ends.
     @ObservationIgnored private var wasOnPro = false
 
+    /// Pro couldn't get a Grok token last time (the server has no xAI set
+    /// up, or it refused), so it's transcribing on this Mac. Tried again at
+    /// the next start.
+    @ObservationIgnored private var proGrokUnavailable = false
+
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
+        if ProAccount.shared.isActive {
+            try await startProTranscriber(source: source)
+            return
+        }
+        transcriptionManager.grokTokenProvider = nil
+        transcriptionManager.grokAPIKey = grokAPIKey
         switch transcriptionBackend {
         case .elevenLabs:
             transcriptionManager.provider = .elevenLabs
@@ -988,6 +1000,23 @@ final class OverlayViewModel {
         case .apple:
             try await appleTranscriber.start(source: source)
         }
+    }
+
+    /// Pro: Grok Transcribe 2 on a token from our server, listening to the
+    /// interviewer only (the system audio) unless you picked the mic alone.
+    /// Without a token it transcribes on this Mac, so Pro never goes deaf.
+    private func startProTranscriber(source: AudioSource) async throws {
+        let listen: AudioSource = source == .both ? .systemAudio : source
+        guard let token = await ProAccount.shared.sttToken() else {
+            proGrokUnavailable = true
+            try await appleTranscriber.start(source: listen)
+            return
+        }
+        proGrokUnavailable = false
+        transcriptionManager.provider = .grok
+        transcriptionManager.grokAPIKey = token
+        transcriptionManager.grokTokenProvider = { await ProAccount.shared.sttToken() }
+        try await transcriptionManager.start(source: listen)
     }
 
     /// Stop whichever backend happens to be running.
