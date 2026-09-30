@@ -477,6 +477,12 @@ func testAnswerKeywordsAreHighlighted() throws {
         var styled: [String] = []
         for run in text.runs {
             let words = String(text[run.range].characters)
+            if style == .off {
+                try assertTrue(run.inlinePresentationIntent?.contains(.stronglyEmphasized) != true
+                               && run.foregroundColor == nil && run.backgroundColor == nil,
+                               "off: \"\(words)\" is plain text")
+                continue
+            }
             if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
                 try assertTrue(run.foregroundColor == style.foreground, "\(style): \"\(words)\" text colour")
                 try assertTrue(run.backgroundColor == style.background, "\(style): \"\(words)\" background")
@@ -486,7 +492,7 @@ func testAnswerKeywordsAreHighlighted() throws {
                                "\(style): \"\(words)\" keeps the body style")
             }
         }
-        try assertEq(styled, ["PostgreSQL", "payments"], "\(style)")
+        try assertEq(styled, style == .off ? [] : ["PostgreSQL", "payments"], "\(style)")
     }
     try assertTrue(KeywordStyle.standard.foreground == Design.Accent.keyword, "light blue by default")
     try assertTrue(KeywordStyle.bold.foreground == nil && KeywordStyle.bold.background == nil, "bold only adds nothing")

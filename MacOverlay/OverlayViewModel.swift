@@ -499,6 +499,35 @@ final class OverlayViewModel {
             }
         }
     }
+    /// Pro's engine: Grok or ElevenLabs on our account (both included), or
+    /// Apple on this Mac.
+    enum ProTranscription: String, CaseIterable, Identifiable {
+        case grok, elevenLabs, apple
+        var id: String { rawValue }
+        var displayName: String {
+            switch self {
+            case .grok:       return "Grok Transcribe 2 (included)"
+            case .elevenLabs: return "ElevenLabs (included)"
+            case .apple:      return "Apple (on-device, free)"
+            }
+        }
+        /// The server's name for it (/api/stt-token); nil runs on this Mac.
+        var provider: String? {
+            switch self {
+            case .grok:       return "grok"
+            case .elevenLabs: return "elevenlabs"
+            case .apple:      return nil
+            }
+        }
+    }
+    var proTranscription: ProTranscription {
+        didSet {
+            UserDefaults.standard.set(proTranscription.rawValue, forKey: "proTranscription")
+            if oldValue != proTranscription, isRecording, ProAccount.shared.isActive {
+                restartCaptureForNewSource()
+            }
+        }
+    }
     /// Apple locale identifier of the transcription language. The engines
     /// read `TranscriptionLanguage.current` (same defaults key) when they
     /// start, so a change applies from the next recording.
@@ -960,9 +989,17 @@ final class OverlayViewModel {
     /// whether the user has configured an ElevenLabs key.
     enum TranscriptionBackend: String { case elevenLabs = "ElevenLabs", grok = "Grok", apple = "Apple" }
     var transcriptionBackend: TranscriptionBackend {
-        // Pro transcribes with Grok on our xAI account (a short-lived token
-        // from the server), or on this Mac when the server has no xAI.
-        if ProAccount.shared.isActive { return proGrokUnavailable ? .apple : .grok }
+        // Pro transcribes with Grok or ElevenLabs on our account (a
+        // short-lived token from the server), or on this Mac: by choice, or
+        // when the server couldn't give a token.
+        if ProAccount.shared.isActive {
+            if proCloudUnavailable { return .apple }
+            switch proTranscription {
+            case .grok:       return .grok
+            case .elevenLabs: return .elevenLabs
+            case .apple:      return .apple
+            }
+        }
         switch transcriptionPreference {
         case .apple:      return .apple
         case .elevenLabs: return elevenLabsAPIKey.isEmpty ? .apple : .elevenLabs
@@ -977,10 +1014,10 @@ final class OverlayViewModel {
     /// when it ends.
     @ObservationIgnored private var wasOnPro = false
 
-    /// Pro couldn't get a Grok token last time (the server has no xAI set
-    /// up, or it refused), so it's transcribing on this Mac. Tried again at
-    /// the next start.
-    @ObservationIgnored private var proGrokUnavailable = false
+    /// Pro couldn't get a token last time (the server doesn't have that
+    /// provider set up, or it refused), so it's transcribing on this Mac.
+    /// Tried again at the next start.
+    @ObservationIgnored private var proCloudUnavailable = false
 
     /// Start transcription using whichever backend is active.
     private func startTranscriber(source: AudioSource) async throws {
@@ -988,7 +1025,7 @@ final class OverlayViewModel {
             try await startProTranscriber(source: source)
             return
         }
-        transcriptionManager.grokTokenProvider = nil
+        transcriptionManager.tokenProvider = nil
         transcriptionManager.grokAPIKey = grokAPIKey
         switch transcriptionBackend {
         case .elevenLabs:
@@ -1002,20 +1039,27 @@ final class OverlayViewModel {
         }
     }
 
-    /// Pro: Grok Transcribe 2 on a token from our server, listening to the
-    /// interviewer only (the system audio) unless you picked the mic alone.
-    /// Without a token it transcribes on this Mac, so Pro never goes deaf.
+    /// Pro: Grok Transcribe 2 or ElevenLabs on a token from our server (or
+    /// Apple, if picked), listening to the interviewer only (the system
+    /// audio) unless you picked the mic alone. Without a token it
+    /// transcribes on this Mac, so Pro never goes deaf.
     private func startProTranscriber(source: AudioSource) async throws {
         let listen: AudioSource = source == .both ? .systemAudio : source
-        guard let token = await ProAccount.shared.sttToken() else {
-            proGrokUnavailable = true
+        let choice = proTranscription
+        guard let provider = choice.provider else {
+            proCloudUnavailable = false
             try await appleTranscriber.start(source: listen)
             return
         }
-        proGrokUnavailable = false
-        transcriptionManager.provider = .grok
-        transcriptionManager.grokAPIKey = token
-        transcriptionManager.grokTokenProvider = { await ProAccount.shared.sttToken() }
+        guard let token = await ProAccount.shared.sttToken(provider: provider) else {
+            proCloudUnavailable = true
+            try await appleTranscriber.start(source: listen)
+            return
+        }
+        proCloudUnavailable = false
+        transcriptionManager.provider = choice == .elevenLabs ? .elevenLabs : .grok
+        transcriptionManager.tokenProvider = { await ProAccount.shared.sttToken(provider: provider) }
+        transcriptionManager.proToken = token
         try await transcriptionManager.start(source: listen)
     }
 
@@ -1065,6 +1109,9 @@ final class OverlayViewModel {
         transcriptionPreference = TranscriptionPreference(
             rawValue: UserDefaults.standard.string(forKey: "transcriptionPreference") ?? ""
         ) ?? .auto
+        proTranscription = ProTranscription(
+            rawValue: UserDefaults.standard.string(forKey: "proTranscription") ?? ""
+        ) ?? .grok
         transcriptionLanguageID = TranscriptionLanguage.current.id
         suggestSessionOnCall = UserDefaults.standard.object(forKey: "suggestSessionOnCall") as? Bool ?? true
         // Default résumé generation to DeepSeek V4 Pro (direct api.deepseek.com)

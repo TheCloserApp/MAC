@@ -271,22 +271,36 @@ struct PreferencesView: View {
             }
             .toggleStyle(.switch)
 
-            // Pro always transcribes on this Mac, so there's nothing to pick.
-            if !ProAccount.shared.isActive {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                labelTwoLine(title: "Transcription engine",
-                             subtitle: "Apple runs on this Mac. ElevenLabs and Grok need a key.")
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                Picker("", selection: $vm.transcriptionPreference) {
-                    ForEach(OverlayViewModel.TranscriptionPreference.allCases) { p in
-                        Text(p.displayName).tag(p)
+            if ProAccount.shared.isActive {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    labelTwoLine(title: "Transcription engine",
+                                 subtitle: "Grok and ElevenLabs are included with Pro. Apple runs on this Mac.")
+                        .layoutPriority(1)
+                    Spacer(minLength: 8)
+                    Picker("", selection: $vm.proTranscription) {
+                        ForEach(OverlayViewModel.ProTranscription.allCases) { p in
+                            Text(p.displayName).tag(p)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 160)
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(width: 160)
-            }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    labelTwoLine(title: "Transcription engine",
+                                 subtitle: "Apple runs on this Mac. ElevenLabs and Grok need a key.")
+                        .layoutPriority(1)
+                    Spacer(minLength: 8)
+                    Picker("", selection: $vm.transcriptionPreference) {
+                        ForEach(OverlayViewModel.TranscriptionPreference.allCases) { p in
+                            Text(p.displayName).tag(p)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 160)
+                }
             }
         }
 
