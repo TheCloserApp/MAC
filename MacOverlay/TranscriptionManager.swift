@@ -45,10 +45,13 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
     var provider: Provider = .elevenLabs
     var elevenLabsAPIKey: String = ""
     var grokAPIKey: String = ""
-    /// Pro's Grok credential: a short-lived token from our server, fetched
-    /// again before every connection because each lasts only minutes. Nil
-    /// when Grok runs on the user's own xAI key.
-    var grokTokenProvider: (@Sendable () async -> String?)?
+    /// Pro's credential: a short-lived token from our server for the
+    /// chosen provider, fetched again before every connection (Grok's last
+    /// minutes, ElevenLabs' work once). Nil when the user's own key is used.
+    var tokenProvider: (@Sendable () async -> String?)?
+    /// Pro: the token for the next connection. Set it to one already
+    /// fetched to skip the first fetch; each connection uses it up.
+    var proToken: String?
 
     private(set) var isRunning = false
 
@@ -114,7 +117,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
         reconnectAttempts = 0
         receivedAudio     = false
-        await refreshGrokToken()
+        await refreshProToken()
         try openWebSocket()
         isRunning = true   // set before audio callbacks fire
 
@@ -128,6 +131,7 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
     func stop() {
         isRunning = false
+        proToken = nil
         stopAudioCapture()
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil
@@ -195,15 +199,24 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         receiveLoop()
     }
 
-    /// Pro: swaps in a fresh Grok token before connecting. A failed fetch
-    /// keeps the old one; that connection then fails and is retried.
-    private func refreshGrokToken() async {
-        guard provider == .grok, let fetch = grokTokenProvider else { return }
-        if let token = await fetch() { grokAPIKey = token }
+    /// Pro: fetches a token for the next connection unless one is waiting.
+    /// A failed fetch leaves none; that connection then fails and is retried.
+    private func refreshProToken() async {
+        guard proToken == nil, let fetch = tokenProvider else { return }
+        proToken = await fetch()
+    }
+
+    /// Pro's token for this connection, used up by it.
+    private func takeProToken() throws -> String {
+        let token = proToken
+        proToken = nil
+        guard let token, !token.isEmpty else { throw TranscriptionError.unavailable }
+        return token
     }
 
     private func grokRequest() throws -> URLRequest {
-        guard !grokAPIKey.isEmpty else {
+        let credential = tokenProvider != nil ? try takeProToken() : grokAPIKey
+        guard !credential.isEmpty else {
             throw TranscriptionError.permissionDenied("xAI API key not set. Add it in Settings → AI.")
         }
         guard let url = GrokTranscription.streamURL(language: TranscriptionLanguage.current.elevenLabsCode) else {
@@ -216,12 +229,15 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in self?.grokUtterance = GrokTranscription.Utterance() }
 
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(grokAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization")
         return request
     }
 
     private func elevenLabsRequest() throws -> URLRequest {
-        guard !elevenLabsAPIKey.isEmpty else {
+        // Pro's single-use token goes in the address, as ElevenLabs asks;
+        // your own key goes in a header.
+        let token = tokenProvider != nil ? try takeProToken() : nil
+        guard token != nil || !elevenLabsAPIKey.isEmpty else {
             throw TranscriptionError.permissionDenied("ElevenLabs API key not set. Add it in Settings (gear icon).")
         }
 
@@ -231,18 +247,22 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         // before committing the segment that triggers `sendToAI`. 0.6s keeps
         // mid-sentence pauses from committing prematurely while shaving ~400ms
         // off every turn vs. the old 1.0s.
-        let qs = "model_id=scribe_v2_realtime" +
+        var qs = "model_id=scribe_v2_realtime" +
                  "&audio_format=pcm_16000" +
                  "&commit_strategy=vad" +
                  "&language_code=\(TranscriptionLanguage.current.elevenLabsCode)" +
                  "&vad_silence_threshold_secs=0.6"
+        if let token {
+            let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+            qs += "&token=" + (token.addingPercentEncoding(withAllowedCharacters: unreserved) ?? token)
+        }
 
         guard let url = URL(string: "wss://api.elevenlabs.io/v1/speech-to-text/realtime?\(qs)") else {
             throw TranscriptionError.unavailable
         }
 
         var request = URLRequest(url: url)
-        request.setValue(elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key")
+        if token == nil { request.setValue(elevenLabsAPIKey, forHTTPHeaderField: "xi-api-key") }
         return request
     }
 
@@ -293,7 +313,8 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         NSLog("[TranscriptionManager] socket failed (%@); reconnect attempt %d in %.1fs",
               error.localizedDescription, attempt, delay)
         if attempt == reconnectAttemptsBeforeWarning {
-            let msg = "Transcription connection lost: \(error.localizedDescription). Still retrying — check your network and \(provider == .grok ? "xAI" : "ElevenLabs") key."
+            let check = tokenProvider != nil ? "your network" : "your network and \(provider == .grok ? "xAI" : "ElevenLabs") key"
+            let msg = "Transcription connection lost: \(error.localizedDescription). Still retrying — check \(check)."
             if let onConnectionEvent {
                 onConnectionEvent(.failed(msg))
             } else {
@@ -305,13 +326,13 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.isRunning, self.webSocketTask == nil else { return }
-            guard self.provider == .grok, self.grokTokenProvider != nil else {
+            guard self.tokenProvider != nil else {
                 do { try self.openWebSocket() } catch { self.handleSocketFailure(error) }
                 return
             }
-            // Pro's Grok token has likely expired by now: fetch a new one first.
+            // Pro's token was used up by the last connection: fetch a new one first.
             Task { [weak self] in
-                await self?.refreshGrokToken()
+                await self?.refreshProToken()
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isRunning, self.webSocketTask == nil else { return }
                     do { try self.openWebSocket() } catch { self.handleSocketFailure(error) }

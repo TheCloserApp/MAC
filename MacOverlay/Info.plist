@@ -2,39 +2,31 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>TheCloser</string>
-    <key>CFBundleDisplayName</key>
-    <string>TheCloser</string>
-    <key>CFBundleIdentifier</key>
-    <string>tech.thecloser.mac</string>
-    <key>CFBundleVersion</key>
-    <string>3.5</string>
-    <key>CFBundleShortVersionString</key>
-    <string>3.5</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>thecloser</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSSupportsAutomaticTermination</key>
-    <false/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>TheCloser needs microphone access to transcribe your speech in real time.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>TheCloser uses speech recognition to convert audio to text.</string>
-    <!--
-      Calendar permission strings deliberately omitted in v1. The Calendar
-      feature is hidden behind FeatureFlags.calendarEnabled; without these
-      keys, macOS will never prompt the user for calendar access on launch.
-      Add them back when re-enabling Calendar in a future release:
-        - NSCalendarsUsageDescription
-        - NSCalendarsFullAccessUsageDescription
-    -->
+	<key>CFBundleDisplayName</key>
+	<string>TheCloser</string>
+	<key>CFBundleExecutable</key>
+	<string>thecloser</string>
+	<key>CFBundleIdentifier</key>
+	<string>tech.thecloser.mac</string>
+	<key>CFBundleName</key>
+	<string>TheCloser</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>3.6</string>
+	<key>CFBundleVersion</key>
+	<string>3.6</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>TheCloser needs microphone access to transcribe your speech in real time.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>TheCloser uses speech recognition to convert audio to text.</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
 </dict>
 </plist>
