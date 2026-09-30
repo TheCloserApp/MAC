@@ -427,6 +427,31 @@ final class ProAccount {
         }
     }
 
+    /// A token for Grok transcription that lasts a few minutes: Pro
+    /// (subscribers and testers) transcribes the interviewer with Grok
+    /// Transcribe 2 without the app ever holding our xAI key. Nil when the
+    /// server has no xAI set up or refuses, and Pro then transcribes on
+    /// this Mac instead.
+    func sttToken() async -> String? {
+        guard isActive, let pass else { return nil }
+        return await Self.sttToken(pass: pass)
+    }
+
+    private nonisolated static func sttToken(pass: String) async -> String? {
+        var request = URLRequest(url: api.appending(path: "stt-token"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(pass)", forHTTPHeaderField: "Authorization")
+        if let device { request.setValue(device, forHTTPHeaderField: "X-Device") }
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let reply = try? JSONDecoder().decode(STTToken.self, from: data),
+              !reply.token.isEmpty else { return nil }
+        return reply.token
+    }
+
+    private struct STTToken: Decodable { let token: String }
+
     func refreshUsage() async {
         guard isActive, let pass else { return }
         do {
@@ -502,6 +527,7 @@ final class ProAccount {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         if let pass { request.setValue("Bearer \(pass)", forHTTPHeaderField: "Authorization") }
+        if let device = Self.device { request.setValue(device, forHTTPHeaderField: "X-Device") }
         let (data, response) = try await URLSession.shared.data(for: request)
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
     }
