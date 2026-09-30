@@ -19,11 +19,14 @@ struct OverlayView: View {
     /// is visible until the cursor enters the panel.
     @State private var chromeHovering = false
 
-    /// The input bar is the whole UI in pill stage, so it never hides
-    /// there. While expanded it shows on hover — and stays while the user
-    /// has a draft typed or is interacting, so it can't vanish mid-thought.
+    /// The input bar is the whole UI in pill stage, and when it's opened
+    /// with no surface, so it never hides then: fading it would leave
+    /// nothing on screen. With a surface open, the surface shows where the
+    /// overlay is, so the bar shows on hover — and stays while the user
+    /// has a draft typed, so it can't vanish mid-thought.
     private var barVisible: Bool {
         vm.shellStage == .pill
+            || vm.primarySurface == nil
             || chromeHovering
             || !vm.manualInput.isEmpty
     }

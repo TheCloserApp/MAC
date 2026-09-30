@@ -8,6 +8,7 @@ struct PreferencesView: View {
     @State private var tab: Tab = .general
     @State private var showNewWorkspaceSheet = false
     @State private var isSidebarCollapsed = true
+    @AppStorage(KeywordStyle.defaultsKey) private var keywordStyle = KeywordStyle.standard
 
     enum Tab: String, CaseIterable, Identifiable {
         case general    = "General"
@@ -260,6 +261,7 @@ struct PreferencesView: View {
             sliderRow("Background", value: $vm.backgroundOpacity, range: 0.0...1.0,
                       display: { $0 == 0 ? "Off" : "\(Int($0 * 100))%" })
             sliderRow("Text size", value: $vm.textScale, range: 0.8...1.6)
+            keywordStyleRow
         }
 
         section(title: "Recording") {
@@ -915,6 +917,31 @@ struct PreferencesView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
                 .frame(width: 40, alignment: .trailing)
+        }
+    }
+
+    /// How keywords in answers stand out, with a sample answer showing the
+    /// choice. The ⋯ menu has the same setting.
+    private var keywordStyleRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Keywords")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(width: 90, alignment: .leading)
+                Picker("", selection: $keywordStyle) {
+                    ForEach(KeywordStyle.allCases.filter { !$0.isHighlight }) { Text($0.displayName).tag($0) }
+                    Divider()
+                    ForEach(KeywordStyle.allCases.filter(\.isHighlight)) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 160)
+                Spacer()
+            }
+            MarkdownResponseView(text: KeywordStyle.sample, baseSize: 12 * vm.textScale)
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: Design.Radius.md).fill(Design.Surface.inputFill))
         }
     }
 

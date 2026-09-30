@@ -8,6 +8,7 @@ struct TopStripView: View {
     @Environment(OverlayViewModel.self) private var vm
     @State private var editingTitle = false
     @State private var draftTitle = ""
+    @AppStorage(KeywordStyle.defaultsKey) private var keywordStyle = KeywordStyle.standard
 
     var body: some View {
         HStack(spacing: 8) {
@@ -154,6 +155,17 @@ struct TopStripView: View {
         .buttonStyle(.plain)
         .keyboardShortcut("n", modifiers: .command)
         .help(vm.primarySurface == .interview ? "New interview setup" : "New chat (⌘N)")
+    }
+
+    private func keywordStyleButton(_ style: KeywordStyle) -> some View {
+        Button {
+            keywordStyle = style
+        } label: {
+            HStack {
+                Text(style.displayName)
+                if keywordStyle == style { Image(systemName: "checkmark") }
+            }
+        }
     }
 
     private var sessionMenu: some View {
@@ -343,6 +355,17 @@ struct TopStripView: View {
             } label: {
                 Label("Text size: \(Int((vm.textScale * 100).rounded()))%",
                       systemImage: "textformat.size")
+            }
+
+            // How keywords in answers stand out — the same setting as
+            // Settings → General → Keywords. Coloured text first, then the
+            // highlighter styles.
+            Menu {
+                ForEach(KeywordStyle.allCases.filter { !$0.isHighlight }) { keywordStyleButton($0) }
+                Divider()
+                ForEach(KeywordStyle.allCases.filter(\.isHighlight)) { keywordStyleButton($0) }
+            } label: {
+                Label("Keywords: \(keywordStyle.displayName)", systemImage: "highlighter")
             }
 
             // Which speech engine is doing the transcribing — switchable

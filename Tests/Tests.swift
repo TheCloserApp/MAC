@@ -464,6 +464,34 @@ func testChatTurnHiddenContextCodable() throws {
     try assertEq(migrated.replayText, "old")
 }
 
+// MARK: - Answers
+
+/// The words the model bolds get the chosen keyword style; the rest keeps
+/// the body colour and no background.
+func testAnswerKeywordsAreHighlighted() throws {
+    for style in KeywordStyle.allCases {
+        guard let text = MarkdownParseCache.shared.attributed(for: "Use **PostgreSQL** for **payments**.",
+                                                              keywords: style) else {
+            throw TestFailure(message: "markdown didn't parse", file: #file, line: #line)
+        }
+        var styled: [String] = []
+        for run in text.runs {
+            let words = String(text[run.range].characters)
+            if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
+                try assertTrue(run.foregroundColor == style.foreground, "\(style): \"\(words)\" text colour")
+                try assertTrue(run.backgroundColor == style.background, "\(style): \"\(words)\" background")
+                styled.append(words)
+            } else {
+                try assertTrue(run.foregroundColor == nil && run.backgroundColor == nil,
+                               "\(style): \"\(words)\" keeps the body style")
+            }
+        }
+        try assertEq(styled, ["PostgreSQL", "payments"], "\(style)")
+    }
+    try assertTrue(KeywordStyle.standard.foreground == Design.Accent.keyword, "light blue by default")
+    try assertTrue(KeywordStyle.bold.foreground == nil && KeywordStyle.bold.background == nil, "bold only adds nothing")
+}
+
 // MARK: - TheCloser Pro
 
 /// Must match the server's expectations (api/_lib/config.js DEVICE_PATTERN)
@@ -601,6 +629,7 @@ struct TestsMain {
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
+        TestRunner.run("Answer keywords are highlighted", testAnswerKeywordsAreHighlighted)
         TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
         TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
         TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
