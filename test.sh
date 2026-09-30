@@ -35,6 +35,8 @@ SOURCES=(
     "$SRC_DIR/ProAccount.swift"
     "$SRC_DIR/GrokTranscription.swift"
     "$SRC_DIR/Stores/ModelVisibility.swift"
+    "$SRC_DIR/Views/Shared/Design.swift"
+    "$SRC_DIR/Views/Shared/MarkdownResponseView.swift"
 )
 
 echo "🧪 Compiling test binary…"

@@ -112,7 +112,7 @@ final class MarkdownParseCache {
     func attributed(for string: String) -> AttributedString? {
         attrQueue.sync {
             if let hit = attrCache[string] { return hit }
-            let parsed = try? AttributedString(markdown: string)
+            let parsed = (try? AttributedString(markdown: string)).map(Self.highlightingKeywords)
             attrCache[string] = parsed
             attrOrder.append(string)
             if attrOrder.count > maxEntries {
@@ -122,6 +122,20 @@ final class MarkdownParseCache {
             }
             return parsed
         }
+    }
+
+    /// Bold spans are the answer's keywords (the prompt asks the model to
+    /// bold them), so they're tinted to catch the eye mid-sentence. Plain
+    /// bold white barely differs from the body text.
+    private static func highlightingKeywords(_ text: AttributedString) -> AttributedString {
+        var text = text
+        let keywords = text.runs[\.inlinePresentationIntent]
+            .filter { $0.0?.contains(.stronglyEmphasized) == true }
+            .map(\.1)
+        for range in keywords {
+            text[range].foregroundColor = Design.Accent.keyword
+        }
+        return text
     }
 
     private static func parse(_ text: String) -> [MarkdownResponseView.Block] {

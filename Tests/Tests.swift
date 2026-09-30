@@ -464,6 +464,23 @@ func testChatTurnHiddenContextCodable() throws {
     try assertEq(migrated.replayText, "old")
 }
 
+// MARK: - Answers
+
+/// The words the model bolds are tinted so they stand out; the rest keeps
+/// the body colour.
+func testAnswerKeywordsAreHighlighted() throws {
+    guard let text = MarkdownParseCache.shared.attributed(for: "Use **PostgreSQL** for **payments**.") else {
+        throw TestFailure(message: "markdown didn't parse", file: #file, line: #line)
+    }
+    var tinted: [String] = []
+    for run in text.runs {
+        let words = String(text[run.range].characters)
+        if run.foregroundColor == Design.Accent.keyword { tinted.append(words) }
+        else { try assertTrue(run.foregroundColor == nil, "\"\(words)\" keeps the body colour") }
+    }
+    try assertEq(tinted, ["PostgreSQL", "payments"])
+}
+
 // MARK: - TheCloser Pro
 
 /// Must match the server's expectations (api/_lib/config.js DEVICE_PATTERN)
@@ -601,6 +618,7 @@ struct TestsMain {
         TestRunner.run("TranscriptFilter normalized change detection", testTranscriptFilterNormalized)
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
+        TestRunner.run("Answer keywords are highlighted", testAnswerKeywordsAreHighlighted)
         TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
         TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
         TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
