@@ -4,7 +4,7 @@ import AppKit
 /// How the keywords the model bolds in answers stand out. Picked in
 /// Settings → General or the ⋯ menu.
 enum KeywordStyle: String, CaseIterable, Identifiable {
-    case bold, blue, lightBlue, yellow
+    case off, bold, blue, lightBlue, yellow
     case blueHighlight, yellowHighlight, greenHighlight, pinkHighlight
 
     static let defaultsKey = "keywordStyle"
@@ -16,6 +16,7 @@ enum KeywordStyle: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .off:             return "Off"
         case .bold:            return "Bold only"
         case .blue:            return "Blue"
         case .lightBlue:       return "Light blue"
@@ -179,13 +180,17 @@ final class MarkdownParseCache {
 
     /// Bold spans are the answer's keywords (the prompt asks the model to
     /// bold them), so they're styled to catch the eye mid-sentence. Plain
-    /// bold white barely differs from the body text.
+    /// bold white barely differs from the body text. Off shows them as
+    /// plain text.
     private static func highlightingKeywords(_ text: AttributedString, _ style: KeywordStyle) -> AttributedString {
         var text = text
         let keywords = text.runs[\.inlinePresentationIntent]
             .filter { $0.0?.contains(.stronglyEmphasized) == true }
-            .map(\.1)
-        for range in keywords {
+        for (intent, range) in keywords {
+            if style == .off, var plain = intent {
+                plain.remove(.stronglyEmphasized)
+                text[range].inlinePresentationIntent = plain.isEmpty ? nil : plain
+            }
             if let color = style.foreground { text[range].foregroundColor = color }
             if let color = style.background { text[range].backgroundColor = color }
         }

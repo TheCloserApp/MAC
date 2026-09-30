@@ -369,18 +369,32 @@ struct TopStripView: View {
             }
 
             // Which speech engine is doing the transcribing — switchable
-            // here so the strip doesn't need a badge for it. Pro always
-            // transcribes on this Mac, so it has nothing to pick.
-            if !ProAccount.shared.isActive {
+            // here so the strip doesn't need a badge for it. Pro picks
+            // between the engines its plan includes.
             Menu {
-                ForEach(OverlayViewModel.TranscriptionPreference.allCases) { pref in
-                    Button {
-                        vm.transcriptionPreference = pref
-                    } label: {
-                        HStack {
-                            Text(pref.displayName)
-                            if vm.transcriptionPreference == pref {
-                                Image(systemName: "checkmark")
+                if ProAccount.shared.isActive {
+                    ForEach(OverlayViewModel.ProTranscription.allCases) { pref in
+                        Button {
+                            vm.proTranscription = pref
+                        } label: {
+                            HStack {
+                                Text(pref.displayName)
+                                if vm.proTranscription == pref {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ForEach(OverlayViewModel.TranscriptionPreference.allCases) { pref in
+                        Button {
+                            vm.transcriptionPreference = pref
+                        } label: {
+                            HStack {
+                                Text(pref.displayName)
+                                if vm.transcriptionPreference == pref {
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
                     }
@@ -388,7 +402,6 @@ struct TopStripView: View {
             } label: {
                 Label("Transcription: \(vm.transcriptionBackend.rawValue)",
                       systemImage: "waveform.badge.mic")
-            }
             }
 
             if vm.isInterviewSession && !vm.isInterviewTextOnly {
