@@ -250,8 +250,10 @@ class TranscriptionManager: NSObject, @unchecked Sendable {
         var qs = "model_id=scribe_v2_realtime" +
                  "&audio_format=pcm_16000" +
                  "&commit_strategy=vad" +
-                 "&language_code=\(TranscriptionLanguage.current.elevenLabsCode)" +
                  "&vad_silence_threshold_secs=0.6"
+        // No language code: ElevenLabs detects it (All languages).
+        let language = TranscriptionLanguage.current.elevenLabsCode
+        if !language.isEmpty { qs += "&language_code=\(language)" }
         if let token {
             let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
             qs += "&token=" + (token.addingPercentEncoding(withAllowedCharacters: unreserved) ?? token)

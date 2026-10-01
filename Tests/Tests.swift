@@ -528,6 +528,12 @@ func testTranscriptLanguageLock() throws {
     try assertTrue(english.matches("2024?"), "numbers alone are neutral")
     try assertEq(english.shortName, "English", "short name")
     try assertEq(teluguLanguage.elevenLabsCode, "te", "ElevenLabs code")
+    // All languages: nothing is ignored; Apple falls back to English.
+    let all = TranscriptionLanguage.language(for: "auto")!
+    try assertTrue(all.isAutomatic && all.matches(telugu) && all.matches(hindi) && all.matches("Hello"), "all languages keeps everything")
+    try assertEq(all.elevenLabsCode, "", "no language code: ElevenLabs detects it")
+    try assertEq(TranscriptionLanguage.all.first?.id, "auto", "listed first")
+    try assertEq(TranscriptionLanguage.defaultLanguage(for: Locale(identifier: "fr_FR")).id, "en-US", "the default is still English")
 }
 
 // MARK: - TheCloser Pro
