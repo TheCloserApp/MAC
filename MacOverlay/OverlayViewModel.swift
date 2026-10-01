@@ -130,6 +130,9 @@ final class OverlayViewModel {
     /// question asked while the AI was still streaming was silently lost.
     /// Apple doesn't need it (its recognition text accumulates per task).
     @ObservationIgnored private var committedBacklog = ""
+    /// When "Ignoring speech that isn't English" was last shown, so a long
+    /// stretch of it says so once rather than on every utterance.
+    @ObservationIgnored private var otherLanguageNoticeAt = Date.distantPast
     /// Pending debounced auto-send (see scheduleAutoSend). Cancelled the
     /// moment new speech arrives so a mid-question VAD commit never fires
     /// the AI on half a question.
@@ -1063,6 +1066,19 @@ final class OverlayViewModel {
         try await transcriptionManager.start(source: listen)
     }
 
+    /// Cloud transcription in another language than the one picked (Grok
+    /// detects the language itself) isn't transcribed: Telugu text while
+    /// English is picked is ignored, with a note in the status line.
+    private func isInChosenLanguage(_ text: String, final: Bool) -> Bool {
+        let language = TranscriptionLanguage.current
+        if language.matches(text) { return true }
+        if final, Date().timeIntervalSince(otherLanguageNoticeAt) > 60 {
+            otherLanguageNoticeAt = Date()
+            statusMessage = "Ignoring speech that isn't \(language.shortName)."
+        }
+        return false
+    }
+
     /// Stop whichever backend happens to be running.
     private func stopTranscriber() {
         if transcriptionManager.isRunning { transcriptionManager.stop() }
@@ -1218,7 +1234,7 @@ final class OverlayViewModel {
         // the next commit reschedules it with the fuller transcript.
         transcriptionManager.onPartial = { [weak self] text in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.isInChosenLanguage(text, final: false) else { return }
                 self.cancelAutoSendIfNewSpeech(text)
                 self.transcription = self.committedBacklog.isEmpty
                     ? text
@@ -1228,6 +1244,11 @@ final class OverlayViewModel {
         transcriptionManager.onCommit = { [weak self] text in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard self.isInChosenLanguage(text, final: true) else {
+                    // Drop the ignored partial from the display too.
+                    if !self.committedBacklog.isEmpty { self.transcription = self.committedBacklog }
+                    return
+                }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     self.committedBacklog = self.committedBacklog.isEmpty
