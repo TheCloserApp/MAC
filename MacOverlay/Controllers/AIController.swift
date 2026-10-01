@@ -55,17 +55,13 @@ final class AIController {
 
     // MARK: - Prompt resolution
 
-    /// Answers highlight the words the model bolds, so a prompt that says
-    /// nothing about bold gets this rule added.
-    static let keywordRule =
-        "Bold the 2–3 key terms of each answer (**like this**) so they stand out at a glance."
-
-    /// Active-prompt preset > mode default. Substitutes {NAME}/{ROLE}/{COMPANY}.
+    /// Active-prompt preset > mode default, plus the keyword style's
+    /// formatting rule. Substitutes {NAME}/{ROLE}/{COMPANY}.
     func resolveActivePrompt() -> String {
         guard let vm else { return "" }
         var raw = vm.promptStore.activePreset?.content ?? vm.sessionMode.systemPrompt
-        if !raw.localizedCaseInsensitiveContains("bold") {
-            raw += "\n\n" + Self.keywordRule
+        if let rule = KeywordStyle.current.promptRule(for: raw) {
+            raw += "\n\n" + rule
         }
         return raw
             .replacingOccurrences(of: "{NAME}",    with: vm.userProfile.name.isEmpty        ? "the user"       : vm.userProfile.name)

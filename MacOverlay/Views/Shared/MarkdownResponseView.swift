@@ -4,7 +4,7 @@ import AppKit
 /// How the keywords the model bolds in answers stand out. Picked in
 /// Settings → General or the ⋯ menu.
 enum KeywordStyle: String, CaseIterable, Identifiable {
-    case off, bold, blue, lightBlue, yellow
+    case plain, off, bold, blue, lightBlue, yellow
     case blueHighlight, yellowHighlight, greenHighlight, pinkHighlight
 
     static let defaultsKey = "keywordStyle"
@@ -14,8 +14,30 @@ enum KeywordStyle: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The saved choice, for code outside views (the prompt).
+    static var current: KeywordStyle {
+        UserDefaults.standard.string(forKey: defaultsKey).flatMap(KeywordStyle.init(rawValue:)) ?? standard
+    }
+
+    /// Answers highlight the words the model bolds, so a prompt that says
+    /// nothing about bold gets this rule added.
+    static let keywordRule =
+        "Bold the 2–3 key terms of each answer (**like this**) so they stand out at a glance."
+    /// Plain text asks for no formatting at all, except code.
+    static let plainTextRule =
+        "Write plain text only: no markdown, no bold or italics, no headings, no bullet or numbered lists. " +
+        "Use short plain sentences, one idea per line. Code still goes in a fenced code block with its language. " +
+        "This overrides any formatting instructions above."
+
+    /// The formatting rule to add to a system prompt, if any.
+    func promptRule(for prompt: String) -> String? {
+        if self == .plain { return Self.plainTextRule }
+        return prompt.localizedCaseInsensitiveContains("bold") ? nil : Self.keywordRule
+    }
+
     var displayName: String {
         switch self {
+        case .plain:           return "Plain text"
         case .off:             return "Off"
         case .bold:            return "Bold only"
         case .blue:            return "Blue"
@@ -97,6 +119,15 @@ struct MarkdownResponseView: View {
         switch block {
         case .code(let lang, let body):
             CodeBlockView(language: lang, code: body, fontSize: codeSize)
+
+        // Plain text: headings and list items read as ordinary lines.
+        case .heading(_, let text) where keywordStyle == .plain:
+            inlineText(text)
+                .font(.system(size: baseSize))
+
+        case .bullet(let text) where keywordStyle == .plain:
+            inlineText(text)
+                .font(.system(size: baseSize))
 
         case .heading(let level, let text):
             inlineText(text)
@@ -181,14 +212,17 @@ final class MarkdownParseCache {
     /// Bold spans are the answer's keywords (the prompt asks the model to
     /// bold them), so they're styled to catch the eye mid-sentence. Plain
     /// bold white barely differs from the body text. Off shows them as
-    /// plain text.
+    /// plain text; Plain text drops italics too (inline code stays).
     private static func highlightingKeywords(_ text: AttributedString, _ style: KeywordStyle) -> AttributedString {
         var text = text
-        let keywords = text.runs[\.inlinePresentationIntent]
-            .filter { $0.0?.contains(.stronglyEmphasized) == true }
-        for (intent, range) in keywords {
-            if style == .off, var plain = intent {
+        let plainText = style == .plain
+        let styled = text.runs[\.inlinePresentationIntent].filter { intent, _ in
+            intent?.contains(.stronglyEmphasized) == true || (plainText && intent?.contains(.emphasized) == true)
+        }
+        for (intent, range) in styled {
+            if style == .off || plainText, var plain = intent {
                 plain.remove(.stronglyEmphasized)
+                if plainText { plain.remove(.emphasized) }
                 text[range].inlinePresentationIntent = plain.isEmpty ? nil : plain
             }
             if let color = style.foreground { text[range].foregroundColor = color }

@@ -7,6 +7,7 @@ import AppKit
 /// SwiftUI subtree.
 private let openRouterKeysURL = URL(string: "https://openrouter.ai/keys")!
 private let elevenLabsKeysURL = URL(string: "https://elevenlabs.io/app/settings/api-keys")!
+private let xaiKeysURL = URL(string: "https://console.x.ai")!
 /// Tagged as a campaign so interest in Pro shows up in the website's Google
 /// Analytics (Acquisition → Traffic acquisition, campaign "pro_interest").
 private let proInterestURL = URL(string: "https://www.thecloser.tech/?utm_source=app&utm_medium=onboarding&utm_campaign=pro_interest")!
@@ -58,7 +59,7 @@ struct OnboardingView: View {
                 switch step {
                 case .welcome: WelcomeStep()
                 case .choose:  ChooseStep(path: $path)
-                case .keys:    KeyStep(openRouter: $vm.openRouterAPIKey, elevenLabs: $vm.elevenLabsAPIKey)
+                case .keys:    KeyStep(openRouter: $vm.openRouterAPIKey, elevenLabs: $vm.elevenLabsAPIKey, xai: $vm.grokAPIKey)
                 case .plans:   PlansStep()
                 }
             }
@@ -313,21 +314,24 @@ private struct ChoiceCard: View {
 private struct KeyStep: View {
     @Binding var openRouter: String
     @Binding var elevenLabs: String
+    @Binding var xai: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             StepHeader(title: "Add your keys",
-                       subtitle: "Both are needed to start an interview.")
+                       subtitle: "OpenRouter, plus ElevenLabs or xAI to transcribe.")
 
             KeyInput(label: "OpenRouter", hint: "runs every AI model",
                      placeholder: "sk-or-…", link: openRouterKeysURL, text: $openRouter)
             KeyInput(label: "ElevenLabs", hint: "transcribes the interview",
                      placeholder: "sk_…", link: elevenLabsKeysURL, text: $elevenLabs)
+            KeyInput(label: "xAI", hint: "or transcribe with Grok",
+                     placeholder: "xai-…", link: xaiKeysURL, text: $xai)
 
             HStack(spacing: 4) {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 9))
-                Text("Stored only on this Mac, and sent only to OpenRouter and ElevenLabs.")
+                Text("Stored only on this Mac, and sent only to the service each key is for.")
                     .font(.system(size: 10))
             }
             .foregroundColor(Design.Ink.tertiary)
