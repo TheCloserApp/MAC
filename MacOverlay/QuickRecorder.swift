@@ -35,7 +35,7 @@ class QuickRecorder {
         NSLog("[QuickRecorder] start")
 
         let language = TranscriptionLanguage.current
-        recognizer = SFSpeechRecognizer(locale: language.locale)
+        recognizer = SFSpeechRecognizer(locale: language.appleLocale)
         guard let recognizer else {
             NSLog("[QuickRecorder] SFSpeechRecognizer is nil for locale %@", language.id)
             throw QuickRecorderError.recognizerUnavailable

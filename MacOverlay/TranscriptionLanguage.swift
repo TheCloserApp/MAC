@@ -26,7 +26,16 @@ struct TranscriptionLanguage: Identifiable, Hashable {
     /// "English" for "English (US)", for messages.
     var shortName: String { name.components(separatedBy: " (").first ?? name }
 
+    /// Any language: ElevenLabs and Grok detect it, and nothing is ignored.
+    /// Apple's recognizer can't detect a language, so it uses English.
+    static let automatic = TranscriptionLanguage(id: "auto", name: "All languages (auto-detect)",
+                                                 elevenLabsCode: "", scripts: [])
+    var isAutomatic: Bool { id == Self.automatic.id }
+    /// The locale for Apple's recognizer: English when all languages are picked.
+    var appleLocale: Locale { isAutomatic ? Self.defaultLanguage(for: .current).locale : locale }
+
     static let all: [TranscriptionLanguage] = [
+        automatic,
         .init(id: "en-US", name: "English (US)",        elevenLabsCode: "en", scripts: ["Latin"]),
         .init(id: "en-GB", name: "English (UK)",        elevenLabsCode: "en", scripts: ["Latin"]),
         .init(id: "en-IN", name: "English (India)",     elevenLabsCode: "en", scripts: ["Latin"]),
@@ -57,6 +66,7 @@ struct TranscriptionLanguage: Identifiable, Hashable {
     /// Whether `text` is (mostly) written in this language's scripts.
     /// Digits, punctuation and a stray foreign word don't count against it.
     func matches(_ text: String) -> Bool {
+        guard !scripts.isEmpty else { return true }
         var total = 0, ok = 0
         for scalar in text.unicodeScalars {
             guard let script = Self.script(of: scalar) else { continue }
@@ -106,7 +116,7 @@ struct TranscriptionLanguage: Identifiable, Hashable {
            let match = language(for: "en-\(region)") {
             return match
         }
-        return all[0]
+        return language(for: "en-US")!
     }
 
     /// The saved choice, or the default if nothing valid is saved.

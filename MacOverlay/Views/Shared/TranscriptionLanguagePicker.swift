@@ -18,12 +18,13 @@ struct TranscriptionLanguagePicker: View {
                         Text(language.name)
                     }
                 }
+                if language.isAutomatic { Divider() }
             }
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "globe")
                     .font(.system(size: 11, weight: .medium))
-                Text(TranscriptionLanguage.language(for: vm.transcriptionLanguageID)?.name ?? "English (US)")
+                Text(chipName)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -42,6 +43,11 @@ struct TranscriptionLanguagePicker: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("The language spoken in the interview")
+    }
+
+    private var chipName: String {
+        guard let language = TranscriptionLanguage.language(for: vm.transcriptionLanguageID) else { return "English (US)" }
+        return language.isAutomatic ? "All languages" : language.name
     }
 
     /// Every language with a cloud engine (ElevenLabs, Grok). With Apple's,
