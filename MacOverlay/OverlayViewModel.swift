@@ -2409,16 +2409,18 @@ final class OverlayViewModel {
     var hasOpenRouterAccess: Bool { ProAccount.shared.isActive || !openRouterAPIKey.isEmpty }
 
     /// Keys a bring-your-own-key user still has to add before starting an
-    /// interview: OpenRouter runs the models, and ElevenLabs transcribes,
-    /// or xAI when Grok is the chosen engine. Pro needs none.
+    /// interview: OpenRouter runs the models, and ElevenLabs or xAI
+    /// transcribes (the picked one, when ElevenLabs or Grok is picked).
+    /// Pro needs none.
     var missingRequiredKeys: [String] {
         guard !ProAccount.shared.isActive else { return [] }
+        func empty(_ key: String) -> Bool { key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         var missing: [String] = []
-        if openRouterAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("OpenRouter") }
-        if transcriptionPreference == .grok {
-            if grokAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("xAI") }
-        } else if elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            missing.append("ElevenLabs")
+        if empty(openRouterAPIKey) { missing.append("OpenRouter") }
+        switch transcriptionPreference {
+        case .grok:        if empty(grokAPIKey) { missing.append("xAI") }
+        case .elevenLabs:  if empty(elevenLabsAPIKey) { missing.append("ElevenLabs") }
+        case .auto, .apple: if empty(elevenLabsAPIKey) && empty(grokAPIKey) { missing.append("ElevenLabs") }
         }
         return missing
     }

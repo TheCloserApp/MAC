@@ -534,15 +534,11 @@ struct PreferencesView: View {
         }
 
         if !pro.isActive {
-        let usesGrok = vm.transcriptionPreference == .grok
         section(title: "API keys",
-                subtitle: "OpenRouter runs the models; \(usesGrok ? "xAI" : "ElevenLabs") transcribes. Stored only on this Mac.") {
+                subtitle: "OpenRouter runs the models. ElevenLabs or xAI (Grok) transcribes: add the one you use. Stored only on this Mac.") {
             KeyFieldView(label: "OpenRouter", placeholder: "sk-or-…",     text: $vm.openRouterAPIKey)
-            if usesGrok {
-                KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",   text: $vm.grokAPIKey)
-            } else {
-                KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",    text: $vm.elevenLabsAPIKey)
-            }
+            KeyFieldView(label: "ElevenLabs", placeholder: "sk_…",        text: $vm.elevenLabsAPIKey)
+            KeyFieldView(label: "xAI (Grok)", placeholder: "xai-…",       text: $vm.grokAPIKey)
         }
         }
 
