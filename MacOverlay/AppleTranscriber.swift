@@ -131,7 +131,8 @@ final class AppleTranscriber: NSObject, @unchecked Sendable {
         recognizer = SFSpeechRecognizer(locale: language.locale)
         guard let recognizer else {
             NSLog("[AppleTranscriber] SFSpeechRecognizer is nil for locale %@", language.id)
-            throw TranscriptionError.unavailable
+            throw TranscriptionError.permissionDenied(
+                "Apple's on-device transcription doesn't support \(language.name). Pick ElevenLabs or Grok in Settings → General.")
         }
         guard recognizer.isAvailable else {
             NSLog("[AppleTranscriber] recognizer not available (network down? language pack missing?)")

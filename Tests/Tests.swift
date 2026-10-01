@@ -513,6 +513,23 @@ func testKeywordStylePromptRules() throws {
     try assertTrue(KeywordStyle.lightBlue.promptRule(for: "Bold the key terms.") == nil, "keeps the prompt's own bold rule")
 }
 
+/// Grok writes whatever language it hears, so text in another script than
+/// the picked language's is ignored (same rules as Windows).
+func testTranscriptLanguageLock() throws {
+    let telugu = "మీ గురించి చెప్పండి"
+    let hindi = "अपने बारे में बताइए"
+    let english = TranscriptionLanguage.language(for: "en-US")!
+    let teluguLanguage = TranscriptionLanguage.language(for: "te-IN")!
+    try assertTrue(english.matches("What is JavaScript? Explain closures."), "English keeps English")
+    try assertTrue(!english.matches(telugu), "English drops Telugu")
+    try assertTrue(english.matches("I studied in Hyderabad, నమస్తే everyone, nice to meet you"), "English keeps a stray foreign word")
+    try assertTrue(teluguLanguage.matches(telugu) && teluguLanguage.matches("Tell me about yourself"), "Telugu keeps Telugu and English")
+    try assertTrue(!teluguLanguage.matches(hindi), "Telugu drops Hindi")
+    try assertTrue(english.matches("2024?"), "numbers alone are neutral")
+    try assertEq(english.shortName, "English", "short name")
+    try assertEq(teluguLanguage.elevenLabsCode, "te", "ElevenLabs code")
+}
+
 // MARK: - TheCloser Pro
 
 /// Must match the server's expectations (api/_lib/config.js DEVICE_PATTERN)
@@ -652,6 +669,7 @@ struct TestsMain {
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
         TestRunner.run("Answer keywords are highlighted", testAnswerKeywordsAreHighlighted)
         TestRunner.run("Keyword styles pick the prompt's formatting rule", testKeywordStylePromptRules)
+        TestRunner.run("Transcripts in another language are ignored", testTranscriptLanguageLock)
         TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
         TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
         TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)

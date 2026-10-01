@@ -44,9 +44,11 @@ struct TranscriptionLanguagePicker: View {
         .help("The language spoken in the interview")
     }
 
-    /// Languages this Mac's speech recognizer supports, plus the current
-    /// choice so the chip never shows something that isn't listed.
+    /// Every language with a cloud engine (ElevenLabs, Grok). With Apple's,
+    /// the ones this Mac's recognizer supports, plus the current choice so
+    /// the chip never shows something that isn't listed.
     private var languages: [TranscriptionLanguage] {
+        guard vm.transcriptionBackend == .apple else { return TranscriptionLanguage.all }
         let supported = Set(SFSpeechRecognizer.supportedLocales().map {
             $0.identifier.replacingOccurrences(of: "_", with: "-")
         })
