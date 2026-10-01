@@ -477,10 +477,10 @@ func testAnswerKeywordsAreHighlighted() throws {
         var styled: [String] = []
         for run in text.runs {
             let words = String(text[run.range].characters)
-            if style == .off {
+            if style == .off || style == .plain {
                 try assertTrue(run.inlinePresentationIntent?.contains(.stronglyEmphasized) != true
                                && run.foregroundColor == nil && run.backgroundColor == nil,
-                               "off: \"\(words)\" is plain text")
+                               "\(style): \"\(words)\" is plain text")
                 continue
             }
             if run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
@@ -492,10 +492,25 @@ func testAnswerKeywordsAreHighlighted() throws {
                                "\(style): \"\(words)\" keeps the body style")
             }
         }
-        try assertEq(styled, style == .off ? [] : ["PostgreSQL", "payments"], "\(style)")
+        try assertEq(styled, style == .off || style == .plain ? [] : ["PostgreSQL", "payments"], "\(style)")
+    }
+    // Plain text drops italics too, but inline code stays code.
+    if let text = MarkdownParseCache.shared.attributed(for: "Run *quickly* with `make`.", keywords: .plain) {
+        for run in text.runs {
+            try assertTrue(run.inlinePresentationIntent?.contains(.emphasized) != true, "plain: no italics")
+        }
+        try assertTrue(text.runs.contains { $0.inlinePresentationIntent?.contains(.code) == true }, "plain: inline code stays")
     }
     try assertTrue(KeywordStyle.standard.foreground == Design.Accent.keyword, "light blue by default")
     try assertTrue(KeywordStyle.bold.foreground == nil && KeywordStyle.bold.background == nil, "bold only adds nothing")
+}
+
+/// Plain text asks the model for no formatting (overriding the prompt's
+/// own); the other styles add the bold rule only when the prompt has none.
+func testKeywordStylePromptRules() throws {
+    try assertEq(KeywordStyle.plain.promptRule(for: "Bold the key terms."), KeywordStyle.plainTextRule, "plain overrides")
+    try assertEq(KeywordStyle.lightBlue.promptRule(for: "Answer briefly."), KeywordStyle.keywordRule, "adds the bold rule")
+    try assertTrue(KeywordStyle.lightBlue.promptRule(for: "Bold the key terms.") == nil, "keeps the prompt's own bold rule")
 }
 
 // MARK: - TheCloser Pro
@@ -636,6 +651,7 @@ struct TestsMain {
         TestRunner.run("ChatTurn replayText composition", testChatTurnReplayText)
         TestRunner.run("ChatTurn hiddenContext codable + migration", testChatTurnHiddenContextCodable)
         TestRunner.run("Answer keywords are highlighted", testAnswerKeywordsAreHighlighted)
+        TestRunner.run("Keyword styles pick the prompt's formatting rule", testKeywordStylePromptRules)
         TestRunner.run("Pro fingerprint matches the server's formula", testProFingerprint)
         TestRunner.run("Pro usage decodes from the server", testProUsageFromServer)
         TestRunner.run("Pro limits the model pickers to the plan", testProLimitsModelPickers)
